@@ -8,6 +8,8 @@ from krok_helper.ffmpeg import find_tool, probe_media, run_command
 from krok_helper.models import MediaInfo
 from krok_helper.types import Logger
 
+DEFAULT_AUDIO_TITLE_TEMPLATE = "Hi-Res Audio (FLAC 32bit/{sample_rate}Hz)"
+
 
 def format_duration(seconds: float) -> str:
     seconds = max(0, seconds)
@@ -83,20 +85,18 @@ def build_ffmpeg_command(
         "flac",
         "-compression_level",
         "12",
-        "-strict",
-        "experimental",
         "-ar",
         str(sample_rate),
         "-sample_fmt",
         "s32",
         "-ac",
         "2",
-        "-disposition:a:0",
-        "default",
         "-map_metadata",
         "-1",
         "-metadata:s:a:0",
         f"title={audio_title}",
+        "-movflags",
+        "+faststart",
         str(output_path),
     ]
 
@@ -117,7 +117,7 @@ def process_output(
         video_path=video_info.path,
         audio_path=audio_info.path,
         output_path=output_path,
-        audio_title=f"Hi-Res Audio ({label}, FLAC 32bit/{target_sample_rate}Hz)",
+        audio_title=DEFAULT_AUDIO_TITLE_TEMPLATE.format(sample_rate=target_sample_rate),
         sample_rate=target_sample_rate,
     )
     run_command(command, logger)
