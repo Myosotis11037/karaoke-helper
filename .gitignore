@@ -1,0 +1,32 @@
+# Legacy helper scripts
+一键HiRes（mkv）.bat
+
+# Python cache and local env
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Tooling caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Runtime outputs
+output/
+tmp-test/
+*.log
