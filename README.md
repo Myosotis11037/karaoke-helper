@@ -21,6 +21,9 @@ krok-helper/
 │  ├─ pipeline.py
 │  ├─ types.py
 │  └─ windows.py
+├─ scripts/
+│  ├─ build_windows.bat
+│  └─ build_macos.command
 ├─ 启动桌面版.bat
 └─ 一键HiRes（mkv）.bat
 ```
@@ -72,11 +75,7 @@ python -m krok_helper `
   --ffmpeg-dir "D:\tools\ffmpeg\bin"
 ```
 
-## 依赖
-
-- Python 3.10+
-- `ffmpeg`
-- `ffprobe`
+## ffmpeg 查找顺序
 
 程序查找 `ffmpeg` / `ffprobe` 的顺序是：
 
@@ -87,6 +86,82 @@ python -m krok_helper `
 
 - 目录可以直接选到 `ffmpeg\bin`
 - 也可以选 `ffmpeg` 根目录，程序会自动尝试 `bin\ffmpeg.exe`
+
+## 打包
+
+打包使用 `PyInstaller`。脚本会先检查本机是否已安装 `PyInstaller`，如果没有会自动通过 `pip` 安装。
+
+### Windows
+
+直接双击运行：
+
+```text
+scripts\build_windows.bat
+```
+
+或者在终端中运行：
+
+```powershell
+.\scripts\build_windows.bat
+```
+
+脚本行为：
+
+- 自动检查 Python
+- 自动检查并安装 `PyInstaller`
+- 打包完成后暂停，方便直接查看结果
+
+输出目录：
+
+```text
+dist\windows\Krok Helper\
+```
+
+主程序：
+
+```text
+dist\windows\Krok Helper\Krok Helper.exe
+```
+
+### macOS
+
+先给脚本执行权限：
+
+```bash
+chmod +x ./scripts/build_macos.command
+```
+
+然后可以双击运行 `build_macos.command`，或者在终端中运行：
+
+```bash
+./scripts/build_macos.command
+```
+
+脚本行为：
+
+- 自动检查 Python 3
+- 自动检查并安装 `PyInstaller`
+- 打包完成后等待回车，方便查看结果
+
+输出目录：
+
+```text
+dist/macos/Krok Helper.app
+```
+
+### 打包说明
+
+- Windows 打包脚本需要在 Windows 上运行
+- macOS 打包脚本需要在 macOS 上运行
+- 当前脚本不会自动内置 `ffmpeg`
+- 如果目标机器没有配置系统 `PATH`，运行后可以在界面里手动指定 `ffmpeg` 目录
+- 如果你后面需要做签名、图标、安装包，这两个脚本可以继续扩展
+
+## 依赖
+
+- Python 3.10+
+- `ffmpeg`
+- `ffprobe`
 
 ## 说明
 
