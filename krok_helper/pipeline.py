@@ -125,11 +125,15 @@ def process_output(
     return output_path
 
 
+def resolve_output_dir(video_path: Path, output_dir: Path | None = None) -> Path:
+    return output_dir if output_dir is not None else video_path.parent
+
+
 def run_pipeline(
     video_path: Path,
     on_vocal_path: Path,
     off_vocal_path: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     logger: Logger,
 ) -> list[Path]:
     ffmpeg_path = find_tool("ffmpeg.exe")
@@ -157,14 +161,15 @@ def run_pipeline(
     warn_duration_mismatch(logger, video_info, on_vocal_info, "原唱无损")
     warn_duration_mismatch(logger, video_info, off_vocal_info, "伴奏无损")
 
+    output_dir = resolve_output_dir(video_path, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = video_path.stem
-    on_output = output_dir / f"{stem}_on_vocal_hires.mkv"
-    off_output = output_dir / f"{stem}_off_vocal_hires.mkv"
+    on_output = output_dir / "on_vocal.mkv"
+    off_output = output_dir / "off_vocal.mkv"
 
     outputs = [
         process_output(ffmpeg_path, logger, video_info, on_vocal_info, on_output, "On Vocal"),
         process_output(ffmpeg_path, logger, video_info, off_vocal_info, off_output, "Off Vocal"),
     ]
+    logger(f"输出目录: {output_dir}")
     logger("全部处理完成。")
     return outputs
