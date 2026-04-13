@@ -9,25 +9,27 @@
 
 ```text
 krok-helper/
-├─ app.py                 # 兼容入口，方便直接 python app.py
+├─ app.py
 ├─ krok_helper/
-│  ├─ __main__.py         # python -m krok_helper
-│  ├─ cli.py              # 命令行入口与参数解析
-│  ├─ gui.py              # Tkinter 桌面界面
-│  ├─ pipeline.py         # 核心处理流程
-│  ├─ ffmpeg.py           # ffmpeg / ffprobe 调用封装
-│  ├─ models.py           # 数据模型
-│  ├─ errors.py           # 自定义异常
-│  ├─ config.py           # 配置常量
-│  └─ types.py            # 公共类型别名
+│  ├─ __main__.py
+│  ├─ cli.py
+│  ├─ config.py
+│  ├─ errors.py
+│  ├─ ffmpeg.py
+│  ├─ gui.py
+│  ├─ models.py
+│  ├─ pipeline.py
+│  ├─ types.py
+│  └─ windows.py
 ├─ 启动桌面版.bat
-└─ 一键HiRes（mkv）.bat   # 旧脚本，保留参考
+└─ 一键HiRes（mkv）.bat
 ```
 
 ## 当前版本能做什么
 
 - 读取 1 个字幕视频和 2 个无损音频
 - 支持点击选择文件，也支持把文件直接拖进三个大卡片
+- 支持选择 `ffmpeg` 所在目录
 - 保留原视频里的非音频流，移除原音轨
 - 把外部音频转成 `Hi-Res FLAC 32bit / 2ch`
 - 采样率低于 `48kHz` 时自动提升到 `48kHz`
@@ -57,8 +59,17 @@ python app.py
 python -m krok_helper `
   --video "D:\path\subtitle_video.mkv" `
   --on-audio "D:\path\song.flac" `
+  --off-audio "D:\path\inst.flac"
+```
+
+如果系统 `PATH` 里没有 `ffmpeg` / `ffprobe`，可以额外指定目录：
+
+```powershell
+python -m krok_helper `
+  --video "D:\path\subtitle_video.mkv" `
+  --on-audio "D:\path\song.flac" `
   --off-audio "D:\path\inst.flac" `
-  --output-dir "D:\path\output"
+  --ffmpeg-dir "D:\tools\ffmpeg\bin"
 ```
 
 ## 依赖
@@ -67,9 +78,18 @@ python -m krok_helper `
 - `ffmpeg`
 - `ffprobe`
 
-程序会优先寻找：
+程序查找 `ffmpeg` / `ffprobe` 的顺序是：
 
-- 当前目录下的 `ffmpeg\bin\ffmpeg.exe`
-- 当前目录下的 `ffmpeg\bin\ffprobe.exe`
+1. 系统环境变量 `PATH`
+2. 你在界面或命令行里指定的 `ffmpeg` 目录
 
-如果没有，再尝试从系统 `PATH` 中寻找。
+提示：
+
+- 目录可以直接选到 `ffmpeg\bin`
+- 也可以选 `ffmpeg` 根目录，程序会自动尝试 `bin\ffmpeg.exe`
+
+## 说明
+
+- 这版以你的固定工作流为主。
+- 如果字幕视频和音频时长差异较大，程序会给出警告，但仍继续处理。
+- B 站是否最终显示 Hi-Res，上传时仍需要你在投稿页手动勾选对应选项。

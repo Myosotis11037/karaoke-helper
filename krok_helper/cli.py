@@ -18,6 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--on-audio", type=Path, help="原唱无损音频路径")
     parser.add_argument("--off-audio", type=Path, help="伴奏无损音频路径")
     parser.add_argument("--output-dir", type=Path, help="输出目录，可选，默认使用字幕视频所在目录")
+    parser.add_argument("--ffmpeg-dir", type=Path, help="ffmpeg 所在目录，可选。系统 PATH 优先，找不到时再回退到这里。")
     parser.add_argument("--gui", action="store_true", help="强制启动图形界面")
     return parser.parse_args()
 
@@ -35,6 +36,7 @@ def run_cli(args: argparse.Namespace) -> int:
         on_vocal_path=args.on_audio.expanduser(),
         off_vocal_path=args.off_audio.expanduser(),
         output_dir=args.output_dir.expanduser() if args.output_dir else None,
+        ffmpeg_dir=args.ffmpeg_dir.expanduser() if args.ffmpeg_dir else None,
         logger=logger,
     )
     print("输出文件:")
@@ -54,6 +56,8 @@ def run_gui(args: argparse.Namespace) -> int:
         app.set_on_vocal_path(args.on_audio.expanduser())
     if args.off_audio:
         app.set_off_vocal_path(args.off_audio.expanduser())
+    if args.ffmpeg_dir:
+        app.set_ffmpeg_dir(args.ffmpeg_dir.expanduser())
     root.mainloop()
     return 0
 

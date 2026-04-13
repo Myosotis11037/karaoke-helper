@@ -10,19 +10,45 @@ from krok_helper.models import MediaInfo
 from krok_helper.types import Logger
 
 
-def find_tool(tool_name: str) -> str:
-    root = Path(__file__).resolve().parent.parent
-    local_candidate = root / "ffmpeg" / "bin" / tool_name
-    if local_candidate.exists():
-        return str(local_candidate)
+def _find_tool_in_dir(directory: Path, tool_name: str) -> str | None:
+    candidates = [
+        directory / tool_name,
+        directory / "bin" / tool_name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return None
 
+
+def find_tool(tool_name: str, ffmpeg_dir: Path | None = None) -> str:
     resolved = shutil.which(tool_name)
     if resolved:
         return resolved
 
+    if ffmpeg_dir is not None:
+        candidate = _find_tool_in_dir(ffmpeg_dir, tool_name)
+        if candidate:
+            return candidate
+
     raise ProcessingError(
-        f"找不到 {tool_name}。请把 ffmpeg/ffprobe 放到程序目录下的 ffmpeg/bin，或加入系统 PATH。"
+        f"找不到 {tool_name}。请先确认系统环境变量 PATH 中可用，"
+        "或者在界面里选择 ffmpeg 所在文件夹。"
     )
+
+
+def describe_tool_source(tool_path: str, ffmpeg_dir: Path | None = None) -> str:
+    resolved = Path(tool_path).resolve()
+
+    if ffmpeg_dir is not None:
+        try:
+            ffmpeg_dir_resolved = ffmpeg_dir.resolve()
+            if resolved.is_relative_to(ffmpeg_dir_resolved):
+                return f"FFmpeg 来源: 所选目录 {ffmpeg_dir_resolved}"
+        except Exception:
+            pass
+
+    return "FFmpeg 来源: 系统环境变量 PATH"
 
 
 def probe_media(ffprobe_path: str, media_path: Path) -> MediaInfo:

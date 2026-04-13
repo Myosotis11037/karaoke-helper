@@ -27,6 +27,7 @@ AUDIO_FILETYPES = [
 ]
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi"}
 AUDIO_EXTENSIONS = {".flac", ".wav", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
+FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 
 
 class DropZone:
@@ -168,6 +169,7 @@ class KaraokeHiresApp:
         self.on_vocal_var = tk.StringVar()
         self.off_vocal_var = tk.StringVar()
         self.output_dir_var = tk.StringVar(value="跟随字幕视频所在目录")
+        self.ffmpeg_dir_var = tk.StringVar(value=FFMPEG_DIR_PLACEHOLDER)
         self.status_var = tk.StringVar(value="准备就绪")
 
         self.log_queue: queue.Queue[str] = queue.Queue()
@@ -196,38 +198,54 @@ class KaraokeHiresApp:
         shell = ttk.Frame(self.root, padding=20)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(3, weight=1)
+        shell.rowconfigure(4, weight=1)
 
         header = ttk.Frame(shell)
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
 
-        title = ttk.Label(
+        ttk.Label(
             header,
             text="卡拉 OK 字幕视频一键 Hi-Res 生成",
             font=("Microsoft YaHei UI", 20, "bold"),
-        )
-        title.grid(row=0, column=0, sticky="w")
+        ).grid(row=0, column=0, sticky="w")
 
-        subtitle = ttk.Label(
+        ttk.Label(
             header,
             text="把三个文件拖进下方卡片，或点击卡片选择文件。输出目录会自动使用字幕视频所在目录。",
             font=("Microsoft YaHei UI", 11),
-        )
-        subtitle.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
         output_row = ttk.Frame(shell)
-        output_row.grid(row=1, column=0, sticky="ew", pady=(18, 14))
+        output_row.grid(row=1, column=0, sticky="ew", pady=(18, 10))
         output_row.columnconfigure(1, weight=1)
         ttk.Label(output_row, text="输出目录", font=("Microsoft YaHei UI", 11, "bold")).grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(output_row, textvariable=self.output_dir_var, font=("Consolas", 10)).grid(
+        ttk.Label(output_row, textvariable=self.output_dir_var, font=("Yu Gothic UI", 11)).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
 
+        ffmpeg_row = ttk.Frame(shell)
+        ffmpeg_row.grid(row=2, column=0, sticky="ew", pady=(0, 14))
+        ffmpeg_row.columnconfigure(1, weight=1)
+        ttk.Label(ffmpeg_row, text="FFmpeg 目录", font=("Microsoft YaHei UI", 11, "bold")).grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(ffmpeg_row, textvariable=self.ffmpeg_dir_var, font=("Yu Gothic UI", 11)).grid(
+            row=0, column=1, sticky="w", padx=(12, 0)
+        )
+        ttk.Button(ffmpeg_row, text="选择目录", command=self._choose_ffmpeg_dir).grid(
+            row=0, column=2, sticky="e", padx=(12, 0)
+        )
+        ttk.Label(
+            ffmpeg_row,
+            text="提示: 默认优先使用系统 PATH 里的 ffmpeg；如果系统里没有，再回退到这里。",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(6, 0))
+
         card_row = ttk.Frame(shell)
-        card_row.grid(row=2, column=0, sticky="nsew")
+        card_row.grid(row=3, column=0, sticky="nsew")
         for index in range(3):
             card_row.columnconfigure(index, weight=1, uniform="dropzones")
         card_row.rowconfigure(0, weight=1)
@@ -269,7 +287,7 @@ class KaraokeHiresApp:
             padx=14,
             pady=14,
         )
-        log_panel.grid(row=3, column=0, sticky="nsew", pady=(18, 0))
+        log_panel.grid(row=4, column=0, sticky="nsew", pady=(18, 0))
         log_panel.grid_columnconfigure(0, weight=1)
         log_panel.grid_rowconfigure(1, weight=1)
 
@@ -297,20 +315,22 @@ class KaraokeHiresApp:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         controls = ttk.Frame(shell)
-        controls.grid(row=4, column=0, sticky="ew", pady=(18, 0))
+        controls.grid(row=5, column=0, sticky="ew", pady=(18, 0))
         controls.columnconfigure(2, weight=1)
 
         self.start_button = ttk.Button(controls, text="开始生成", command=self._start)
         self.start_button.grid(row=0, column=0, sticky="w")
 
-        open_output = ttk.Button(controls, text="打开输出目录", command=self._open_output_dir)
-        open_output.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Button(controls, text="打开输出目录", command=self._open_output_dir).grid(
+            row=0, column=1, sticky="w", padx=(10, 0)
+        )
 
         self.progress = ttk.Progressbar(controls, mode="indeterminate", length=180)
         self.progress.grid(row=0, column=2, sticky="e")
 
-        status = ttk.Label(controls, textvariable=self.status_var, font=("Microsoft YaHei UI", 10, "bold"))
-        status.grid(row=0, column=3, sticky="e", padx=(12, 0))
+        ttk.Label(controls, textvariable=self.status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
+            row=0, column=3, sticky="e", padx=(12, 0)
+        )
 
     def _install_file_drop(self) -> None:
         self.drop_handler = WindowsFileDropHandler(self.root, self._handle_drop)
@@ -349,6 +369,9 @@ class KaraokeHiresApp:
         self.off_vocal_var.set(str(path))
         self.off_vocal_zone.set_path(path)
 
+    def set_ffmpeg_dir(self, path: Path) -> None:
+        self.ffmpeg_dir_var.set(str(path))
+
     def _choose_video(self) -> None:
         path = filedialog.askopenfilename(
             title="选择字幕视频",
@@ -375,6 +398,11 @@ class KaraokeHiresApp:
         )
         if path:
             self.set_off_vocal_path(Path(path))
+
+    def _choose_ffmpeg_dir(self) -> None:
+        path = filedialog.askdirectory(title="选择 ffmpeg 所在目录")
+        if path:
+            self.set_ffmpeg_dir(Path(path))
 
     def _current_browse_dir(self) -> str | None:
         video_path = self.video_var.get().strip()
@@ -418,6 +446,16 @@ class KaraokeHiresApp:
             raise ProcessingError("请先选择字幕视频。")
         return resolve_output_dir(Path(video_path).expanduser())
 
+    def _resolve_ffmpeg_dir(self) -> Path | None:
+        ffmpeg_dir = self.ffmpeg_dir_var.get().strip()
+        if not ffmpeg_dir or ffmpeg_dir == FFMPEG_DIR_PLACEHOLDER:
+            return None
+
+        path = Path(ffmpeg_dir).expanduser()
+        if not path.is_dir():
+            raise ProcessingError("所选 ffmpeg 目录无效，请重新选择。")
+        return path
+
     def _open_output_dir(self) -> None:
         try:
             output_dir = self._resolve_output_dir()
@@ -433,6 +471,7 @@ class KaraokeHiresApp:
         on_vocal_path = Path(self.on_vocal_var.get()).expanduser()
         off_vocal_path = Path(self.off_vocal_var.get()).expanduser()
         output_dir = self._resolve_output_dir()
+        self._resolve_ffmpeg_dir()
 
         missing = [
             label
@@ -472,11 +511,13 @@ class KaraokeHiresApp:
 
         def worker() -> None:
             try:
+                ffmpeg_dir = self._resolve_ffmpeg_dir()
                 outputs = run_pipeline(
                     video_path=video_path,
                     on_vocal_path=on_vocal_path,
                     off_vocal_path=off_vocal_path,
                     output_dir=output_dir,
+                    ffmpeg_dir=ffmpeg_dir,
                     logger=self._append_log,
                 )
             except Exception as exc:  # noqa: BLE001

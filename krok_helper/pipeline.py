@@ -4,9 +4,10 @@ from pathlib import Path
 
 from krok_helper.config import DURATION_WARNING_SECONDS, MIN_HIRES_SAMPLE_RATE
 from krok_helper.errors import ProcessingError
-from krok_helper.ffmpeg import find_tool, probe_media, run_command
+from krok_helper.ffmpeg import describe_tool_source, find_tool, probe_media, run_command
 from krok_helper.models import MediaInfo
 from krok_helper.types import Logger
+
 
 DEFAULT_AUDIO_TITLE_TEMPLATE = "Hi-Res Audio (FLAC 32bit/{sample_rate}Hz)"
 
@@ -134,13 +135,15 @@ def run_pipeline(
     on_vocal_path: Path,
     off_vocal_path: Path,
     output_dir: Path | None,
+    ffmpeg_dir: Path | None,
     logger: Logger,
 ) -> list[Path]:
-    ffmpeg_path = find_tool("ffmpeg.exe")
-    ffprobe_path = find_tool("ffprobe.exe")
+    ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
+    ffprobe_path = find_tool("ffprobe.exe", ffmpeg_dir)
 
     logger(f"FFmpeg: {ffmpeg_path}")
     logger(f"FFprobe: {ffprobe_path}")
+    logger(describe_tool_source(ffmpeg_path, ffmpeg_dir))
     logger("正在分析输入文件...")
 
     video_info = probe_media(ffprobe_path, video_path)
