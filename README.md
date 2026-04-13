@@ -1,4 +1,4 @@
-# Krok Helper MVP
+# Krok Helper
 
 把卡拉 OK 字幕视频、原唱无损、伴奏无损准备好后，一次性输出：
 
