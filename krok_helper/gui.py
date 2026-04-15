@@ -9,6 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from krok_helper.audio_alignment import (
+    AlignmentPreviewProcess,
     ENCODE_MODE_HARDWARE,
     ENCODE_MODE_SOFTWARE,
     WaveformData,
@@ -18,6 +19,7 @@ from krok_helper.audio_alignment import (
     export_aligned_video,
     extract_waveform,
     format_offset,
+    start_alignment_preview,
 )
 from krok_helper.config import (
     APP_TITLE,
@@ -511,6 +513,7 @@ class KaraokeHiresApp:
         self.worker: threading.Thread | None = None
         self.align_worker: threading.Thread | None = None
         self.align_export_worker: threading.Thread | None = None
+        self.align_preview_process: AlignmentPreviewProcess | None = None
         self.drop_handler: WindowsFileDropHandler | None = None
         self.settings_window: tk.Toplevel | None = None
         self.settings_canvas: tk.Canvas | None = None
@@ -528,11 +531,14 @@ class KaraokeHiresApp:
         self.align_log_text: tk.Text | None = None
         self.align_move_radio: ttk.Radiobutton | None = None
         self.align_encode_row: ttk.Frame | None = None
+        self.align_preview_button: ttk.Button | None = None
+        self.align_stop_preview_button: ttk.Button | None = None
 
         self._load_saved_settings()
         self._configure_styles()
         self._build_ui()
         self._update_output_template_state()
+        self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
         self.root.after(100, self._drain_log_queue)
         self._install_file_drop()
 
@@ -542,6 +548,10 @@ class KaraokeHiresApp:
         x = max((screen_width - width) // 2, 0)
         y = max((screen_height - height) // 2, 0)
         return f"{width}x{height}+{x}+{y}"
+
+    def _handle_close(self) -> None:
+        self._stop_alignment_preview(log_message=False)
+        self.root.destroy()
 
     def _load_saved_settings(self) -> None:
         settings = load_app_settings()
@@ -833,19 +843,25 @@ class KaraokeHiresApp:
 
         actions = ttk.Frame(shell)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        actions.columnconfigure(3, weight=1)
+        actions.columnconfigure(5, weight=1)
         self.align_generate_button = ttk.Button(actions, text="生成波形", command=self._start_waveform_analysis)
         self.align_generate_button.grid(row=0, column=0, sticky="w")
+        self.align_preview_button = ttk.Button(actions, text="播放预览", command=self._start_alignment_preview)
+        self.align_preview_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        self.align_preview_button.configure(state="disabled")
+        self.align_stop_preview_button = ttk.Button(actions, text="停止播放", command=self._stop_alignment_preview)
+        self.align_stop_preview_button.grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.align_stop_preview_button.configure(state="disabled")
         self.align_export_button = ttk.Button(actions, text="导出对齐视频", command=self._start_aligned_export)
-        self.align_export_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        self.align_export_button.grid(row=0, column=3, sticky="w", padx=(10, 0))
         self.align_export_button.configure(state="disabled")
         ttk.Button(actions, text="打开输出目录", command=self._open_align_output_dir).grid(
-            row=0, column=2, sticky="w", padx=(10, 0)
+            row=0, column=4, sticky="w", padx=(10, 0)
         )
         self.align_progress = ttk.Progressbar(actions, mode="indeterminate", length=170)
-        self.align_progress.grid(row=0, column=3, sticky="e")
+        self.align_progress.grid(row=0, column=5, sticky="e")
         ttk.Label(actions, textvariable=self.align_status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=4, sticky="e", padx=(12, 0)
+            row=0, column=6, sticky="e", padx=(12, 0)
         )
 
         control_panel = tk.Frame(
@@ -1481,7 +1497,15 @@ class KaraokeHiresApp:
     def _is_align_video_target(self) -> bool:
         return self.align_target_var.get() == ALIGN_TARGET_VIDEO
 
+    def _has_alignment_waveforms(self) -> bool:
+        return (
+            self.align_viewer is not None
+            and self.align_viewer.video_waveform is not None
+            and self.align_viewer.audio_waveform is not None
+        )
+
     def _handle_align_target_changed(self) -> None:
+        self._stop_alignment_preview(log_message=False)
         if self.align_viewer is not None:
             self.align_viewer.set_offset(0.0)
             self.align_viewer.draw()
@@ -1505,12 +1529,23 @@ class KaraokeHiresApp:
                     pass
 
     def _invalidate_alignment_waveforms(self) -> None:
+        self._stop_alignment_preview(log_message=False)
         if self.align_viewer is not None:
             self.align_viewer.clear()
         if hasattr(self, "align_export_button"):
             self.align_export_button.configure(state="disabled")
+        if self.align_preview_button is not None:
+            self.align_preview_button.configure(state="disabled")
         self.align_status_var.set("准备生成波形")
         self._refresh_align_target_ui()
+
+    def _refresh_alignment_preview_controls(self) -> None:
+        is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
+        can_preview = self._has_alignment_waveforms() and not is_playing
+        if self.align_preview_button is not None:
+            self.align_preview_button.configure(state="normal" if can_preview else "disabled")
+        if self.align_stop_preview_button is not None:
+            self.align_stop_preview_button.configure(state="normal" if is_playing else "disabled")
 
     def _handle_align_zoom_change(self, value: str) -> None:
         if self.align_viewer is None:
@@ -1565,8 +1600,11 @@ class KaraokeHiresApp:
             self.align_log_text.delete("1.0", "end")
             self.align_log_text.configure(state="disabled")
 
+        self._stop_alignment_preview(log_message=False)
         self.align_generate_button.configure(state="disabled")
         self.align_export_button.configure(state="disabled")
+        if self.align_preview_button is not None:
+            self.align_preview_button.configure(state="disabled")
         self.align_progress.start(10)
         self.align_status_var.set("生成波形中...")
 
@@ -1608,6 +1646,7 @@ class KaraokeHiresApp:
         self.align_generate_button.configure(state="normal")
         self.align_export_button.configure(state="normal" if success else "disabled")
         self.align_status_var.set("波形已生成" if success else "波形生成失败")
+        self._refresh_alignment_preview_controls()
 
         if success:
             if self.align_viewer is not None:
@@ -1616,9 +1655,69 @@ class KaraokeHiresApp:
                     audio_waveform=audio_waveform,
                 )
                 self._refresh_align_target_ui()
+                self._refresh_alignment_preview_controls()
             return
 
         messagebox.showerror(APP_TITLE, message)
+
+    def _start_alignment_preview(self) -> None:
+        if not self._has_alignment_waveforms():
+            messagebox.showerror(APP_TITLE, "请先生成波形并完成对齐。")
+            return
+
+        self._stop_alignment_preview(log_message=False)
+        try:
+            video_path, audio_path = self._validate_alignment_inputs()
+            ffmpeg_dir = self._resolve_ffmpeg_dir()
+        except ProcessingError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        assert self.align_viewer is not None
+        target_track = ALIGN_TARGET_VIDEO if self._is_align_video_target() else ALIGN_TARGET_AUDIO
+        try:
+            self.align_preview_process = start_alignment_preview(
+                video_path=video_path,
+                audio_path=audio_path,
+                offset_seconds=self.align_viewer.offset_seconds,
+                ffmpeg_dir=ffmpeg_dir,
+                logger=self._append_align_log,
+                target_track=target_track,
+                preview_start_seconds=self.align_viewer.view_start_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.align_preview_process = None
+            messagebox.showerror(APP_TITLE, f"播放预览失败:\n{exc}")
+            self._append_align_log(f"播放预览失败: {exc}")
+            self._refresh_alignment_preview_controls()
+            return
+
+        self.align_status_var.set("正在播放预览")
+        self._refresh_alignment_preview_controls()
+        self.root.after(300, self._poll_alignment_preview)
+
+    def _stop_alignment_preview(self, *, log_message: bool = True) -> None:
+        process = self.align_preview_process
+        if process is not None:
+            process.stop()
+            self.align_preview_process = None
+            if log_message:
+                self._append_align_log("播放预览已停止")
+        self._refresh_alignment_preview_controls()
+
+    def _poll_alignment_preview(self) -> None:
+        process = self.align_preview_process
+        if process is None:
+            self._refresh_alignment_preview_controls()
+            return
+        if process.is_running():
+            self.root.after(300, self._poll_alignment_preview)
+            return
+
+        self.align_preview_process = None
+        self.align_status_var.set("预览播放结束")
+        self._append_align_log("播放预览结束")
+        self._refresh_alignment_preview_controls()
 
     def _start_aligned_export(self) -> None:
         if self.align_export_worker and self.align_export_worker.is_alive():
@@ -1636,6 +1735,7 @@ class KaraokeHiresApp:
             messagebox.showerror(APP_TITLE, "请先生成波形并完成对齐。")
             return
 
+        self._stop_alignment_preview(log_message=False)
         is_video_target = self._is_align_video_target()
         output_kind = "对齐视频" if is_video_target else "对齐音频"
         initial_path = (
@@ -1662,6 +1762,8 @@ class KaraokeHiresApp:
         encode_mode = self.align_encode_mode_var.get()
         self.align_generate_button.configure(state="disabled")
         self.align_export_button.configure(state="disabled")
+        if self.align_preview_button is not None:
+            self.align_preview_button.configure(state="disabled")
         self.align_progress.start(10)
         self.align_status_var.set("导出对齐视频中..." if is_video_target else "导出对齐音频中...")
 
@@ -1704,6 +1806,7 @@ class KaraokeHiresApp:
         self.align_progress.stop()
         self.align_generate_button.configure(state="normal")
         self.align_export_button.configure(state="normal")
+        self._refresh_alignment_preview_controls()
         self.align_status_var.set("导出完成" if success else "导出失败")
 
         if success and output_path is not None:

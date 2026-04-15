@@ -50,6 +50,26 @@ class WaveformData:
     peaks: list[float]
 
 
+@dataclass
+class AlignmentPreviewProcess:
+    ffmpeg_process: subprocess.Popen
+    ffplay_process: subprocess.Popen
+
+    def is_running(self) -> bool:
+        return self.ffplay_process.poll() is None
+
+    def stop(self) -> None:
+        for process in (self.ffplay_process, self.ffmpeg_process):
+            if process.poll() is not None:
+                continue
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+
+
 def format_offset(seconds: float) -> str:
     sign = "+" if seconds >= 0 else "-"
     return f"{sign}{abs(seconds):.3f}s"
@@ -84,6 +104,29 @@ def _build_waveform_command(ffmpeg_path: str, media_path: Path) -> list[str]:
         "s16le",
         "pipe:1",
     ]
+
+
+def _format_seconds_for_ffmpeg(seconds: float) -> str:
+    text = f"{max(0.0, seconds):.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _preview_input_args(media_path: Path, timeline_offset: float, preview_start: float) -> tuple[list[str], float]:
+    source_start = max(0.0, preview_start - timeline_offset)
+    preview_delay = max(0.0, timeline_offset - preview_start)
+    args: list[str] = []
+    if source_start > 0.001:
+        args.extend(["-ss", _format_seconds_for_ffmpeg(source_start)])
+    args.extend(["-i", str(media_path)])
+    return args, preview_delay
+
+
+def _preview_filter(input_index: int, preview_delay: float, label: str) -> str:
+    filters = [f"[{input_index}:a:0]asetpts=PTS-STARTPTS"]
+    if preview_delay > 0.001:
+        delay_ms = max(0, int(round(preview_delay * 1000)))
+        filters.append(f"adelay={delay_ms}:all=1")
+    return ",".join(filters) + f"[{label}]"
 
 
 def _probe_payload(ffprobe_path: str, media_path: Path) -> dict:
@@ -603,6 +646,113 @@ def export_aligned_audio(
 
     logger(f"对齐音频导出完成: {output_path}")
     return output_path
+
+
+def build_alignment_preview_command(
+    ffmpeg_path: str,
+    video_path: Path,
+    audio_path: Path,
+    offset_seconds: float,
+    *,
+    target_track: str,
+    preview_start_seconds: float = 0.0,
+) -> list[str]:
+    preview_start_seconds = max(0.0, preview_start_seconds)
+    video_offset = offset_seconds if target_track == "video" else 0.0
+    audio_offset = offset_seconds if target_track == "audio" else 0.0
+    video_args, video_delay = _preview_input_args(video_path, video_offset, preview_start_seconds)
+    audio_args, audio_delay = _preview_input_args(audio_path, audio_offset, preview_start_seconds)
+    filter_graph = ";".join(
+        [
+            _preview_filter(0, video_delay, "video_preview"),
+            _preview_filter(1, audio_delay, "audio_preview"),
+            "[video_preview][audio_preview]amix=inputs=2:duration=longest:dropout_transition=0,volume=0.5[out]",
+        ]
+    )
+
+    return [
+        ffmpeg_path,
+        "-hide_banner",
+        "-v",
+        "error",
+        *video_args,
+        *audio_args,
+        "-filter_complex",
+        filter_graph,
+        "-map",
+        "[out]",
+        "-vn",
+        "-sn",
+        "-dn",
+        "-f",
+        "wav",
+        "pipe:1",
+    ]
+
+
+def start_alignment_preview(
+    video_path: Path,
+    audio_path: Path,
+    offset_seconds: float,
+    ffmpeg_dir: Path | None,
+    logger: Logger,
+    *,
+    target_track: str,
+    preview_start_seconds: float = 0.0,
+) -> AlignmentPreviewProcess:
+    ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
+    ffplay_path = find_tool("ffplay.exe", ffmpeg_dir)
+    moving_label = "字幕视频音轨" if target_track == "video" else "原唱音源"
+    logger(
+        f"播放预览: 从 {preview_start_seconds:.3f}s 开始，"
+        f"{moving_label}偏移 {format_offset(offset_seconds)}"
+    )
+    logger("预览混音: 字幕视频音轨 + 原唱音源")
+
+    ffmpeg_command = build_alignment_preview_command(
+        ffmpeg_path=ffmpeg_path,
+        video_path=video_path,
+        audio_path=audio_path,
+        offset_seconds=offset_seconds,
+        target_track=target_track,
+        preview_start_seconds=preview_start_seconds,
+    )
+    ffplay_command = [
+        ffplay_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nodisp",
+        "-autoexit",
+        "-i",
+        "pipe:0",
+    ]
+
+    ffmpeg_process = subprocess.Popen(
+        ffmpeg_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        **_build_subprocess_kwargs(),
+    )
+    assert ffmpeg_process.stdout is not None
+    try:
+        ffplay_process = subprocess.Popen(
+            ffplay_command,
+            stdin=ffmpeg_process.stdout,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **_build_subprocess_kwargs(),
+        )
+    except Exception:
+        ffmpeg_process.terminate()
+        raise
+    finally:
+        ffmpeg_process.stdout.close()
+
+    return AlignmentPreviewProcess(
+        ffmpeg_process=ffmpeg_process,
+        ffplay_process=ffplay_process,
+    )
 
 
 def build_aligned_video_command(
