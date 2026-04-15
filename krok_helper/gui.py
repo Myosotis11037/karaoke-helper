@@ -17,11 +17,16 @@ from krok_helper.config import (
 )
 from krok_helper.errors import ProcessingError
 from krok_helper.pipeline import (
+    DEFAULT_OFF_NAME_TEMPLATE,
+    DEFAULT_ON_NAME_TEMPLATE,
     OUTPUT_NAME_MODE_FIXED,
+    OUTPUT_NAME_MODE_TEMPLATE,
     OUTPUT_NAME_MODE_VIDEO_NAME,
     resolve_output_dir,
     run_pipeline,
+    validate_output_name_template,
 )
+from krok_helper.settings import AppSettings, load_app_settings, save_app_settings
 from krok_helper.windows import WindowsFileDropHandler
 
 
@@ -34,8 +39,8 @@ VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi"}
 AUDIO_EXTENSIONS = {".flac", ".wav", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
 FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 OUTPUT_NAME_MODE_LABELS = {
-    OUTPUT_NAME_MODE_FIXED: "固定文件名: on_vocal.mkv / off_vocal.mkv",
-    OUTPUT_NAME_MODE_VIDEO_NAME: "跟随视频文件名: 视频名_on.mkv / 视频名_off.mkv",
+    OUTPUT_NAME_MODE_FIXED: "默认命名: on_vocal.mkv / off_vocal.mkv",
+    OUTPUT_NAME_MODE_TEMPLATE: "自定义模板: 使用你自己的命名范式",
 }
 
 
@@ -180,16 +185,36 @@ class KaraokeHiresApp:
         self.output_dir_var = tk.StringVar(value="跟随字幕视频所在目录")
         self.ffmpeg_dir_var = tk.StringVar(value=FFMPEG_DIR_PLACEHOLDER)
         self.output_name_mode_var = tk.StringVar(value=OUTPUT_NAME_MODE_FIXED)
+        self.on_name_template_var = tk.StringVar(value=DEFAULT_ON_NAME_TEMPLATE)
+        self.off_name_template_var = tk.StringVar(value=DEFAULT_OFF_NAME_TEMPLATE)
         self.status_var = tk.StringVar(value="准备就绪")
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.worker: threading.Thread | None = None
         self.drop_handler: WindowsFileDropHandler | None = None
+        self.settings_window: tk.Toplevel | None = None
+        self.on_template_entry: ttk.Entry | None = None
+        self.off_template_entry: ttk.Entry | None = None
 
+        self._load_saved_settings()
         self._configure_styles()
         self._build_ui()
+        self._update_output_template_state()
         self.root.after(100, self._drain_log_queue)
         self._install_file_drop()
+
+    def _load_saved_settings(self) -> None:
+        settings = load_app_settings()
+        output_name_mode = settings.output_name_mode
+        if output_name_mode == OUTPUT_NAME_MODE_VIDEO_NAME:
+            output_name_mode = OUTPUT_NAME_MODE_TEMPLATE
+
+        if output_name_mode not in OUTPUT_NAME_MODE_LABELS:
+            output_name_mode = OUTPUT_NAME_MODE_FIXED
+
+        self.output_name_mode_var.set(output_name_mode)
+        self.on_name_template_var.set(settings.on_name_template or DEFAULT_ON_NAME_TEMPLATE)
+        self.off_name_template_var.set(settings.off_name_template or DEFAULT_OFF_NAME_TEMPLATE)
 
     def _configure_styles(self) -> None:
         default_font = ("Microsoft YaHei UI", 11)
@@ -209,7 +234,7 @@ class KaraokeHiresApp:
         shell = ttk.Frame(self.root, padding=20)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(5, weight=1)
+        shell.rowconfigure(4, weight=1)
 
         header = ttk.Frame(shell)
         header.grid(row=0, column=0, sticky="ew")
@@ -237,29 +262,8 @@ class KaraokeHiresApp:
             row=0, column=1, sticky="w", padx=(12, 0)
         )
 
-        naming_row = ttk.Frame(shell)
-        naming_row.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        naming_row.columnconfigure(1, weight=1)
-        ttk.Label(naming_row, text="输出命名", font=("Microsoft YaHei UI", 11, "bold")).grid(
-            row=0, column=0, sticky="nw"
-        )
-        naming_options = ttk.Frame(naming_row)
-        naming_options.grid(row=0, column=1, sticky="w", padx=(12, 0))
-        ttk.Radiobutton(
-            naming_options,
-            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_FIXED],
-            variable=self.output_name_mode_var,
-            value=OUTPUT_NAME_MODE_FIXED,
-        ).grid(row=0, column=0, sticky="w")
-        ttk.Radiobutton(
-            naming_options,
-            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_VIDEO_NAME],
-            variable=self.output_name_mode_var,
-            value=OUTPUT_NAME_MODE_VIDEO_NAME,
-        ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-
         ffmpeg_row = ttk.Frame(shell)
-        ffmpeg_row.grid(row=3, column=0, sticky="ew", pady=(0, 14))
+        ffmpeg_row.grid(row=2, column=0, sticky="ew", pady=(0, 14))
         ffmpeg_row.columnconfigure(1, weight=1)
         ttk.Label(ffmpeg_row, text="FFmpeg 目录", font=("Microsoft YaHei UI", 11, "bold")).grid(
             row=0, column=0, sticky="w"
@@ -270,14 +274,17 @@ class KaraokeHiresApp:
         ttk.Button(ffmpeg_row, text="选择目录", command=self._choose_ffmpeg_dir).grid(
             row=0, column=2, sticky="e", padx=(12, 0)
         )
+        ttk.Button(ffmpeg_row, text="设置", command=self._open_settings_window).grid(
+            row=0, column=3, sticky="e", padx=(12, 0)
+        )
         ttk.Label(
             ffmpeg_row,
-            text="提示: 默认优先使用系统 PATH 里的 ffmpeg；如果系统里没有，再回退到这里。",
+            text="提示: 输出命名等偏好设置可在“设置”窗口中调整并保存到本地。",
             font=("Microsoft YaHei UI", 9),
-        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(6, 0))
+        ).grid(row=1, column=1, columnspan=3, sticky="w", padx=(12, 0), pady=(6, 0))
 
         card_row = ttk.Frame(shell)
-        card_row.grid(row=4, column=0, sticky="nsew")
+        card_row.grid(row=3, column=0, sticky="nsew")
         for index in range(3):
             card_row.columnconfigure(index, weight=1, uniform="dropzones")
         card_row.rowconfigure(0, weight=1)
@@ -319,7 +326,7 @@ class KaraokeHiresApp:
             padx=14,
             pady=14,
         )
-        log_panel.grid(row=5, column=0, sticky="nsew", pady=(18, 0))
+        log_panel.grid(row=4, column=0, sticky="nsew", pady=(18, 0))
         log_panel.grid_columnconfigure(0, weight=1)
         log_panel.grid_rowconfigure(1, weight=1)
 
@@ -347,7 +354,7 @@ class KaraokeHiresApp:
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         controls = ttk.Frame(shell)
-        controls.grid(row=6, column=0, sticky="ew", pady=(18, 0))
+        controls.grid(row=5, column=0, sticky="ew", pady=(18, 0))
         controls.columnconfigure(2, weight=1)
 
         self.start_button = ttk.Button(controls, text="开始生成", command=self._start)
@@ -363,6 +370,110 @@ class KaraokeHiresApp:
         ttk.Label(controls, textvariable=self.status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
             row=0, column=3, sticky="e", padx=(12, 0)
         )
+
+    def _update_output_template_state(self) -> None:
+        state = "normal" if self.output_name_mode_var.get() == OUTPUT_NAME_MODE_TEMPLATE else "disabled"
+        if self.on_template_entry is not None:
+            self.on_template_entry.configure(state=state)
+        if self.off_template_entry is not None:
+            self.off_template_entry.configure(state=state)
+
+    def _open_settings_window(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.deiconify()
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title(f"{APP_TITLE} - 设置")
+        window.geometry("760x420")
+        window.minsize(680, 360)
+        window.configure(bg="#eef2f7")
+        window.transient(self.root)
+        window.protocol("WM_DELETE_WINDOW", self._close_settings_window)
+
+        shell = ttk.Frame(window, padding=20)
+        shell.pack(fill="both", expand=True)
+        shell.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            shell,
+            text="设置",
+            font=("Microsoft YaHei UI", 18, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        ttk.Label(
+            shell,
+            text="默认命名会始终保留。选择自定义模板后，可分别设置原唱和伴奏的文件名范式。",
+            font=("Microsoft YaHei UI", 10),
+        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+
+        naming_panel = ttk.Frame(shell, padding=(0, 18, 0, 0))
+        naming_panel.grid(row=2, column=0, sticky="ew")
+        naming_panel.columnconfigure(1, weight=1)
+
+        ttk.Label(naming_panel, text="输出命名", font=("Microsoft YaHei UI", 11, "bold")).grid(
+            row=0, column=0, sticky="nw"
+        )
+
+        naming_content = ttk.Frame(naming_panel)
+        naming_content.grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        naming_content.columnconfigure(1, weight=1)
+
+        ttk.Radiobutton(
+            naming_content,
+            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_FIXED],
+            variable=self.output_name_mode_var,
+            value=OUTPUT_NAME_MODE_FIXED,
+            command=self._update_output_template_state,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Radiobutton(
+            naming_content,
+            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_TEMPLATE],
+            variable=self.output_name_mode_var,
+            value=OUTPUT_NAME_MODE_TEMPLATE,
+            command=self._update_output_template_state,
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        ttk.Label(naming_content, text="原唱模板").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        self.on_template_entry = ttk.Entry(naming_content, textvariable=self.on_name_template_var)
+        self.on_template_entry.grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(12, 0))
+
+        ttk.Label(naming_content, text="伴奏模板").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        self.off_template_entry = ttk.Entry(naming_content, textvariable=self.off_name_template_var)
+        self.off_template_entry.grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+
+        ttk.Label(
+            naming_content,
+            text="支持占位符: {video_name}。不需要写 .mkv。示例: {video_name}_karaoke_on",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ttk.Label(
+            naming_content,
+            text="保存后，下次启动软件会自动加载这套命名设置。",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        controls = ttk.Frame(shell)
+        controls.grid(row=3, column=0, sticky="e", pady=(20, 0))
+
+        ttk.Button(controls, text="保存设置", command=self._save_output_name_settings).grid(
+            row=0, column=0, sticky="e"
+        )
+        ttk.Button(controls, text="关闭", command=self._close_settings_window).grid(
+            row=0, column=1, sticky="e", padx=(10, 0)
+        )
+
+        self.settings_window = window
+        self._update_output_template_state()
+
+    def _close_settings_window(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+        self.settings_window = None
+        self.on_template_entry = None
+        self.off_template_entry = None
 
     def _install_file_drop(self) -> None:
         self.drop_handler = WindowsFileDropHandler(self.root, self._handle_drop)
@@ -405,9 +516,52 @@ class KaraokeHiresApp:
         self.ffmpeg_dir_var.set(str(path))
 
     def set_output_name_mode(self, mode: str) -> None:
+        if mode == OUTPUT_NAME_MODE_VIDEO_NAME:
+            mode = OUTPUT_NAME_MODE_TEMPLATE
+            self.set_output_name_templates(DEFAULT_ON_NAME_TEMPLATE, DEFAULT_OFF_NAME_TEMPLATE)
         if mode not in OUTPUT_NAME_MODE_LABELS:
             raise ProcessingError(f"不支持的输出命名模式: {mode}")
         self.output_name_mode_var.set(mode)
+        self._update_output_template_state()
+
+    def set_output_name_templates(self, on_template: str, off_template: str) -> None:
+        self.on_name_template_var.set(on_template)
+        self.off_name_template_var.set(off_template)
+
+    def _resolve_output_name_mode(self) -> str:
+        output_name_mode = self.output_name_mode_var.get().strip()
+        if output_name_mode not in OUTPUT_NAME_MODE_LABELS:
+            raise ProcessingError("输出命名模式无效，请重新选择。")
+        return output_name_mode
+
+    def _resolve_output_name_templates(self, *, require_valid: bool) -> tuple[str, str]:
+        on_template = self.on_name_template_var.get().strip() or DEFAULT_ON_NAME_TEMPLATE
+        off_template = self.off_name_template_var.get().strip() or DEFAULT_OFF_NAME_TEMPLATE
+        if require_valid:
+            on_template = validate_output_name_template(on_template, "原唱")
+            off_template = validate_output_name_template(off_template, "伴奏")
+        return on_template, off_template
+
+    def _save_output_name_settings(self) -> None:
+        try:
+            output_name_mode = self._resolve_output_name_mode()
+            if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
+                on_template, off_template = self._resolve_output_name_templates(require_valid=True)
+            else:
+                on_template, off_template = self._resolve_output_name_templates(require_valid=False)
+
+            saved_path = save_app_settings(
+                AppSettings(
+                    output_name_mode=output_name_mode,
+                    on_name_template=on_template,
+                    off_name_template=off_template,
+                )
+            )
+        except ProcessingError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
+
+        messagebox.showinfo(APP_TITLE, f"命名设置已保存。\n{saved_path}")
 
     def _choose_video(self) -> None:
         path = filedialog.askopenfilename(
@@ -493,12 +647,6 @@ class KaraokeHiresApp:
             raise ProcessingError("所选 ffmpeg 目录无效，请重新选择。")
         return path
 
-    def _resolve_output_name_mode(self) -> str:
-        output_name_mode = self.output_name_mode_var.get().strip()
-        if output_name_mode not in OUTPUT_NAME_MODE_LABELS:
-            raise ProcessingError("输出命名模式无效，请重新选择。")
-        return output_name_mode
-
     def _open_output_dir(self) -> None:
         try:
             output_dir = self._resolve_output_dir()
@@ -509,7 +657,7 @@ class KaraokeHiresApp:
         output_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer", str(output_dir)])
 
-    def _validate_inputs(self) -> tuple[Path, Path, Path, Path, str]:
+    def _validate_inputs(self) -> tuple[Path, Path, Path, Path, str, str | None, str | None]:
         video_path = Path(self.video_var.get()).expanduser()
         on_vocal_path = Path(self.on_vocal_var.get()).expanduser()
         off_vocal_path = Path(self.off_vocal_var.get()).expanduser()
@@ -532,7 +680,20 @@ class KaraokeHiresApp:
         if on_vocal_path.resolve() == off_vocal_path.resolve():
             raise ProcessingError("原唱无损和伴奏无损不能是同一个文件。")
 
-        return video_path, on_vocal_path, off_vocal_path, output_dir, output_name_mode
+        if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
+            on_template, off_template = self._resolve_output_name_templates(require_valid=True)
+        else:
+            on_template, off_template = None, None
+
+        return (
+            video_path,
+            on_vocal_path,
+            off_vocal_path,
+            output_dir,
+            output_name_mode,
+            on_template,
+            off_template,
+        )
 
     def _start(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -540,9 +701,15 @@ class KaraokeHiresApp:
             return
 
         try:
-            video_path, on_vocal_path, off_vocal_path, output_dir, output_name_mode = (
-                self._validate_inputs()
-            )
+            (
+                video_path,
+                on_vocal_path,
+                off_vocal_path,
+                output_dir,
+                output_name_mode,
+                on_name_template,
+                off_name_template,
+            ) = self._validate_inputs()
         except ProcessingError as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
@@ -565,6 +732,8 @@ class KaraokeHiresApp:
                     output_dir=output_dir,
                     ffmpeg_dir=ffmpeg_dir,
                     output_name_mode=output_name_mode,
+                    on_name_template=on_name_template,
+                    off_name_template=off_name_template,
                     logger=self._append_log,
                 )
             except Exception as exc:  # noqa: BLE001

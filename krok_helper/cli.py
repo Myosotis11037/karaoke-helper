@@ -8,7 +8,15 @@ import tkinter as tk
 
 from krok_helper.errors import ProcessingError
 from krok_helper.gui import KaraokeHiresApp
-from krok_helper.pipeline import OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_VIDEO_NAME, run_pipeline
+from krok_helper.pipeline import (
+    DEFAULT_OFF_NAME_TEMPLATE,
+    DEFAULT_ON_NAME_TEMPLATE,
+    OUTPUT_NAME_MODE_FIXED,
+    OUTPUT_NAME_MODE_TEMPLATE,
+    OUTPUT_NAME_MODE_VIDEO_NAME,
+    run_pipeline,
+)
+from krok_helper.settings import load_app_settings
 from krok_helper.windows import apply_tk_scaling, enable_high_dpi_awareness
 
 
@@ -25,10 +33,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-name-mode",
-        choices=[OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_VIDEO_NAME],
-        default=OUTPUT_NAME_MODE_FIXED,
-        help="输出文件命名模式: fixed 或 video_name",
+        choices=[OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_TEMPLATE, OUTPUT_NAME_MODE_VIDEO_NAME],
+        help="输出文件命名模式，可选 fixed、template 或 video_name。",
     )
+    parser.add_argument("--on-name-template", help="原唱输出模板，支持 {video_name}，不需要写 .mkv")
+    parser.add_argument("--off-name-template", help="伴奏输出模板，支持 {video_name}，不需要写 .mkv")
     parser.add_argument("--gui", action="store_true", help="强制启动图形界面")
     return parser.parse_args()
 
@@ -37,6 +46,13 @@ def run_cli(args: argparse.Namespace) -> int:
     required = [args.video, args.on_audio, args.off_audio]
     if any(value is None for value in required):
         raise ProcessingError("命令行模式需要同时提供 --video、--on-audio 和 --off-audio。")
+
+    saved_settings = load_app_settings()
+    output_name_mode = args.output_name_mode or saved_settings.output_name_mode
+    on_name_template = args.on_name_template or saved_settings.on_name_template or DEFAULT_ON_NAME_TEMPLATE
+    off_name_template = (
+        args.off_name_template or saved_settings.off_name_template or DEFAULT_OFF_NAME_TEMPLATE
+    )
 
     def logger(message: str) -> None:
         print(message)
@@ -47,7 +63,9 @@ def run_cli(args: argparse.Namespace) -> int:
         off_vocal_path=args.off_audio.expanduser(),
         output_dir=args.output_dir.expanduser() if args.output_dir else None,
         ffmpeg_dir=args.ffmpeg_dir.expanduser() if args.ffmpeg_dir else None,
-        output_name_mode=args.output_name_mode,
+        output_name_mode=output_name_mode,
+        on_name_template=on_name_template,
+        off_name_template=off_name_template,
         logger=logger,
     )
     print("输出文件:")
@@ -69,7 +87,13 @@ def run_gui(args: argparse.Namespace) -> int:
         app.set_off_vocal_path(args.off_audio.expanduser())
     if args.ffmpeg_dir:
         app.set_ffmpeg_dir(args.ffmpeg_dir.expanduser())
-    app.set_output_name_mode(args.output_name_mode)
+    if args.output_name_mode:
+        app.set_output_name_mode(args.output_name_mode)
+    if args.on_name_template or args.off_name_template:
+        app.set_output_name_templates(
+            args.on_name_template or DEFAULT_ON_NAME_TEMPLATE,
+            args.off_name_template or DEFAULT_OFF_NAME_TEMPLATE,
+        )
     root.mainloop()
     return 0
 

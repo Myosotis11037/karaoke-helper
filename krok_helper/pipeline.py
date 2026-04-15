@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from string import Formatter
 from tempfile import TemporaryDirectory
 
 from krok_helper.config import DURATION_WARNING_SECONDS, MIN_HIRES_SAMPLE_RATE
@@ -12,7 +13,13 @@ from krok_helper.types import Logger
 
 DEFAULT_AUDIO_TITLE_TEMPLATE = "Hi-Res Audio (FLAC 32bit/{sample_rate}Hz)"
 OUTPUT_NAME_MODE_FIXED = "fixed"
+OUTPUT_NAME_MODE_TEMPLATE = "template"
 OUTPUT_NAME_MODE_VIDEO_NAME = "video_name"
+DEFAULT_ON_NAME_TEMPLATE = "{video_name}_on"
+DEFAULT_OFF_NAME_TEMPLATE = "{video_name}_off"
+SUPPORTED_TEMPLATE_FIELDS = {"video_name"}
+WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
+FORMATTER = Formatter()
 
 
 def format_duration(seconds: float) -> str:
@@ -60,15 +67,50 @@ def log_audio_format_mismatch(
     on_vocal_info: MediaInfo,
     off_vocal_info: MediaInfo,
 ) -> None:
-    on_suffix = on_vocal_info.path.suffix.lower()
-    off_suffix = off_vocal_info.path.suffix.lower()
-    if on_suffix == off_suffix:
+    if on_vocal_info.path.suffix.lower() == off_vocal_info.path.suffix.lower():
         return
 
-    logger(
-        "检测到原唱和伴奏的文件格式不一致，"
-        "将先分别标准化为临时 FLAC，再进行封装。"
-    )
+    logger("检测到原唱和伴奏的文件格式不一致，将先分别标准化为临时 FLAC，再进行封装。")
+
+
+def validate_output_name_template(template: str, label: str) -> str:
+    normalized = template.strip()
+    if normalized.lower().endswith(".mkv"):
+        normalized = normalized[:-4].rstrip()
+
+    if not normalized:
+        raise ProcessingError(f"{label} 输出模板不能为空。")
+
+    if "/" in normalized or "\\" in normalized:
+        raise ProcessingError(f"{label} 输出模板不能包含路径分隔符。")
+
+    for _, field_name, _, _ in FORMATTER.parse(normalized):
+        if field_name and field_name not in SUPPORTED_TEMPLATE_FIELDS:
+            raise ProcessingError(
+                f"{label} 输出模板包含不支持的占位符: {field_name}。"
+                "当前只支持 {video_name}。"
+            )
+
+    return normalized
+
+
+def render_output_stem(template: str, video_path: Path, label: str) -> str:
+    normalized = validate_output_name_template(template, label)
+    try:
+        rendered = normalized.format(video_name=video_path.stem).strip()
+    except Exception as exc:  # noqa: BLE001
+        raise ProcessingError(f"{label} 输出模板无法生成文件名: {exc}") from exc
+
+    rendered = rendered.rstrip(". ")
+    if not rendered:
+        raise ProcessingError(f"{label} 输出模板生成的文件名为空。")
+
+    invalid_chars = sorted({char for char in rendered if char in WINDOWS_INVALID_FILENAME_CHARS})
+    if invalid_chars:
+        joined = " ".join(invalid_chars)
+        raise ProcessingError(f"{label} 输出文件名包含非法字符: {joined}")
+
+    return rendered
 
 
 def build_audio_normalization_command(
@@ -151,9 +193,7 @@ def normalize_audio(
     label: str,
 ) -> int:
     target_sample_rate = max(audio_info.sample_rate or 0, MIN_HIRES_SAMPLE_RATE)
-    logger(
-        f"开始预处理 {label}: 统一为 Hi-Res FLAC 32bit / {target_sample_rate}Hz / 2ch"
-    )
+    logger(f"开始预处理 {label}: 统一为 Hi-Res FLAC 32bit / {target_sample_rate}Hz / 2ch")
 
     command = build_audio_normalization_command(
         ffmpeg_path=ffmpeg_path,
@@ -164,9 +204,7 @@ def normalize_audio(
     try:
         run_command(command, logger)
     except ProcessingError as exc:
-        raise ProcessingError(
-            f"{label} 预处理失败: {audio_info.path.name}\n{exc}"
-        ) from exc
+        raise ProcessingError(f"{label} 预处理失败: {audio_info.path.name}\n{exc}") from exc
 
     logger(f"{label} 预处理完成: {output_path.name}")
     return target_sample_rate
@@ -193,9 +231,7 @@ def mux_output(
     try:
         run_command(command, logger)
     except ProcessingError as exc:
-        raise ProcessingError(
-            f"{label} 封装失败: {output_path.name}\n{exc}"
-        ) from exc
+        raise ProcessingError(f"{label} 封装失败: {output_path.name}\n{exc}") from exc
 
     logger(f"生成完成: {output_path.name}")
     return output_path
@@ -236,13 +272,23 @@ def resolve_output_paths(
     video_path: Path,
     output_dir: Path,
     output_name_mode: str,
+    on_name_template: str | None = None,
+    off_name_template: str | None = None,
 ) -> tuple[Path, Path]:
     if output_name_mode == OUTPUT_NAME_MODE_FIXED:
         return output_dir / "on_vocal.mkv", output_dir / "off_vocal.mkv"
 
     if output_name_mode == OUTPUT_NAME_MODE_VIDEO_NAME:
-        base_name = video_path.stem
-        return output_dir / f"{base_name}_on.mkv", output_dir / f"{base_name}_off.mkv"
+        on_name_template = DEFAULT_ON_NAME_TEMPLATE
+        off_name_template = DEFAULT_OFF_NAME_TEMPLATE
+        output_name_mode = OUTPUT_NAME_MODE_TEMPLATE
+
+    if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
+        on_template = on_name_template or DEFAULT_ON_NAME_TEMPLATE
+        off_template = off_name_template or DEFAULT_OFF_NAME_TEMPLATE
+        on_stem = render_output_stem(on_template, video_path, "原唱")
+        off_stem = render_output_stem(off_template, video_path, "伴奏")
+        return output_dir / f"{on_stem}.mkv", output_dir / f"{off_stem}.mkv"
 
     raise ProcessingError(f"不支持的输出命名模式: {output_name_mode}")
 
@@ -254,6 +300,8 @@ def run_pipeline(
     output_dir: Path | None,
     ffmpeg_dir: Path | None,
     output_name_mode: str,
+    on_name_template: str | None,
+    off_name_template: str | None,
     logger: Logger,
 ) -> list[Path]:
     ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
@@ -285,8 +333,15 @@ def run_pipeline(
 
     output_dir = resolve_output_dir(video_path, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    on_output, off_output = resolve_output_paths(video_path, output_dir, output_name_mode)
+    on_output, off_output = resolve_output_paths(
+        video_path,
+        output_dir,
+        output_name_mode,
+        on_name_template=on_name_template,
+        off_name_template=off_name_template,
+    )
     logger(f"输出命名模式: {output_name_mode}")
+    logger(f"目标文件名: {on_output.name} / {off_output.name}")
 
     with TemporaryDirectory(prefix="krok-helper-") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
