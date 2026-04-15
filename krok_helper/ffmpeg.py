@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,6 +9,18 @@ from pathlib import Path
 from krok_helper.errors import ProcessingError
 from krok_helper.models import MediaInfo
 from krok_helper.types import Logger
+
+
+def _build_subprocess_kwargs() -> dict:
+    if os.name != "nt":
+        return {}
+
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {
+        "creationflags": subprocess.CREATE_NO_WINDOW,
+        "startupinfo": startupinfo,
+    }
 
 
 def _find_tool_in_dir(directory: Path, tool_name: str) -> str | None:
@@ -69,6 +82,7 @@ def probe_media(ffprobe_path: str, media_path: Path) -> MediaInfo:
         encoding="utf-8",
         errors="replace",
         check=False,
+        **_build_subprocess_kwargs(),
     )
     if result.returncode != 0:
         raise ProcessingError(f"无法读取媒体信息: {media_path.name}\n{result.stderr.strip()}")
@@ -114,6 +128,7 @@ def run_command(command: list[str], logger: Logger) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **_build_subprocess_kwargs(),
     )
 
     assert process.stdout is not None
