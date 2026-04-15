@@ -6,15 +6,16 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
+from string import Formatter
 from tkinter import filedialog, messagebox, ttk
 
 from krok_helper.audio_alignment import (
     AlignmentPreviewProcess,
+    DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE,
+    DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE,
     ENCODE_MODE_HARDWARE,
     ENCODE_MODE_SOFTWARE,
     WaveformData,
-    default_aligned_audio_path,
-    default_aligned_video_path,
     export_aligned_audio,
     export_aligned_video,
     extract_waveform,
@@ -35,6 +36,7 @@ from krok_helper.pipeline import (
     OUTPUT_NAME_MODE_FIXED,
     OUTPUT_NAME_MODE_TEMPLATE,
     OUTPUT_NAME_MODE_VIDEO_NAME,
+    WINDOWS_INVALID_FILENAME_CHARS,
     resolve_output_dir,
     run_pipeline,
     validate_output_name_template,
@@ -53,6 +55,9 @@ AUDIO_EXTENSIONS = {".flac", ".wav", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
 FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 ALIGN_TARGET_VIDEO = "video"
 ALIGN_TARGET_AUDIO = "audio"
+SETTINGS_CONTEXT_ALIGN = "align"
+SETTINGS_CONTEXT_HIRES = "hires"
+ALIGNMENT_TEMPLATE_FORMATTER = Formatter()
 OUTPUT_NAME_MODE_LABELS = {
     OUTPUT_NAME_MODE_FIXED: "默认命名: on_vocal.mkv / off_vocal.mkv",
     OUTPUT_NAME_MODE_TEMPLATE: "自定义模板: 使用你自己的命名范式",
@@ -598,6 +603,8 @@ class KaraokeHiresApp:
         self.output_name_mode_var = tk.StringVar(value=OUTPUT_NAME_MODE_FIXED)
         self.on_name_template_var = tk.StringVar(value=DEFAULT_ON_NAME_TEMPLATE)
         self.off_name_template_var = tk.StringVar(value=DEFAULT_OFF_NAME_TEMPLATE)
+        self.align_video_name_template_var = tk.StringVar(value=DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE)
+        self.align_audio_name_template_var = tk.StringVar(value=DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE)
         self.status_var = tk.StringVar(value="准备就绪")
         self.align_video_var = tk.StringVar()
         self.align_audio_var = tk.StringVar()
@@ -619,6 +626,7 @@ class KaraokeHiresApp:
         self.align_preview_start_seconds = 0.0
         self.drop_handler: WindowsFileDropHandler | None = None
         self.settings_window: tk.Toplevel | None = None
+        self.settings_context = SETTINGS_CONTEXT_HIRES
         self.settings_canvas: tk.Canvas | None = None
         self.settings_scrollbar: ttk.Scrollbar | None = None
         self.settings_content_frame: ttk.Frame | None = None
@@ -627,6 +635,8 @@ class KaraokeHiresApp:
         self.ffmpeg_display_label: tk.Label | None = None
         self.on_template_entry: ttk.Entry | None = None
         self.off_template_entry: ttk.Entry | None = None
+        self.align_video_template_entry: ttk.Entry | None = None
+        self.align_audio_template_entry: ttk.Entry | None = None
         self.module_frames: dict[str, ttk.Frame] = {}
         self.module_buttons: dict[str, tk.Button] = {}
         self.active_module = ""
@@ -703,6 +713,12 @@ class KaraokeHiresApp:
         self.output_name_mode_var.set(output_name_mode)
         self.on_name_template_var.set(settings.on_name_template or DEFAULT_ON_NAME_TEMPLATE)
         self.off_name_template_var.set(settings.off_name_template or DEFAULT_OFF_NAME_TEMPLATE)
+        self.align_video_name_template_var.set(
+            settings.align_video_name_template or DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
+        )
+        self.align_audio_name_template_var.set(
+            settings.align_audio_name_template or DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
+        )
         if settings.ffmpeg_dir.strip():
             self.ffmpeg_dir_var.set(settings.ffmpeg_dir.strip())
 
@@ -835,7 +851,11 @@ class KaraokeHiresApp:
         ttk.Label(ffmpeg_row, textvariable=self.ffmpeg_dir_var, font=("Yu Gothic UI", 11)).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
-        ttk.Button(ffmpeg_row, text="设置", command=self._open_settings_window).grid(
+        ttk.Button(
+            ffmpeg_row,
+            text="设置",
+            command=lambda: self._open_settings_window(SETTINGS_CONTEXT_HIRES),
+        ).grid(
             row=0, column=2, sticky="e", padx=(12, 0)
         )
         ttk.Label(
@@ -952,7 +972,11 @@ class KaraokeHiresApp:
             text="把字幕视频和原唱音源放进来，选择要修正的对象，手动对齐波形后导出对应文件。",
             font=("Microsoft YaHei UI", 11),
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Button(header, text="设置 FFmpeg", command=self._open_settings_window).grid(
+        ttk.Button(
+            header,
+            text="对齐设置",
+            command=lambda: self._open_settings_window(SETTINGS_CONTEXT_ALIGN),
+        ).grid(
             row=0, column=1, sticky="e"
         )
 
@@ -1231,16 +1255,26 @@ class KaraokeHiresApp:
         self.settings_window.geometry(self._build_centered_geometry(target_width, target_height))
         self._sync_settings_scrollbar()
 
-    def _open_settings_window(self) -> None:
-        if self.settings_window is not None and self.settings_window.winfo_exists():
-            self.settings_window.deiconify()
-            self.settings_window.lift()
-            self.settings_window.focus_force()
-            return
+    def _open_settings_window(self, context: str | None = None) -> None:
+        context = context or (
+            SETTINGS_CONTEXT_ALIGN if self.active_module == SETTINGS_CONTEXT_ALIGN else SETTINGS_CONTEXT_HIRES
+        )
+        if context not in {SETTINGS_CONTEXT_ALIGN, SETTINGS_CONTEXT_HIRES}:
+            context = SETTINGS_CONTEXT_HIRES
 
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            if self.settings_context == context:
+                self.settings_window.deiconify()
+                self.settings_window.lift()
+                self.settings_window.focus_force()
+                return
+            self._close_settings_window()
+
+        self.settings_context = context
         self.settings_status_var.set("")
         window = tk.Toplevel(self.root)
-        window.title(f"{APP_TITLE} - 设置")
+        title = "波形对齐设置" if context == SETTINGS_CONTEXT_ALIGN else "Hi-Res 生成设置"
+        window.title(f"{APP_TITLE} - {title}")
         window.minsize(700, 300)
         window.configure(bg="#eef2f7")
         window.transient(self.root)
@@ -1275,7 +1309,7 @@ class KaraokeHiresApp:
 
         ttk.Label(
             shell,
-            text="设置",
+            text=title,
             font=("Microsoft YaHei UI", 18, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
@@ -1326,7 +1360,8 @@ class KaraokeHiresApp:
         naming_panel.grid(row=3, column=0, sticky="ew")
         naming_panel.columnconfigure(1, weight=1)
 
-        ttk.Label(naming_panel, text="输出命名", font=("Microsoft YaHei UI", 11, "bold")).grid(
+        naming_title = "对齐导出命名" if context == SETTINGS_CONTEXT_ALIGN else "输出命名"
+        ttk.Label(naming_panel, text=naming_title, font=("Microsoft YaHei UI", 11, "bold")).grid(
             row=0, column=0, sticky="nw"
         )
 
@@ -1334,39 +1369,68 @@ class KaraokeHiresApp:
         naming_content.grid(row=0, column=1, sticky="ew", padx=(12, 0))
         naming_content.columnconfigure(1, weight=1)
 
-        ttk.Radiobutton(
-            naming_content,
-            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_FIXED],
-            variable=self.output_name_mode_var,
-            value=OUTPUT_NAME_MODE_FIXED,
-            command=self._update_output_template_state,
-        ).grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Radiobutton(
-            naming_content,
-            text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_TEMPLATE],
-            variable=self.output_name_mode_var,
-            value=OUTPUT_NAME_MODE_TEMPLATE,
-            command=self._update_output_template_state,
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        if context == SETTINGS_CONTEXT_ALIGN:
+            ttk.Label(naming_content, text="对齐后视频模板").grid(row=0, column=0, sticky="w")
+            self.align_video_template_entry = ttk.Entry(
+                naming_content,
+                textvariable=self.align_video_name_template_var,
+            )
+            self.align_video_template_entry.grid(row=0, column=1, sticky="ew", padx=(12, 0))
 
-        ttk.Label(naming_content, text="原唱模板").grid(row=2, column=0, sticky="w", pady=(12, 0))
-        self.on_template_entry = ttk.Entry(naming_content, textvariable=self.on_name_template_var)
-        self.on_template_entry.grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(12, 0))
+            ttk.Label(naming_content, text="对齐后音频模板").grid(row=1, column=0, sticky="w", pady=(8, 0))
+            self.align_audio_template_entry = ttk.Entry(
+                naming_content,
+                textvariable=self.align_audio_name_template_var,
+            )
+            self.align_audio_template_entry.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
 
-        ttk.Label(naming_content, text="伴奏模板").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        self.off_template_entry = ttk.Entry(naming_content, textvariable=self.off_name_template_var)
-        self.off_template_entry.grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+            ttk.Label(
+                naming_content,
+                text=(
+                    "默认: 对齐后视频 {video_name}_aligned.mkv；"
+                    "对齐后音频 {audio_name}_aligned.wav。"
+                ),
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            ttk.Label(
+                naming_content,
+                text="视频模板支持 {video_name}；音频模板支持 {audio_name} 和 {video_name}。不需要写扩展名。",
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        else:
+            ttk.Radiobutton(
+                naming_content,
+                text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_FIXED],
+                variable=self.output_name_mode_var,
+                value=OUTPUT_NAME_MODE_FIXED,
+                command=self._update_output_template_state,
+            ).grid(row=0, column=0, columnspan=2, sticky="w")
+            ttk.Radiobutton(
+                naming_content,
+                text=OUTPUT_NAME_MODE_LABELS[OUTPUT_NAME_MODE_TEMPLATE],
+                variable=self.output_name_mode_var,
+                value=OUTPUT_NAME_MODE_TEMPLATE,
+                command=self._update_output_template_state,
+            ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
-        ttk.Label(
-            naming_content,
-            text="支持占位符: {video_name}。不需要写 .mkv。示例: {video_name}_karaoke_on",
-            font=("Microsoft YaHei UI", 9),
-        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        ttk.Label(
-            naming_content,
-            text="保存后，下次启动软件会自动加载这套命名设置。",
-            font=("Microsoft YaHei UI", 9),
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            ttk.Label(naming_content, text="原唱模板").grid(row=2, column=0, sticky="w", pady=(12, 0))
+            self.on_template_entry = ttk.Entry(naming_content, textvariable=self.on_name_template_var)
+            self.on_template_entry.grid(row=2, column=1, sticky="ew", padx=(12, 0), pady=(12, 0))
+
+            ttk.Label(naming_content, text="伴奏模板").grid(row=3, column=0, sticky="w", pady=(8, 0))
+            self.off_template_entry = ttk.Entry(naming_content, textvariable=self.off_name_template_var)
+            self.off_template_entry.grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(8, 0))
+
+            ttk.Label(
+                naming_content,
+                text="支持占位符: {video_name}。不需要写 .mkv。示例: {video_name}_karaoke_on",
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+            ttk.Label(
+                naming_content,
+                text="默认: 原唱 on_vocal.mkv；伴奏 off_vocal.mkv。",
+                font=("Microsoft YaHei UI", 9),
+            ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         ttk.Label(
             shell,
@@ -1405,6 +1469,8 @@ class KaraokeHiresApp:
         self.ffmpeg_display_label = None
         self.on_template_entry = None
         self.off_template_entry = None
+        self.align_video_template_entry = None
+        self.align_audio_template_entry = None
 
     def _install_file_drop(self) -> None:
         self.drop_handler = WindowsFileDropHandler(self.root, self._handle_drop)
@@ -1500,13 +1566,87 @@ class KaraokeHiresApp:
             off_template = validate_output_name_template(off_template, "伴奏")
         return on_template, off_template
 
+    def _resolve_alignment_name_templates(self, *, require_valid: bool) -> tuple[str, str]:
+        video_template = self.align_video_name_template_var.get().strip() or DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
+        audio_template = self.align_audio_name_template_var.get().strip() or DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
+        if require_valid:
+            video_template = self._validate_alignment_name_template(
+                video_template,
+                "对齐后视频",
+                allowed_fields={"video_name"},
+                extension=".mkv",
+            )
+            audio_template = self._validate_alignment_name_template(
+                audio_template,
+                "对齐后音频",
+                allowed_fields={"audio_name", "video_name"},
+                extension=".wav",
+            )
+        return video_template, audio_template
+
+    def _validate_alignment_name_template(
+        self,
+        template: str,
+        label: str,
+        *,
+        allowed_fields: set[str],
+        extension: str,
+    ) -> str:
+        normalized = template.strip()
+        if normalized.lower().endswith(extension):
+            normalized = normalized[: -len(extension)].rstrip()
+
+        if not normalized:
+            raise ProcessingError(f"{label}模板不能为空。")
+
+        if "/" in normalized or "\\" in normalized:
+            raise ProcessingError(f"{label}模板不能包含路径分隔符。")
+
+        for _, field_name, _, _ in ALIGNMENT_TEMPLATE_FORMATTER.parse(normalized):
+            if field_name and field_name not in allowed_fields:
+                supported = "、".join(f"{{{name}}}" for name in sorted(allowed_fields))
+                raise ProcessingError(f"{label}模板包含不支持的占位符: {field_name}。当前支持: {supported}。")
+
+        return normalized
+
+    def _render_alignment_output_path(
+        self,
+        *,
+        video_path: Path,
+        audio_path: Path,
+        is_video_target: bool,
+    ) -> Path:
+        video_template, audio_template = self._resolve_alignment_name_templates(require_valid=True)
+        template = video_template if is_video_target else audio_template
+        label = "对齐后视频" if is_video_target else "对齐后音频"
+        extension = ".mkv" if is_video_target else ".wav"
+        try:
+            stem = template.format(video_name=video_path.stem, audio_name=audio_path.stem).strip()
+        except Exception as exc:  # noqa: BLE001
+            raise ProcessingError(f"{label}模板无法生成文件名: {exc}") from exc
+
+        stem = stem.rstrip(". ")
+        if not stem:
+            raise ProcessingError(f"{label}模板生成的文件名为空。")
+
+        invalid_chars = sorted({char for char in stem if char in WINDOWS_INVALID_FILENAME_CHARS})
+        if invalid_chars:
+            joined = " ".join(invalid_chars)
+            raise ProcessingError(f"{label}文件名包含非法字符: {joined}")
+
+        source_path = video_path if is_video_target else audio_path
+        return source_path.with_name(f"{stem}{extension}")
+
     def _save_settings(self) -> None:
         try:
             output_name_mode = self._resolve_output_name_mode()
-            if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
+            if self.settings_context == SETTINGS_CONTEXT_HIRES and output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
                 on_template, off_template = self._resolve_output_name_templates(require_valid=True)
             else:
                 on_template, off_template = self._resolve_output_name_templates(require_valid=False)
+            align_video_template, align_audio_template = self._resolve_alignment_name_templates(
+                require_valid=self.settings_context == SETTINGS_CONTEXT_ALIGN
+            )
             resolved_ffmpeg_dir = self._resolve_ffmpeg_dir()
             ffmpeg_dir = str(resolved_ffmpeg_dir) if resolved_ffmpeg_dir else ""
 
@@ -1515,6 +1655,8 @@ class KaraokeHiresApp:
                     output_name_mode=output_name_mode,
                     on_name_template=on_template,
                     off_name_template=off_template,
+                    align_video_name_template=align_video_template,
+                    align_audio_name_template=align_audio_template,
                     ffmpeg_dir=ffmpeg_dir,
                 )
             )
@@ -1909,11 +2051,15 @@ class KaraokeHiresApp:
         self._stop_alignment_preview(log_message=False)
         is_video_target = self._is_align_video_target()
         output_kind = "对齐视频" if is_video_target else "对齐音频"
-        initial_path = (
-            default_aligned_video_path(video_path)
-            if is_video_target
-            else default_aligned_audio_path(audio_path)
-        )
+        try:
+            initial_path = self._render_alignment_output_path(
+                video_path=video_path,
+                audio_path=audio_path,
+                is_video_target=is_video_target,
+            )
+        except ProcessingError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
         output_path_raw = filedialog.asksaveasfilename(
             title="导出对齐视频" if is_video_target else "导出对齐音频",
             initialdir=str(initial_path.parent),

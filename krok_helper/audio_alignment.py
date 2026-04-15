@@ -17,6 +17,8 @@ from krok_helper.types import Logger
 WAVEFORM_SAMPLE_RATE = 8_000
 WAVEFORM_PEAKS_PER_SECOND = 80
 ALIGNED_VIDEO_EXTENSION = ".mkv"
+DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE = "{video_name}_aligned"
+DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE = "{audio_name}_aligned"
 ENCODE_MODE_SOFTWARE = "software"
 ENCODE_MODE_HARDWARE = "hardware"
 COMMON_VIDEO_ENCODERS = {
@@ -76,11 +78,13 @@ def format_offset(seconds: float) -> str:
 
 
 def default_aligned_video_path(video_path: Path) -> Path:
-    return video_path.with_name(f"{video_path.stem}_aligned{ALIGNED_VIDEO_EXTENSION}")
+    stem = DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE.format(video_name=video_path.stem)
+    return video_path.with_name(f"{stem}{ALIGNED_VIDEO_EXTENSION}")
 
 
 def default_aligned_audio_path(audio_path: Path) -> Path:
-    return audio_path.with_name(f"{audio_path.stem}_aligned.wav")
+    stem = DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE.format(audio_name=audio_path.stem)
+    return audio_path.with_name(f"{stem}.wav")
 
 
 def _build_waveform_command(ffmpeg_path: str, media_path: Path) -> list[str]:

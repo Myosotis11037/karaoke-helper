@@ -6,6 +6,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from krok_helper.config import APP_NAME
+from krok_helper.audio_alignment import (
+    DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE,
+    DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE,
+)
 from krok_helper.pipeline import DEFAULT_OFF_NAME_TEMPLATE, DEFAULT_ON_NAME_TEMPLATE, OUTPUT_NAME_MODE_FIXED
 
 
@@ -17,6 +21,8 @@ class AppSettings:
     output_name_mode: str = OUTPUT_NAME_MODE_FIXED
     on_name_template: str = DEFAULT_ON_NAME_TEMPLATE
     off_name_template: str = DEFAULT_OFF_NAME_TEMPLATE
+    align_video_name_template: str = DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
+    align_audio_name_template: str = DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
     ffmpeg_dir: str = ""
 
 
@@ -49,6 +55,12 @@ def load_app_settings() -> AppSettings:
         output_name_mode=str(payload.get("output_name_mode", OUTPUT_NAME_MODE_FIXED)),
         on_name_template=str(payload.get("on_name_template", DEFAULT_ON_NAME_TEMPLATE)),
         off_name_template=str(payload.get("off_name_template", DEFAULT_OFF_NAME_TEMPLATE)),
+        align_video_name_template=str(
+            payload.get("align_video_name_template", DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE)
+        ),
+        align_audio_name_template=str(
+            payload.get("align_audio_name_template", DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE)
+        ),
         ffmpeg_dir=str(payload.get("ffmpeg_dir", "")),
     )
 
