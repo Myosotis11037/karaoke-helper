@@ -53,6 +53,9 @@ def run_cli(args: argparse.Namespace) -> int:
     off_name_template = (
         args.off_name_template or saved_settings.off_name_template or DEFAULT_OFF_NAME_TEMPLATE
     )
+    ffmpeg_dir = args.ffmpeg_dir.expanduser() if args.ffmpeg_dir else None
+    if ffmpeg_dir is None and saved_settings.ffmpeg_dir.strip():
+        ffmpeg_dir = Path(saved_settings.ffmpeg_dir).expanduser()
 
     def logger(message: str) -> None:
         print(message)
@@ -62,7 +65,7 @@ def run_cli(args: argparse.Namespace) -> int:
         on_vocal_path=args.on_audio.expanduser(),
         off_vocal_path=args.off_audio.expanduser(),
         output_dir=args.output_dir.expanduser() if args.output_dir else None,
-        ffmpeg_dir=args.ffmpeg_dir.expanduser() if args.ffmpeg_dir else None,
+        ffmpeg_dir=ffmpeg_dir,
         output_name_mode=output_name_mode,
         on_name_template=on_name_template,
         off_name_template=off_name_template,

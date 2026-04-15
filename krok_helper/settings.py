@@ -17,6 +17,7 @@ class AppSettings:
     output_name_mode: str = OUTPUT_NAME_MODE_FIXED
     on_name_template: str = DEFAULT_ON_NAME_TEMPLATE
     off_name_template: str = DEFAULT_OFF_NAME_TEMPLATE
+    ffmpeg_dir: str = ""
 
 
 def get_settings_path() -> Path:
@@ -48,6 +49,7 @@ def load_app_settings() -> AppSettings:
         output_name_mode=str(payload.get("output_name_mode", OUTPUT_NAME_MODE_FIXED)),
         on_name_template=str(payload.get("on_name_template", DEFAULT_ON_NAME_TEMPLATE)),
         off_name_template=str(payload.get("off_name_template", DEFAULT_OFF_NAME_TEMPLATE)),
+        ffmpeg_dir=str(payload.get("ffmpeg_dir", "")),
     )
 
 

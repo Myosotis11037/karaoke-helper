@@ -175,7 +175,7 @@ class KaraokeHiresApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry(f"{WINDOW_WIDTH}x{WINDOW_HEIGHT}")
+        self.root.geometry(self._build_centered_geometry(WINDOW_WIDTH, WINDOW_HEIGHT))
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
         self.root.configure(bg="#eef2f7")
 
@@ -193,6 +193,12 @@ class KaraokeHiresApp:
         self.worker: threading.Thread | None = None
         self.drop_handler: WindowsFileDropHandler | None = None
         self.settings_window: tk.Toplevel | None = None
+        self.settings_canvas: tk.Canvas | None = None
+        self.settings_scrollbar: ttk.Scrollbar | None = None
+        self.settings_content_frame: ttk.Frame | None = None
+        self.settings_canvas_window_id: int | None = None
+        self.settings_status_var = tk.StringVar(value="")
+        self.ffmpeg_display_label: tk.Label | None = None
         self.on_template_entry: ttk.Entry | None = None
         self.off_template_entry: ttk.Entry | None = None
 
@@ -202,6 +208,13 @@ class KaraokeHiresApp:
         self._update_output_template_state()
         self.root.after(100, self._drain_log_queue)
         self._install_file_drop()
+
+    def _build_centered_geometry(self, width: int, height: int) -> str:
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        x = max((screen_width - width) // 2, 0)
+        y = max((screen_height - height) // 2, 0)
+        return f"{width}x{height}+{x}+{y}"
 
     def _load_saved_settings(self) -> None:
         settings = load_app_settings()
@@ -215,6 +228,8 @@ class KaraokeHiresApp:
         self.output_name_mode_var.set(output_name_mode)
         self.on_name_template_var.set(settings.on_name_template or DEFAULT_ON_NAME_TEMPLATE)
         self.off_name_template_var.set(settings.off_name_template or DEFAULT_OFF_NAME_TEMPLATE)
+        if settings.ffmpeg_dir.strip():
+            self.ffmpeg_dir_var.set(settings.ffmpeg_dir.strip())
 
     def _configure_styles(self) -> None:
         default_font = ("Microsoft YaHei UI", 11)
@@ -271,17 +286,14 @@ class KaraokeHiresApp:
         ttk.Label(ffmpeg_row, textvariable=self.ffmpeg_dir_var, font=("Yu Gothic UI", 11)).grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
-        ttk.Button(ffmpeg_row, text="选择目录", command=self._choose_ffmpeg_dir).grid(
-            row=0, column=2, sticky="e", padx=(12, 0)
-        )
         ttk.Button(ffmpeg_row, text="设置", command=self._open_settings_window).grid(
-            row=0, column=3, sticky="e", padx=(12, 0)
+            row=0, column=2, sticky="e", padx=(12, 0)
         )
         ttk.Label(
             ffmpeg_row,
-            text="提示: 输出命名等偏好设置可在“设置”窗口中调整并保存到本地。",
+            text="提示: FFmpeg 目录、输出命名等偏好设置可在“设置”窗口中调整并保存到本地。",
             font=("Microsoft YaHei UI", 9),
-        ).grid(row=1, column=1, columnspan=3, sticky="w", padx=(12, 0), pady=(6, 0))
+        ).grid(row=1, column=1, columnspan=2, sticky="w", padx=(12, 0), pady=(6, 0))
 
         card_row = ttk.Frame(shell)
         card_row.grid(row=3, column=0, sticky="nsew")
@@ -378,6 +390,73 @@ class KaraokeHiresApp:
         if self.off_template_entry is not None:
             self.off_template_entry.configure(state=state)
 
+    def _refresh_ffmpeg_display(self) -> None:
+        if self.ffmpeg_display_label is None:
+            return
+
+        current = self.ffmpeg_dir_var.get().strip()
+        is_placeholder = not current or current == FFMPEG_DIR_PLACEHOLDER
+        self.ffmpeg_display_label.configure(
+            fg="#6b7280" if is_placeholder else "#111827",
+        )
+
+    def _sync_settings_scrollbar(self) -> None:
+        if (
+            self.settings_canvas is None
+            or self.settings_scrollbar is None
+            or self.settings_content_frame is None
+        ):
+            return
+
+        self.settings_canvas.configure(scrollregion=self.settings_canvas.bbox("all"))
+        needs_scrollbar = self.settings_content_frame.winfo_reqheight() > self.settings_canvas.winfo_height()
+        if needs_scrollbar:
+            self.settings_scrollbar.grid()
+        else:
+            self.settings_scrollbar.grid_remove()
+            self.settings_canvas.yview_moveto(0)
+
+    def _handle_settings_content_configure(self, _event=None) -> None:
+        self._sync_settings_scrollbar()
+
+    def _handle_settings_canvas_configure(self, event) -> None:
+        if self.settings_canvas is not None and self.settings_canvas_window_id is not None:
+            self.settings_canvas.itemconfigure(self.settings_canvas_window_id, width=event.width)
+        self._sync_settings_scrollbar()
+
+    def _handle_settings_mousewheel(self, event) -> None:
+        if self.settings_canvas is None or self.settings_scrollbar is None:
+            return
+
+        if not self.settings_scrollbar.winfo_ismapped():
+            return
+
+        delta = 0
+        if getattr(event, "delta", 0):
+            delta = -1 * int(event.delta / 120)
+        elif getattr(event, "num", None) == 4:
+            delta = -1
+        elif getattr(event, "num", None) == 5:
+            delta = 1
+
+        if delta:
+            self.settings_canvas.yview_scroll(delta, "units")
+
+    def _autosize_settings_window(self) -> None:
+        if self.settings_window is None or self.settings_content_frame is None:
+            return
+
+        self.settings_window.update_idletasks()
+        screen_width = self.settings_window.winfo_screenwidth()
+        screen_height = self.settings_window.winfo_screenheight()
+        target_width = min(max(self.settings_content_frame.winfo_reqwidth() + 60, 820), screen_width - 120)
+        target_height = min(
+            max(self.settings_content_frame.winfo_reqheight() + 40, 360),
+            screen_height - 120,
+        )
+        self.settings_window.geometry(self._build_centered_geometry(target_width, target_height))
+        self._sync_settings_scrollbar()
+
     def _open_settings_window(self) -> None:
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.deiconify()
@@ -385,17 +464,40 @@ class KaraokeHiresApp:
             self.settings_window.focus_force()
             return
 
+        self.settings_status_var.set("")
         window = tk.Toplevel(self.root)
         window.title(f"{APP_TITLE} - 设置")
-        window.geometry("760x420")
-        window.minsize(680, 360)
+        window.minsize(700, 300)
         window.configure(bg="#eef2f7")
         window.transient(self.root)
         window.protocol("WM_DELETE_WINDOW", self._close_settings_window)
+        window.bind("<MouseWheel>", self._handle_settings_mousewheel, add="+")
+        window.bind("<Button-4>", self._handle_settings_mousewheel, add="+")
+        window.bind("<Button-5>", self._handle_settings_mousewheel, add="+")
 
-        shell = ttk.Frame(window, padding=20)
-        shell.pack(fill="both", expand=True)
+        outer = ttk.Frame(window)
+        outer.pack(fill="both", expand=True)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            outer,
+            bg="#eef2f7",
+            highlightthickness=0,
+            bd=0,
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.grid_remove()
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        shell = ttk.Frame(canvas, padding=20)
         shell.columnconfigure(0, weight=1)
+        canvas_window_id = canvas.create_window((0, 0), window=shell, anchor="nw")
+        shell.bind("<Configure>", self._handle_settings_content_configure, add="+")
+        canvas.bind("<Configure>", self._handle_settings_canvas_configure, add="+")
 
         ttk.Label(
             shell,
@@ -403,14 +505,51 @@ class KaraokeHiresApp:
             font=("Microsoft YaHei UI", 18, "bold"),
         ).grid(row=0, column=0, sticky="w")
 
+        ffmpeg_panel = ttk.Frame(shell, padding=(0, 18, 0, 0))
+        ffmpeg_panel.grid(row=2, column=0, sticky="ew")
+        ffmpeg_panel.columnconfigure(1, weight=1)
+
+        ttk.Label(ffmpeg_panel, text="FFmpeg 目录", font=("Microsoft YaHei UI", 11, "bold")).grid(
+            row=0, column=0, sticky="nw"
+        )
+        ffmpeg_content = ttk.Frame(ffmpeg_panel)
+        ffmpeg_content.grid(row=0, column=1, sticky="ew", padx=(12, 0))
+        ffmpeg_content.columnconfigure(0, weight=1)
+
+        self.ffmpeg_display_label = tk.Label(
+            ffmpeg_content,
+            textvariable=self.ffmpeg_dir_var,
+            bg="#ffffff",
+            fg="#6b7280",
+            bd=1,
+            relief="solid",
+            padx=10,
+            pady=8,
+            anchor="w",
+            justify="left",
+            cursor="hand2",
+        )
+        self.ffmpeg_display_label.grid(row=0, column=0, sticky="ew")
+        self.ffmpeg_display_label.bind("<Button-1>", lambda _event: self._choose_ffmpeg_dir(), add="+")
+        ttk.Button(ffmpeg_content, text="选择目录", command=self._choose_ffmpeg_dir).grid(
+            row=0, column=1, sticky="e", padx=(10, 0)
+        )
+        ttk.Button(ffmpeg_content, text="使用系统 PATH", command=self._use_system_ffmpeg).grid(
+            row=0, column=2, sticky="e", padx=(10, 0)
+        )
         ttk.Label(
-            shell,
-            text="默认命名会始终保留。选择自定义模板后，可分别设置原唱和伴奏的文件名范式。",
-            font=("Microsoft YaHei UI", 10),
-        ).grid(row=1, column=0, sticky="w", pady=(8, 0))
+            ffmpeg_content,
+            text="推荐直接选择 ffmpeg 的 bin 目录，例如 D:\\tools\\ffmpeg\\bin。",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Label(
+            ffmpeg_content,
+            text="也可以选择 ffmpeg 根目录，程序会自动尝试其中的 bin\\ffmpeg.exe 和 bin\\ffprobe.exe。",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         naming_panel = ttk.Frame(shell, padding=(0, 18, 0, 0))
-        naming_panel.grid(row=2, column=0, sticky="ew")
+        naming_panel.grid(row=3, column=0, sticky="ew")
         naming_panel.columnconfigure(1, weight=1)
 
         ttk.Label(naming_panel, text="输出命名", font=("Microsoft YaHei UI", 11, "bold")).grid(
@@ -455,10 +594,17 @@ class KaraokeHiresApp:
             font=("Microsoft YaHei UI", 9),
         ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
-        controls = ttk.Frame(shell)
-        controls.grid(row=3, column=0, sticky="e", pady=(20, 0))
+        ttk.Label(
+            shell,
+            textvariable=self.settings_status_var,
+            font=("Microsoft YaHei UI", 9),
+            foreground="#177245",
+        ).grid(row=4, column=0, sticky="w", pady=(16, 0))
 
-        ttk.Button(controls, text="保存设置", command=self._save_output_name_settings).grid(
+        controls = ttk.Frame(shell)
+        controls.grid(row=5, column=0, sticky="e", pady=(16, 0))
+
+        ttk.Button(controls, text="保存设置", command=self._save_settings).grid(
             row=0, column=0, sticky="e"
         )
         ttk.Button(controls, text="关闭", command=self._close_settings_window).grid(
@@ -466,12 +612,23 @@ class KaraokeHiresApp:
         )
 
         self.settings_window = window
+        self.settings_canvas = canvas
+        self.settings_scrollbar = scrollbar
+        self.settings_content_frame = shell
+        self.settings_canvas_window_id = canvas_window_id
         self._update_output_template_state()
+        self._refresh_ffmpeg_display()
+        self._autosize_settings_window()
 
     def _close_settings_window(self) -> None:
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.destroy()
         self.settings_window = None
+        self.settings_canvas = None
+        self.settings_scrollbar = None
+        self.settings_content_frame = None
+        self.settings_canvas_window_id = None
+        self.ffmpeg_display_label = None
         self.on_template_entry = None
         self.off_template_entry = None
 
@@ -514,6 +671,7 @@ class KaraokeHiresApp:
 
     def set_ffmpeg_dir(self, path: Path) -> None:
         self.ffmpeg_dir_var.set(str(path))
+        self._refresh_ffmpeg_display()
 
     def set_output_name_mode(self, mode: str) -> None:
         if mode == OUTPUT_NAME_MODE_VIDEO_NAME:
@@ -542,26 +700,30 @@ class KaraokeHiresApp:
             off_template = validate_output_name_template(off_template, "伴奏")
         return on_template, off_template
 
-    def _save_output_name_settings(self) -> None:
+    def _save_settings(self) -> None:
         try:
             output_name_mode = self._resolve_output_name_mode()
             if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
                 on_template, off_template = self._resolve_output_name_templates(require_valid=True)
             else:
                 on_template, off_template = self._resolve_output_name_templates(require_valid=False)
+            resolved_ffmpeg_dir = self._resolve_ffmpeg_dir()
+            ffmpeg_dir = str(resolved_ffmpeg_dir) if resolved_ffmpeg_dir else ""
 
             saved_path = save_app_settings(
                 AppSettings(
                     output_name_mode=output_name_mode,
                     on_name_template=on_template,
                     off_name_template=off_template,
+                    ffmpeg_dir=ffmpeg_dir,
                 )
             )
         except ProcessingError as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
 
-        messagebox.showinfo(APP_TITLE, f"命名设置已保存。\n{saved_path}")
+        self.settings_status_var.set("设置已保存到本地。")
+        messagebox.showinfo(APP_TITLE, f"设置已保存。\n{saved_path}")
 
     def _choose_video(self) -> None:
         path = filedialog.askopenfilename(
@@ -594,6 +756,12 @@ class KaraokeHiresApp:
         path = filedialog.askdirectory(title="选择 ffmpeg 所在目录")
         if path:
             self.set_ffmpeg_dir(Path(path))
+            self.settings_status_var.set("已选择 FFmpeg 目录。点击“保存设置”后会保存到本地。")
+
+    def _use_system_ffmpeg(self) -> None:
+        self.ffmpeg_dir_var.set(FFMPEG_DIR_PLACEHOLDER)
+        self._refresh_ffmpeg_display()
+        self.settings_status_var.set("已切换为使用系统 PATH。点击“保存设置”后会保存这个选择。")
 
     def _current_browse_dir(self) -> str | None:
         video_path = self.video_var.get().strip()
