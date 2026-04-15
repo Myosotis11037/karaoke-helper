@@ -194,19 +194,26 @@ class WaveformViewer:
         mode_var: tk.StringVar,
         target_var: tk.StringVar,
         on_offset_changed,
+        on_playhead_changed,
+        on_playhead_released,
     ) -> None:
         self.mode_var = mode_var
         self.target_var = target_var
         self.on_offset_changed = on_offset_changed
+        self.on_playhead_changed = on_playhead_changed
+        self.on_playhead_released = on_playhead_released
         self.video_waveform: WaveformData | None = None
         self.audio_waveform: WaveformData | None = None
         self.offset_seconds = 0.0
+        self.playhead_seconds = 0.0
         self.view_start_seconds = 0.0
         self.pixels_per_second = 120.0
         self.label_gutter_width = 190
+        self.ruler_height = 28
         self._drag_start_x = 0
         self._drag_start_offset = 0.0
         self._drag_start_view = 0.0
+        self._drag_kind = ""
         self._drag_active = False
 
         self.canvas = tk.Canvas(
@@ -224,6 +231,7 @@ class WaveformViewer:
         self.canvas.bind("<Button-5>", self._handle_mousewheel, add="+")
         self.canvas.bind("<ButtonPress-1>", self._handle_drag_start, add="+")
         self.canvas.bind("<B1-Motion>", self._handle_drag, add="+")
+        self.canvas.bind("<ButtonRelease-1>", self._handle_drag_end, add="+")
 
     def set_waveforms(
         self,
@@ -237,7 +245,9 @@ class WaveformViewer:
             self.audio_waveform = audio_waveform
         self.view_start_seconds = 0.0
         self.offset_seconds = 0.0
+        self.playhead_seconds = 0.0
         self.on_offset_changed(self.offset_seconds)
+        self.on_playhead_changed(self.playhead_seconds)
         self.draw()
 
     def clear(self) -> None:
@@ -245,7 +255,9 @@ class WaveformViewer:
         self.audio_waveform = None
         self.view_start_seconds = 0.0
         self.offset_seconds = 0.0
+        self.playhead_seconds = 0.0
         self.on_offset_changed(self.offset_seconds)
+        self.on_playhead_changed(self.playhead_seconds)
         self.draw()
 
     def set_offset(self, seconds: float) -> None:
@@ -255,6 +267,14 @@ class WaveformViewer:
 
     def nudge_offset(self, delta_seconds: float) -> None:
         self.set_offset(self.offset_seconds + delta_seconds)
+
+    def set_playhead(self, seconds: float, *, notify: bool = True, keep_visible: bool = False) -> None:
+        self.playhead_seconds = self._clamp_timeline_seconds(seconds)
+        if keep_visible:
+            self._ensure_playhead_visible()
+        if notify:
+            self.on_playhead_changed(self.playhead_seconds)
+        self.draw()
 
     def set_zoom(self, pixels_per_second: float) -> None:
         plot_left, plot_width = self._plot_bounds()
@@ -267,15 +287,26 @@ class WaveformViewer:
     def _handle_drag_start(self, event) -> None:
         plot_left, _plot_width = self._plot_bounds()
         self._drag_active = event.x >= plot_left
+        self._drag_kind = ""
         if not self._drag_active:
             return
 
         self._drag_start_x = event.x
         self._drag_start_offset = self.offset_seconds
         self._drag_start_view = self.view_start_seconds
+        if self._is_playhead_grab(event, plot_left):
+            self._drag_kind = "playhead"
+            self.set_playhead(self._timeline_seconds_at_x(event.x))
+            return
+
+        self._drag_kind = "timeline"
 
     def _handle_drag(self, event) -> None:
         if not self._drag_active:
+            return
+
+        if self._drag_kind == "playhead":
+            self.set_playhead(self._timeline_seconds_at_x(event.x))
             return
 
         delta_seconds = (event.x - self._drag_start_x) / self.pixels_per_second
@@ -287,6 +318,12 @@ class WaveformViewer:
         self.offset_seconds = self._drag_start_offset + delta_seconds
         self.on_offset_changed(self.offset_seconds)
         self.draw()
+
+    def _handle_drag_end(self, _event) -> None:
+        if self._drag_active and self._drag_kind == "playhead":
+            self.on_playhead_released(self.playhead_seconds)
+        self._drag_active = False
+        self._drag_kind = ""
 
     def _handle_mousewheel(self, event) -> None:
         direction = 0
@@ -320,6 +357,21 @@ class WaveformViewer:
         _plot_left, plot_width = self._plot_bounds()
         return plot_width / self.pixels_per_second
 
+    def _timeline_seconds_at_x(self, x: int) -> float:
+        plot_left, plot_width = self._plot_bounds()
+        x = min(plot_left + plot_width, max(plot_left, x))
+        return self.view_start_seconds + (x - plot_left) / self.pixels_per_second
+
+    def _playhead_x(self, plot_left: int) -> int:
+        return plot_left + int((self.playhead_seconds - self.view_start_seconds) * self.pixels_per_second)
+
+    def _is_playhead_grab(self, event, plot_left: int) -> bool:
+        if event.x < plot_left:
+            return False
+        if event.y <= self.ruler_height:
+            return True
+        return abs(event.x - self._playhead_x(plot_left)) <= 8
+
     def _is_video_target(self) -> bool:
         return self.target_var.get() == ALIGN_TARGET_VIDEO
 
@@ -332,6 +384,19 @@ class WaveformViewer:
             extra = max(0.0, self.offset_seconds) if not self._is_video_target() else 0.0
             durations.append(self.audio_waveform.duration + extra)
         return max(durations, default=0.0)
+
+    def _clamp_timeline_seconds(self, seconds: float) -> float:
+        max_duration = self._max_duration()
+        if max_duration <= 0:
+            return 0.0
+        return min(max_duration, max(0.0, seconds))
+
+    def _ensure_playhead_visible(self) -> None:
+        visible_duration = self._visible_duration()
+        if self.playhead_seconds < self.view_start_seconds:
+            self.view_start_seconds = self.playhead_seconds
+        elif self.playhead_seconds > self.view_start_seconds + visible_duration:
+            self.view_start_seconds = max(0.0, self.playhead_seconds - visible_duration * 0.75)
 
     def _nice_grid_interval(self) -> float:
         target = self._visible_duration() / 8
@@ -349,6 +414,8 @@ class WaveformViewer:
         return f"{remainder:.1f}s"
 
     def _draw_grid(self, width: int, height: int, plot_left: int) -> None:
+        self.canvas.create_rectangle(plot_left, 0, width, self.ruler_height, fill="#f8fafc", outline="")
+        self.canvas.create_line(plot_left, self.ruler_height, width, self.ruler_height, fill="#d5dce6")
         interval = self._nice_grid_interval()
         first_tick = int(self.view_start_seconds / interval) * interval
         tick = first_tick
@@ -358,13 +425,45 @@ class WaveformViewer:
                 self.canvas.create_line(x, 0, x, height, fill="#eef2f7")
                 self.canvas.create_text(
                     x + 4,
-                    14,
+                    13,
                     text=self._format_time(tick),
                     anchor="w",
                     fill="#6b7280",
                     font=("Segoe UI", 9),
                 )
             tick += interval
+
+    def _draw_playhead(self, width: int, height: int, plot_left: int) -> None:
+        x = self._playhead_x(plot_left)
+        if x < plot_left or x > width:
+            return
+
+        color = "#ef4444"
+        self.canvas.create_line(x, 0, x, height, fill=color, width=2)
+        self.canvas.create_polygon(
+            x - 8,
+            0,
+            x + 8,
+            0,
+            x + 8,
+            9,
+            x,
+            17,
+            x - 8,
+            9,
+            fill=color,
+            outline=color,
+        )
+        text_x = x - 10 if x > width - 90 else x + 10
+        text_anchor = "e" if x > width - 90 else "w"
+        self.canvas.create_text(
+            text_x,
+            18,
+            text=self._format_time(self.playhead_seconds),
+            anchor=text_anchor,
+            fill=color,
+            font=("Segoe UI", 9, "bold"),
+        )
 
     def _draw_waveform(
         self,
@@ -439,6 +538,11 @@ class WaveformViewer:
         split = height // 2
         self.canvas.create_rectangle(plot_left, 0, width, split, fill="#f8fafc", outline="")
         self.canvas.create_rectangle(plot_left, split, width, height, fill="#fffaf1", outline="")
+        max_duration = self._max_duration()
+        if max_duration:
+            self.playhead_seconds = self._clamp_timeline_seconds(self.playhead_seconds)
+            right_edge = max(0.0, max_duration - self._visible_duration())
+            self.view_start_seconds = min(max(0.0, self.view_start_seconds), right_edge)
         self._draw_grid(width, height, plot_left)
         self.canvas.create_line(0, split, width, split, fill="#d5dce6")
 
@@ -475,11 +579,7 @@ class WaveformViewer:
         if plot_left <= zero_x <= width:
             self.canvas.create_line(zero_x, 0, zero_x, height, fill="#111827", dash=(2, 3))
 
-        max_duration = self._max_duration()
-        if max_duration:
-            right_edge = max_duration - self._visible_duration()
-            if self.view_start_seconds > right_edge > 0:
-                self.view_start_seconds = right_edge
+        self._draw_playhead(width, height, plot_left)
 
 
 class KaraokeHiresApp:
@@ -503,6 +603,7 @@ class KaraokeHiresApp:
         self.align_audio_var = tk.StringVar()
         self.align_status_var = tk.StringVar(value="准备生成波形")
         self.align_offset_var = tk.StringVar(value="字幕视频偏移 +0.000s")
+        self.align_playhead_var = tk.StringVar(value="播放位置 0.000s")
         self.align_target_var = tk.StringVar(value=ALIGN_TARGET_VIDEO)
         self.align_drag_mode_var = tk.StringVar(value="offset")
         self.align_encode_mode_var = tk.StringVar(value=ENCODE_MODE_SOFTWARE)
@@ -514,6 +615,8 @@ class KaraokeHiresApp:
         self.align_worker: threading.Thread | None = None
         self.align_export_worker: threading.Thread | None = None
         self.align_preview_process: AlignmentPreviewProcess | None = None
+        self.align_preview_started_at = 0.0
+        self.align_preview_start_seconds = 0.0
         self.drop_handler: WindowsFileDropHandler | None = None
         self.settings_window: tk.Toplevel | None = None
         self.settings_canvas: tk.Canvas | None = None
@@ -539,6 +642,7 @@ class KaraokeHiresApp:
         self._build_ui()
         self._update_output_template_state()
         self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
+        self.root.bind("<space>", self._handle_spacebar, add="+")
         self.root.after(100, self._drain_log_queue)
         self._install_file_drop()
 
@@ -552,6 +656,40 @@ class KaraokeHiresApp:
     def _handle_close(self) -> None:
         self._stop_alignment_preview(log_message=False)
         self.root.destroy()
+
+    def _handle_spacebar(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+
+        widget = event.widget
+        if self._is_text_input_widget(widget):
+            return None
+
+        if self._has_alignment_waveforms():
+            self._toggle_alignment_preview()
+        return "break"
+
+    def _handle_spacebar_release(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+        if self._is_text_input_widget(event.widget):
+            return None
+        return "break"
+
+    def _is_text_input_widget(self, widget) -> bool:
+        if widget is None:
+            return False
+        try:
+            widget_class = widget.winfo_class()
+        except tk.TclError:
+            return False
+        return widget_class in {"Entry", "TEntry", "Text", "TCombobox", "Spinbox", "TSpinbox"}
+
+    def _bind_alignment_spacebar_shortcuts(self, widget) -> None:
+        widget.bind("<space>", self._handle_spacebar, add="+")
+        widget.bind("<KeyRelease-space>", self._handle_spacebar_release, add="+")
+        for child in widget.winfo_children():
+            self._bind_alignment_spacebar_shortcuts(child)
 
     def _load_saved_settings(self) -> None:
         settings = load_app_settings()
@@ -902,6 +1040,9 @@ class KaraokeHiresApp:
             value=ALIGN_TARGET_AUDIO,
             command=self._handle_align_target_changed,
         ).grid(row=0, column=2, sticky="w", padx=(10, 0))
+        ttk.Label(target_row, textvariable=self.align_playhead_var).grid(
+            row=0, column=3, sticky="w", padx=(16, 0)
+        )
 
         mode_row = ttk.Frame(control_panel)
         mode_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
@@ -978,6 +1119,8 @@ class KaraokeHiresApp:
             mode_var=self.align_drag_mode_var,
             target_var=self.align_target_var,
             on_offset_changed=self._handle_align_offset_changed,
+            on_playhead_changed=self._handle_align_playhead_changed,
+            on_playhead_released=self._handle_align_playhead_released,
         )
         self.align_viewer.canvas.grid(row=0, column=0, sticky="nsew")
 
@@ -1012,6 +1155,7 @@ class KaraokeHiresApp:
         self.align_log_text.grid(row=1, column=0, sticky="ew")
         self.align_log_text.configure(state="disabled")
         self._refresh_align_target_ui()
+        self._bind_alignment_spacebar_shortcuts(shell)
 
     def _update_output_template_state(self) -> None:
         state = "normal" if self.output_name_mode_var.get() == OUTPUT_NAME_MODE_TEMPLATE else "disabled"
@@ -1494,6 +1638,13 @@ class KaraokeHiresApp:
         label = "字幕视频偏移" if self._is_align_video_target() else "原唱音源偏移"
         self.align_offset_var.set(f"{label} {format_offset(seconds)}")
 
+    def _handle_align_playhead_changed(self, seconds: float) -> None:
+        self.align_playhead_var.set(f"播放位置 {seconds:.3f}s")
+
+    def _handle_align_playhead_released(self, _seconds: float) -> None:
+        if self.align_preview_process is not None and self.align_preview_process.is_running():
+            self._start_alignment_preview()
+
     def _is_align_video_target(self) -> bool:
         return self.align_target_var.get() == ALIGN_TARGET_VIDEO
 
@@ -1675,6 +1826,7 @@ class KaraokeHiresApp:
 
         assert self.align_viewer is not None
         target_track = ALIGN_TARGET_VIDEO if self._is_align_video_target() else ALIGN_TARGET_AUDIO
+        preview_start_seconds = self.align_viewer.playhead_seconds
         try:
             self.align_preview_process = start_alignment_preview(
                 video_path=video_path,
@@ -1683,7 +1835,7 @@ class KaraokeHiresApp:
                 ffmpeg_dir=ffmpeg_dir,
                 logger=self._append_align_log,
                 target_track=target_track,
-                preview_start_seconds=self.align_viewer.view_start_seconds,
+                preview_start_seconds=preview_start_seconds,
             )
         except Exception as exc:  # noqa: BLE001
             self.align_preview_process = None
@@ -1692,9 +1844,18 @@ class KaraokeHiresApp:
             self._refresh_alignment_preview_controls()
             return
 
+        self.align_preview_start_seconds = preview_start_seconds
+        self.align_preview_started_at = time.monotonic()
         self.align_status_var.set("正在播放预览")
         self._refresh_alignment_preview_controls()
         self.root.after(300, self._poll_alignment_preview)
+
+    def _toggle_alignment_preview(self) -> None:
+        if self.align_preview_process is not None and self.align_preview_process.is_running():
+            self._stop_alignment_preview()
+            return
+        if self._has_alignment_waveforms():
+            self._start_alignment_preview()
 
     def _stop_alignment_preview(self, *, log_message: bool = True) -> None:
         process = self.align_preview_process
@@ -1703,6 +1864,8 @@ class KaraokeHiresApp:
             self.align_preview_process = None
             if log_message:
                 self._append_align_log("播放预览已停止")
+        self.align_preview_started_at = 0.0
+        self.align_preview_start_seconds = 0.0
         self._refresh_alignment_preview_controls()
 
     def _poll_alignment_preview(self) -> None:
@@ -1711,10 +1874,18 @@ class KaraokeHiresApp:
             self._refresh_alignment_preview_controls()
             return
         if process.is_running():
+            if self.align_viewer is not None and self.align_preview_started_at:
+                elapsed = time.monotonic() - self.align_preview_started_at
+                self.align_viewer.set_playhead(
+                    self.align_preview_start_seconds + elapsed,
+                    keep_visible=True,
+                )
             self.root.after(300, self._poll_alignment_preview)
             return
 
         self.align_preview_process = None
+        self.align_preview_started_at = 0.0
+        self.align_preview_start_seconds = 0.0
         self.align_status_var.set("预览播放结束")
         self._append_align_log("播放预览结束")
         self._refresh_alignment_preview_controls()
