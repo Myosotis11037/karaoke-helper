@@ -8,7 +8,7 @@ import tkinter as tk
 
 from krok_helper.errors import ProcessingError
 from krok_helper.gui import KaraokeHiresApp
-from krok_helper.pipeline import run_pipeline
+from krok_helper.pipeline import OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_VIDEO_NAME, run_pipeline
 from krok_helper.windows import apply_tk_scaling, enable_high_dpi_awareness
 
 
@@ -18,7 +18,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--on-audio", type=Path, help="原唱无损音频路径")
     parser.add_argument("--off-audio", type=Path, help="伴奏无损音频路径")
     parser.add_argument("--output-dir", type=Path, help="输出目录，可选，默认使用字幕视频所在目录")
-    parser.add_argument("--ffmpeg-dir", type=Path, help="ffmpeg 所在目录，可选。系统 PATH 优先，找不到时再回退到这里。")
+    parser.add_argument(
+        "--ffmpeg-dir",
+        type=Path,
+        help="ffmpeg 所在目录，可选。系统 PATH 优先，找不到时再回退到这里。",
+    )
+    parser.add_argument(
+        "--output-name-mode",
+        choices=[OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_VIDEO_NAME],
+        default=OUTPUT_NAME_MODE_FIXED,
+        help="输出文件命名模式: fixed 或 video_name",
+    )
     parser.add_argument("--gui", action="store_true", help="强制启动图形界面")
     return parser.parse_args()
 
@@ -37,6 +47,7 @@ def run_cli(args: argparse.Namespace) -> int:
         off_vocal_path=args.off_audio.expanduser(),
         output_dir=args.output_dir.expanduser() if args.output_dir else None,
         ffmpeg_dir=args.ffmpeg_dir.expanduser() if args.ffmpeg_dir else None,
+        output_name_mode=args.output_name_mode,
         logger=logger,
     )
     print("输出文件:")
@@ -58,6 +69,7 @@ def run_gui(args: argparse.Namespace) -> int:
         app.set_off_vocal_path(args.off_audio.expanduser())
     if args.ffmpeg_dir:
         app.set_ffmpeg_dir(args.ffmpeg_dir.expanduser())
+    app.set_output_name_mode(args.output_name_mode)
     root.mainloop()
     return 0
 
