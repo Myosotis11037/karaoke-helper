@@ -8,6 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from string import Formatter
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
 from krok_helper.audio_alignment import (
     AlignmentPreviewProcess,
@@ -618,6 +619,8 @@ class KaraokeHiresApp:
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.align_log_queue: queue.Queue[str] = queue.Queue()
+        self.ui_queue: queue.Queue[Callable[[], None]] = queue.Queue()
+        self.is_closing = False
         self.worker: threading.Thread | None = None
         self.align_worker: threading.Thread | None = None
         self.align_export_worker: threading.Thread | None = None
@@ -664,7 +667,11 @@ class KaraokeHiresApp:
         return f"{width}x{height}+{x}+{y}"
 
     def _handle_close(self) -> None:
-        self._stop_alignment_preview(log_message=False)
+        self.is_closing = True
+        process = self.align_preview_process
+        if process is not None:
+            process.stop()
+            self.align_preview_process = None
         self.root.destroy()
 
     def _handle_spacebar(self, event) -> str | None:
@@ -1387,7 +1394,7 @@ class KaraokeHiresApp:
             ttk.Label(
                 naming_content,
                 text=(
-                    "默认: 对齐后视频 {video_name}_aligned.mkv；"
+                    "默认: 对齐后视频 {video_name}_aligned.mp4；"
                     "对齐后音频 {audio_name}_aligned.wav。"
                 ),
                 font=("Microsoft YaHei UI", 9),
@@ -1484,7 +1491,14 @@ class KaraokeHiresApp:
         timestamp = time.strftime("%H:%M:%S")
         self.align_log_queue.put(f"[{timestamp}] {message}")
 
+    def _post_ui(self, callback: Callable[[], None]) -> None:
+        if not self.is_closing:
+            self.ui_queue.put(callback)
+
     def _drain_log_queue(self) -> None:
+        if self.is_closing:
+            return
+
         drained = False
         while True:
             try:
@@ -1508,9 +1522,19 @@ class KaraokeHiresApp:
             self.align_log_text.insert("end", line + "\n")
             self.align_log_text.see("end")
             self.align_log_text.configure(state="disabled")
+        while True:
+            try:
+                callback = self.ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            drained = True
+            if self.is_closing:
+                break
+            callback()
         if drained:
             self.root.update_idletasks()
-        self.root.after(100, self._drain_log_queue)
+        if not self.is_closing:
+            self.root.after(100, self._drain_log_queue)
 
     def set_video_path(self, path: Path) -> None:
         self.video_var.set(str(path))
@@ -1574,13 +1598,13 @@ class KaraokeHiresApp:
                 video_template,
                 "对齐后视频",
                 allowed_fields={"video_name"},
-                extension=".mkv",
+                extensions=(".mp4", ".mkv"),
             )
             audio_template = self._validate_alignment_name_template(
                 audio_template,
                 "对齐后音频",
                 allowed_fields={"audio_name", "video_name"},
-                extension=".wav",
+                extensions=(".wav",),
             )
         return video_template, audio_template
 
@@ -1590,11 +1614,13 @@ class KaraokeHiresApp:
         label: str,
         *,
         allowed_fields: set[str],
-        extension: str,
+        extensions: tuple[str, ...],
     ) -> str:
         normalized = template.strip()
-        if normalized.lower().endswith(extension):
-            normalized = normalized[: -len(extension)].rstrip()
+        for extension in extensions:
+            if normalized.lower().endswith(extension):
+                normalized = normalized[: -len(extension)].rstrip()
+                break
 
         if not normalized:
             raise ProcessingError(f"{label}模板不能为空。")
@@ -1619,7 +1645,7 @@ class KaraokeHiresApp:
         video_template, audio_template = self._resolve_alignment_name_templates(require_valid=True)
         template = video_template if is_video_target else audio_template
         label = "对齐后视频" if is_video_target else "对齐后音频"
-        extension = ".mkv" if is_video_target else ".wav"
+        extension = ".mp4" if is_video_target else ".wav"
         try:
             stem = template.format(video_name=video_path.stem, audio_name=audio_path.stem).strip()
         except Exception as exc:  # noqa: BLE001
@@ -1916,13 +1942,15 @@ class KaraokeHiresApp:
                     label="原唱音源",
                 )
             except Exception as exc:  # noqa: BLE001
-                self._append_align_log(f"波形生成失败: {exc}")
-                self.root.after(0, lambda: self._finish_waveform_analysis(False, str(exc), None, None))
+                message = str(exc)
+                self._append_align_log(f"波形生成失败: {message}")
+                self._post_ui(lambda message=message: self._finish_waveform_analysis(False, message, None, None))
                 return
 
-            self.root.after(
-                0,
-                lambda: self._finish_waveform_analysis(True, "", video_waveform, audio_waveform),
+            self._post_ui(
+                lambda video_waveform=video_waveform, audio_waveform=audio_waveform: (
+                    self._finish_waveform_analysis(True, "", video_waveform, audio_waveform)
+                )
             )
 
         self.align_worker = threading.Thread(target=worker, daemon=True)
@@ -2064,9 +2092,9 @@ class KaraokeHiresApp:
             title="导出对齐视频" if is_video_target else "导出对齐音频",
             initialdir=str(initial_path.parent),
             initialfile=initial_path.name,
-            defaultextension=".mkv" if is_video_target else initial_path.suffix,
+            defaultextension=".mp4" if is_video_target else initial_path.suffix,
             filetypes=(
-                [("Matroska 视频", "*.mkv"), ("所有文件", "*.*")]
+                [("MP4 视频", "*.mp4"), ("Matroska 视频", "*.mkv"), ("所有文件", "*.*")]
                 if is_video_target
                 else [("WAV 音频", "*.wav"), ("所有文件", "*.*")]
             ),
@@ -2104,11 +2132,16 @@ class KaraokeHiresApp:
                         logger=self._append_align_log,
                 )
             except Exception as exc:  # noqa: BLE001
-                self._append_align_log(f"导出失败: {exc}")
-                self.root.after(0, lambda: self._finish_aligned_export(False, str(exc), None, output_kind))
+                message = str(exc)
+                self._append_align_log(f"导出失败: {message}")
+                self._post_ui(
+                    lambda message=message: self._finish_aligned_export(False, message, None, output_kind)
+                )
                 return
 
-            self.root.after(0, lambda: self._finish_aligned_export(True, "", output, output_kind))
+            self._post_ui(
+                lambda output=output: self._finish_aligned_export(True, "", output, output_kind)
+            )
 
         self.align_export_worker = threading.Thread(target=worker, daemon=True)
         self.align_export_worker.start()
@@ -2168,13 +2201,13 @@ class KaraokeHiresApp:
         output_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer", str(output_dir)])
 
-    def _validate_inputs(self) -> tuple[Path, Path, Path, Path, str, str | None, str | None]:
+    def _validate_inputs(self) -> tuple[Path, Path, Path, Path, Path | None, str, str | None, str | None]:
         video_path = Path(self.video_var.get()).expanduser()
         on_vocal_path = Path(self.on_vocal_var.get()).expanduser()
         off_vocal_path = Path(self.off_vocal_var.get()).expanduser()
         output_dir = self._resolve_output_dir()
         output_name_mode = self._resolve_output_name_mode()
-        self._resolve_ffmpeg_dir()
+        ffmpeg_dir = self._resolve_ffmpeg_dir()
 
         missing = [
             label
@@ -2201,6 +2234,7 @@ class KaraokeHiresApp:
             on_vocal_path,
             off_vocal_path,
             output_dir,
+            ffmpeg_dir,
             output_name_mode,
             on_template,
             off_template,
@@ -2217,6 +2251,7 @@ class KaraokeHiresApp:
                 on_vocal_path,
                 off_vocal_path,
                 output_dir,
+                ffmpeg_dir,
                 output_name_mode,
                 on_name_template,
                 off_name_template,
@@ -2235,7 +2270,6 @@ class KaraokeHiresApp:
 
         def worker() -> None:
             try:
-                ffmpeg_dir = self._resolve_ffmpeg_dir()
                 outputs = run_pipeline(
                     video_path=video_path,
                     on_vocal_path=on_vocal_path,
@@ -2248,12 +2282,13 @@ class KaraokeHiresApp:
                     logger=self._append_log,
                 )
             except Exception as exc:  # noqa: BLE001
-                self._append_log(f"处理失败: {exc}")
-                self.root.after(0, lambda: self._finish(False, str(exc)))
+                message = str(exc)
+                self._append_log(f"处理失败: {message}")
+                self._post_ui(lambda message=message: self._finish(False, message))
                 return
 
             output_lines = "\n".join(str(path) for path in outputs)
-            self.root.after(0, lambda: self._finish(True, output_lines))
+            self._post_ui(lambda output_lines=output_lines: self._finish(True, output_lines))
 
         self.worker = threading.Thread(target=worker, daemon=True)
         self.worker.start()

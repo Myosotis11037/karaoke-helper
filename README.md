@@ -88,7 +88,7 @@ python app.py
 
 波形对齐的默认命名是：
 
-- 对齐后视频: `{video_name}_aligned.mkv`
+- 对齐后视频: `{video_name}_aligned.mp4`
 - 对齐后音频: `{audio_name}_aligned.wav`
 
 这些设置保存后会写入本地 `settings.json`，下次启动会自动加载。
