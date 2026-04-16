@@ -684,9 +684,27 @@ class KaraokeHiresApp:
 
         if self._has_alignment_waveforms():
             self._toggle_alignment_preview()
+        else:
+            self._start_waveform_analysis()
         return "break"
 
     def _handle_spacebar_release(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+        if self._is_text_input_widget(event.widget):
+            return None
+        return "break"
+
+    def _handle_align_save_shortcut(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+        if self._is_text_input_widget(event.widget):
+            return None
+
+        self._start_aligned_export()
+        return "break"
+
+    def _handle_align_save_shortcut_release(self, event) -> str | None:
         if self.active_module != "align":
             return None
         if self._is_text_input_widget(event.widget):
@@ -705,6 +723,10 @@ class KaraokeHiresApp:
     def _bind_alignment_spacebar_shortcuts(self, widget) -> None:
         widget.bind("<space>", self._handle_spacebar, add="+")
         widget.bind("<KeyRelease-space>", self._handle_spacebar_release, add="+")
+        widget.bind("<Control-s>", self._handle_align_save_shortcut, add="+")
+        widget.bind("<Control-S>", self._handle_align_save_shortcut, add="+")
+        widget.bind("<Control-KeyRelease-s>", self._handle_align_save_shortcut_release, add="+")
+        widget.bind("<Control-KeyRelease-S>", self._handle_align_save_shortcut_release, add="+")
         for child in widget.winfo_children():
             self._bind_alignment_spacebar_shortcuts(child)
 
@@ -1140,6 +1162,15 @@ class KaraokeHiresApp:
         ttk.Button(zoom_row, text="回到开头", command=self._reset_align_view).grid(
             row=0, column=2, sticky="e", padx=(12, 0)
         )
+
+        shortcut_row = ttk.Frame(control_panel)
+        shortcut_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(
+            shortcut_row,
+            text="快捷键: 空格生成波形 / 播放 / 停止，Ctrl+S 导出当前对齐目标",
+            foreground="#6b7280",
+            font=("Microsoft YaHei UI", 9),
+        ).grid(row=0, column=0, sticky="w")
 
         viewer_shell = ttk.Frame(shell)
         viewer_shell.grid(row=4, column=0, sticky="nsew")
