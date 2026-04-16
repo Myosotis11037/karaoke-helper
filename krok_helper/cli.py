@@ -5,6 +5,10 @@ import sys
 from pathlib import Path
 
 import tkinter as tk
+try:
+    from tkinterdnd2 import Tk as DnDTk
+except Exception:  # noqa: BLE001
+    DnDTk = None
 
 from krok_helper.errors import ProcessingError
 from krok_helper.gui import KaraokeHiresApp
@@ -79,7 +83,7 @@ def run_cli(args: argparse.Namespace) -> int:
 
 def run_gui(args: argparse.Namespace) -> int:
     enable_high_dpi_awareness()
-    root = tk.Tk()
+    root = DnDTk() if DnDTk is not None else tk.Tk()
     apply_tk_scaling(root)
     app = KaraokeHiresApp(root)
     if args.video:

@@ -9,6 +9,10 @@ from pathlib import Path
 from string import Formatter
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
+try:
+    from tkinterdnd2 import DND_FILES
+except Exception:  # noqa: BLE001
+    DND_FILES = None
 
 from krok_helper.audio_alignment import (
     AlignmentPreviewProcess,
@@ -1569,8 +1573,53 @@ class KaraokeHiresApp:
         self.align_audio_template_entry = None
 
     def _install_file_drop(self) -> None:
+        if DND_FILES is not None and hasattr(self.root, "drop_target_register"):
+            self._install_tkinterdnd_drop()
+            return
         self.drop_handler = WindowsFileDropHandler(self.root, self._handle_drop)
         self.drop_handler.install()
+
+    def _install_tkinterdnd_drop(self) -> None:
+        zones = (
+            self.video_zone,
+            self.on_vocal_zone,
+            self.off_vocal_zone,
+            self.align_video_zone,
+            self.align_audio_zone,
+        )
+        for zone in zones:
+            self._register_drop_target(zone.frame)
+
+    def _register_drop_target(self, widget) -> None:
+        try:
+            widget.drop_target_register(DND_FILES)
+            widget.dnd_bind("<<DropEnter>>", self._handle_tk_drop_enter, add="+")
+            widget.dnd_bind("<<DropPosition>>", self._handle_tk_drop_enter, add="+")
+            widget.dnd_bind("<<Drop>>", self._handle_tk_drop, add="+")
+        except (AttributeError, tk.TclError):
+            return
+
+        for child in widget.winfo_children():
+            self._register_drop_target(child)
+
+    def _handle_tk_drop_enter(self, _event):
+        return "copy"
+
+    def _handle_tk_drop(self, event):
+        raw_paths = self._parse_tk_drop_data(getattr(event, "data", ""))
+        x_root = getattr(event, "x_root", 0)
+        y_root = getattr(event, "y_root", 0)
+        self.root.after(0, lambda: self._handle_drop(raw_paths, x_root, y_root))
+        return "copy"
+
+    def _parse_tk_drop_data(self, data: str) -> list[str]:
+        if not data:
+            return []
+        try:
+            items = self.root.tk.splitlist(data)
+        except tk.TclError:
+            items = (data,)
+        return [item for item in items if item]
 
     def _append_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")

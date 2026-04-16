@@ -23,6 +23,12 @@ if ! "$PYTHON_BIN" -c "import PyInstaller" >/dev/null 2>&1; then
   "$PYTHON_BIN" -m pip install pyinstaller
 fi
 
+echo "Checking tkinterdnd2..."
+if ! "$PYTHON_BIN" -c "import tkinterdnd2" >/dev/null 2>&1; then
+  echo "tkinterdnd2 not found, installing..."
+  "$PYTHON_BIN" -m pip install tkinterdnd2
+fi
+
 mkdir -p "$DIST_PATH" "$WORK_PATH" "$SPEC_PATH"
 
 echo "Building macOS package..."
@@ -35,6 +41,7 @@ echo "Building macOS package..."
   --distpath "$DIST_PATH" \
   --workpath "$WORK_PATH" \
   --specpath "$SPEC_PATH" \
+  --collect-all tkinterdnd2 \
   app.py
 
 echo

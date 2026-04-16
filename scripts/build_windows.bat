@@ -30,6 +30,18 @@ if errorlevel 1 (
     )
 )
 
+echo Checking tkinterdnd2...
+%PYTHON_BIN% -c "import tkinterdnd2" >nul 2>&1
+if errorlevel 1 (
+    echo tkinterdnd2 not found, installing...
+    %PYTHON_BIN% -m pip install tkinterdnd2
+    if errorlevel 1 (
+        echo Failed to install tkinterdnd2.
+        pause
+        exit /b 1
+    )
+)
+
 if not exist "%DIST_PATH%" mkdir "%DIST_PATH%"
 if not exist "%WORK_PATH%" mkdir "%WORK_PATH%"
 if not exist "%SPEC_PATH%" mkdir "%SPEC_PATH%"
@@ -44,6 +56,7 @@ echo Building Windows package...
     --distpath "%DIST_PATH%" ^
     --workpath "%WORK_PATH%" ^
     --specpath "%SPEC_PATH%" ^
+    --collect-all tkinterdnd2 ^
     app.py
 
 if errorlevel 1 (
