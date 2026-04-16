@@ -54,11 +54,11 @@ from krok_helper.windows import WindowsFileDropHandler
 
 VIDEO_FILETYPES = [("视频文件", "*.mkv *.mp4 *.mov *.avi"), ("所有文件", "*.*")]
 AUDIO_FILETYPES = [
-    ("音频文件", "*.flac *.wav *.m4a *.aac *.ape *.alac *.mkv"),
+    ("音频文件", "*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv"),
     ("所有文件", "*.*"),
 ]
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi"}
-AUDIO_EXTENSIONS = {".flac", ".wav", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
+AUDIO_EXTENSIONS = {".flac", ".wav", ".mp3", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
 FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 ALIGN_TARGET_VIDEO = "video"
 ALIGN_TARGET_AUDIO = "audio"
@@ -964,8 +964,8 @@ class KaraokeHiresApp:
 
         self.on_vocal_zone = DropZone(
             card_row,
-            title="原唱无损",
-            hint="支持 flac / wav / m4a / aac / ape / alac / mkv\n拖入原唱音频或含单音轨的 mkv。",
+            title="原唱音频",
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n拖入原唱音频或含单音轨的 mkv。",
             extensions=AUDIO_EXTENSIONS,
             on_click=self._choose_on_audio,
         )
@@ -973,8 +973,8 @@ class KaraokeHiresApp:
 
         self.off_vocal_zone = DropZone(
             card_row,
-            title="伴奏无损",
-            hint="支持 flac / wav / m4a / aac / ape / alac / mkv\n拖入伴奏音频或含单音轨的 mkv。",
+            title="伴奏音频",
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n拖入伴奏音频或含单音轨的 mkv。",
             extensions=AUDIO_EXTENSIONS,
             on_click=self._choose_off_audio,
         )
@@ -1080,7 +1080,7 @@ class KaraokeHiresApp:
         self.align_audio_zone = DropZone(
             drop_row,
             title="原唱音源",
-            hint="支持 flac / wav / m4a / aac / ape / alac / mkv\n可作为固定参考，也可导出修正后的音频。",
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可作为固定参考，也可导出修正后的音频。",
             extensions=AUDIO_EXTENSIONS,
             on_click=self._choose_align_audio,
         )
@@ -1842,7 +1842,7 @@ class KaraokeHiresApp:
 
     def _choose_on_audio(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择原唱无损音频",
+            title="选择原唱音频",
             filetypes=AUDIO_FILETYPES,
             initialdir=self._current_browse_dir(),
         )
@@ -1851,7 +1851,7 @@ class KaraokeHiresApp:
 
     def _choose_off_audio(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择伴奏无损音频",
+            title="选择伴奏音频",
             filetypes=AUDIO_FILETYPES,
             initialdir=self._current_browse_dir(),
         )
@@ -2458,8 +2458,8 @@ class KaraokeHiresApp:
             label
             for label, path in [
                 ("字幕视频", video_path),
-                ("原唱无损", on_vocal_path),
-                ("伴奏无损", off_vocal_path),
+                ("原唱音频", on_vocal_path),
+                ("伴奏音频", off_vocal_path),
             ]
             if not path.is_file()
         ]
@@ -2467,7 +2467,7 @@ class KaraokeHiresApp:
             raise ProcessingError(f"请先选择有效的文件: {', '.join(missing)}")
 
         if on_vocal_path.resolve() == off_vocal_path.resolve():
-            raise ProcessingError("原唱无损和伴奏无损不能是同一个文件。")
+            raise ProcessingError("原唱音频和伴奏音频不能是同一个文件。")
 
         if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
             on_template, off_template = self._resolve_output_name_templates(require_valid=True)
