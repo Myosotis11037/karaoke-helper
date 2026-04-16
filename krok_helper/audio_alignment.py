@@ -16,6 +16,7 @@ from krok_helper.types import Logger
 
 WAVEFORM_SAMPLE_RATE = 8_000
 WAVEFORM_PEAKS_PER_SECOND = 80
+AUTO_ALIGN_SEARCH_SECONDS = 6.0
 ALIGNED_VIDEO_EXTENSION = ".mp4"
 DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE = "{video_name}_aligned"
 DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE = "{audio_name}_aligned"
@@ -50,6 +51,17 @@ class WaveformData:
     duration: float
     peaks_per_second: int
     peaks: list[float]
+
+
+@dataclass
+class AutoAlignResult:
+    target_offset_seconds: float
+    media_offset_seconds: float
+    confidence: float
+    score: float
+    second_score: float
+    overlap_seconds: float
+    search_seconds: float
 
 
 @dataclass
@@ -297,6 +309,105 @@ def _build_peaks(samples: array.array, window_size: int) -> list[float]:
         peak = max((abs(value) for value in window), default=0)
         peaks.append(min(1.0, peak / max_sample))
     return peaks
+
+
+def _smooth_values(values: list[float], radius: int = 2) -> list[float]:
+    if not values:
+        return []
+    smoothed: list[float] = []
+    for index in range(len(values)):
+        start = max(0, index - radius)
+        end = min(len(values), index + radius + 1)
+        smoothed.append(sum(values[start:end]) / max(1, end - start))
+    return smoothed
+
+
+def _normalize_envelope(values: list[float]) -> list[float]:
+    smoothed = _smooth_values(values)
+    if not smoothed:
+        return []
+
+    mean = sum(smoothed) / len(smoothed)
+    centered = [value - mean for value in smoothed]
+    energy = sum(value * value for value in centered)
+    if energy <= 1e-9:
+        return []
+    scale = energy ** 0.5
+    return [value / scale for value in centered]
+
+
+def _correlation_score(reference: list[float], target: list[float], offset_steps: int) -> tuple[float, int]:
+    reference_start = max(0, offset_steps)
+    target_start = max(0, -offset_steps)
+    overlap = min(len(reference) - reference_start, len(target) - target_start)
+    if overlap <= 0:
+        return -1.0, 0
+
+    score = 0.0
+    for index in range(overlap):
+        score += reference[reference_start + index] * target[target_start + index]
+    return score, overlap
+
+
+def estimate_waveform_alignment(
+    video_waveform: WaveformData,
+    audio_waveform: WaveformData,
+    *,
+    target_track: str,
+    search_seconds: float = AUTO_ALIGN_SEARCH_SECONDS,
+) -> AutoAlignResult:
+    if not video_waveform.peaks or not audio_waveform.peaks:
+        raise ProcessingError("没有可用于自动对齐的波形数据。")
+
+    peaks_per_second = min(video_waveform.peaks_per_second, audio_waveform.peaks_per_second)
+    if peaks_per_second <= 0:
+        raise ProcessingError("波形分辨率无效，无法自动对齐。")
+    if video_waveform.peaks_per_second != audio_waveform.peaks_per_second:
+        raise ProcessingError("两条波形的分辨率不一致，无法自动对齐。")
+
+    reference = _normalize_envelope(audio_waveform.peaks)
+    target = _normalize_envelope(video_waveform.peaks)
+    if not reference or not target:
+        raise ProcessingError("波形能量变化太少，无法自动对齐。")
+
+    max_offset_steps = max(1, int(round(search_seconds * peaks_per_second)))
+    min_overlap_steps = max(1, int(round(min(10.0, min(video_waveform.duration, audio_waveform.duration) * 0.25) * peaks_per_second)))
+    best_offset_steps = 0
+    best_score = -1.0
+    second_score = -1.0
+    best_overlap = 0
+    exclusion_steps = max(1, int(round(0.5 * peaks_per_second)))
+
+    for offset_steps in range(-max_offset_steps, max_offset_steps + 1):
+        score, overlap = _correlation_score(reference, target, offset_steps)
+        if overlap < min_overlap_steps:
+            continue
+        if score > best_score:
+            if abs(offset_steps - best_offset_steps) > exclusion_steps:
+                second_score = best_score
+            best_score = score
+            best_offset_steps = offset_steps
+            best_overlap = overlap
+        elif abs(offset_steps - best_offset_steps) > exclusion_steps and score > second_score:
+            second_score = score
+
+    if best_score <= -1.0 or best_overlap <= 0:
+        raise ProcessingError("未能在搜索范围内找到可靠的自动对齐位置。")
+
+    media_offset_seconds = best_offset_steps / peaks_per_second
+    target_offset_seconds = media_offset_seconds if target_track == "video" else -media_offset_seconds
+    separation = max(0.0, best_score - max(second_score, 0.0))
+    confidence = max(0.0, min(1.0, best_score * 0.75 + separation * 0.5))
+
+    return AutoAlignResult(
+        target_offset_seconds=target_offset_seconds,
+        media_offset_seconds=media_offset_seconds,
+        confidence=confidence,
+        score=best_score,
+        second_score=max(second_score, 0.0),
+        overlap_seconds=best_overlap / peaks_per_second,
+        search_seconds=search_seconds,
+    )
 
 
 def extract_waveform(

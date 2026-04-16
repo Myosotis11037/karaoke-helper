@@ -12,6 +12,7 @@ from typing import Callable
 
 from krok_helper.audio_alignment import (
     AlignmentPreviewProcess,
+    AutoAlignResult,
     DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE,
     DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE,
     ENCODE_MODE_HARDWARE,
@@ -19,6 +20,7 @@ from krok_helper.audio_alignment import (
     WaveformData,
     export_aligned_audio,
     export_aligned_video,
+    estimate_waveform_alignment,
     extract_waveform,
     format_offset,
     start_alignment_preview,
@@ -623,6 +625,7 @@ class KaraokeHiresApp:
         self.is_closing = False
         self.worker: threading.Thread | None = None
         self.align_worker: threading.Thread | None = None
+        self.align_auto_worker: threading.Thread | None = None
         self.align_export_worker: threading.Thread | None = None
         self.align_preview_process: AlignmentPreviewProcess | None = None
         self.align_preview_started_at = 0.0
@@ -647,6 +650,7 @@ class KaraokeHiresApp:
         self.align_log_text: tk.Text | None = None
         self.align_move_radio: ttk.Radiobutton | None = None
         self.align_encode_row: ttk.Frame | None = None
+        self.align_auto_button: ttk.Button | None = None
         self.align_preview_button: ttk.Button | None = None
         self.align_stop_preview_button: ttk.Button | None = None
 
@@ -655,7 +659,7 @@ class KaraokeHiresApp:
         self._build_ui()
         self._update_output_template_state()
         self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
-        self.root.bind("<space>", self._handle_spacebar, add="+")
+        self._bind_alignment_window_shortcuts()
         self.root.after(100, self._drain_log_queue)
         self._install_file_drop()
 
@@ -711,6 +715,38 @@ class KaraokeHiresApp:
             return None
         return "break"
 
+    def _handle_auto_align_shortcut(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+        if self._is_text_input_widget(event.widget):
+            return None
+
+        self._auto_align_waveforms()
+        return "break"
+
+    def _handle_auto_align_shortcut_release(self, event) -> str | None:
+        if self.active_module != "align":
+            return None
+        if self._is_text_input_widget(event.widget):
+            return None
+        return "break"
+
+    def _bind_alignment_window_shortcuts(self) -> None:
+        bindings = [
+            ("<space>", self._handle_spacebar),
+            ("<KeyRelease-space>", self._handle_spacebar_release),
+            ("<Control-s>", self._handle_align_save_shortcut),
+            ("<Control-S>", self._handle_align_save_shortcut),
+            ("<Control-KeyRelease-s>", self._handle_align_save_shortcut_release),
+            ("<Control-KeyRelease-S>", self._handle_align_save_shortcut_release),
+            ("<Control-d>", self._handle_auto_align_shortcut),
+            ("<Control-D>", self._handle_auto_align_shortcut),
+            ("<Control-KeyRelease-d>", self._handle_auto_align_shortcut_release),
+            ("<Control-KeyRelease-D>", self._handle_auto_align_shortcut_release),
+        ]
+        for sequence, handler in bindings:
+            self.root.bind(sequence, handler, add="+")
+
     def _is_text_input_widget(self, widget) -> bool:
         if widget is None:
             return False
@@ -727,6 +763,10 @@ class KaraokeHiresApp:
         widget.bind("<Control-S>", self._handle_align_save_shortcut, add="+")
         widget.bind("<Control-KeyRelease-s>", self._handle_align_save_shortcut_release, add="+")
         widget.bind("<Control-KeyRelease-S>", self._handle_align_save_shortcut_release, add="+")
+        widget.bind("<Control-d>", self._handle_auto_align_shortcut, add="+")
+        widget.bind("<Control-D>", self._handle_auto_align_shortcut, add="+")
+        widget.bind("<Control-KeyRelease-d>", self._handle_auto_align_shortcut_release, add="+")
+        widget.bind("<Control-KeyRelease-D>", self._handle_auto_align_shortcut_release, add="+")
         for child in widget.winfo_children():
             self._bind_alignment_spacebar_shortcuts(child)
 
@@ -762,6 +802,16 @@ class KaraokeHiresApp:
         style.configure("TFrame", background="#eef2f7")
         style.configure("TLabel", background="#eef2f7", foreground="#1f2937", font=default_font)
         style.configure("TButton", padding=(14, 10), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure(
+            "Accent.TButton",
+            padding=(14, 10),
+            font=("Microsoft YaHei UI", 10, "bold"),
+            foreground="#1d4ed8",
+        )
+        style.map(
+            "Accent.TButton",
+            foreground=[("active", "#1d4ed8"), ("!disabled", "#1d4ed8")],
+        )
         style.configure("TRadiobutton", background="#eef2f7", foreground="#1f2937", font=default_font)
         style.configure("TProgressbar", thickness=10)
 
@@ -1034,25 +1084,33 @@ class KaraokeHiresApp:
 
         actions = ttk.Frame(shell)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        actions.columnconfigure(5, weight=1)
+        actions.columnconfigure(6, weight=1)
         self.align_generate_button = ttk.Button(actions, text="生成波形", command=self._start_waveform_analysis)
         self.align_generate_button.grid(row=0, column=0, sticky="w")
+        self.align_auto_button = ttk.Button(
+            actions,
+            text="自动对齐",
+            command=self._auto_align_waveforms,
+            style="Accent.TButton",
+        )
+        self.align_auto_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        self._set_align_auto_button_enabled(False)
         self.align_preview_button = ttk.Button(actions, text="播放预览", command=self._start_alignment_preview)
-        self.align_preview_button.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        self.align_preview_button.grid(row=0, column=2, sticky="w", padx=(10, 0))
         self.align_preview_button.configure(state="disabled")
         self.align_stop_preview_button = ttk.Button(actions, text="停止播放", command=self._stop_alignment_preview)
-        self.align_stop_preview_button.grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.align_stop_preview_button.grid(row=0, column=3, sticky="w", padx=(10, 0))
         self.align_stop_preview_button.configure(state="disabled")
         self.align_export_button = ttk.Button(actions, text="导出对齐视频", command=self._start_aligned_export)
-        self.align_export_button.grid(row=0, column=3, sticky="w", padx=(10, 0))
+        self.align_export_button.grid(row=0, column=4, sticky="w", padx=(10, 0))
         self.align_export_button.configure(state="disabled")
         ttk.Button(actions, text="打开输出目录", command=self._open_align_output_dir).grid(
-            row=0, column=4, sticky="w", padx=(10, 0)
+            row=0, column=5, sticky="w", padx=(10, 0)
         )
         self.align_progress = ttk.Progressbar(actions, mode="indeterminate", length=170)
-        self.align_progress.grid(row=0, column=5, sticky="e")
+        self.align_progress.grid(row=0, column=6, sticky="e")
         ttk.Label(actions, textvariable=self.align_status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=6, sticky="e", padx=(12, 0)
+            row=0, column=7, sticky="e", padx=(12, 0)
         )
 
         control_panel = tk.Frame(
@@ -1167,7 +1225,7 @@ class KaraokeHiresApp:
         shortcut_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(
             shortcut_row,
-            text="快捷键: 空格生成波形 / 播放 / 停止，Ctrl+S 导出当前对齐目标",
+            text="快捷键: 空格生成波形 / 播放 / 停止，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认",
             foreground="#6b7280",
             font=("Microsoft YaHei UI", 9),
         ).grid(row=0, column=0, sticky="w")
@@ -1854,6 +1912,17 @@ class KaraokeHiresApp:
             and self.align_viewer.audio_waveform is not None
         )
 
+    def _is_auto_align_running(self) -> bool:
+        return self.align_auto_worker is not None and self.align_auto_worker.is_alive()
+
+    def _set_align_auto_button_enabled(self, enabled: bool) -> None:
+        if self.align_auto_button is None:
+            return
+        self.align_auto_button.configure(
+            state="normal" if enabled else "disabled",
+            style="Accent.TButton" if enabled else "TButton",
+        )
+
     def _handle_align_target_changed(self) -> None:
         self._stop_alignment_preview(log_message=False)
         if self.align_viewer is not None:
@@ -1884,6 +1953,7 @@ class KaraokeHiresApp:
             self.align_viewer.clear()
         if hasattr(self, "align_export_button"):
             self.align_export_button.configure(state="disabled")
+        self._set_align_auto_button_enabled(False)
         if self.align_preview_button is not None:
             self.align_preview_button.configure(state="disabled")
         self.align_status_var.set("准备生成波形")
@@ -1891,7 +1961,9 @@ class KaraokeHiresApp:
 
     def _refresh_alignment_preview_controls(self) -> None:
         is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
-        can_preview = self._has_alignment_waveforms() and not is_playing
+        is_auto_aligning = self._is_auto_align_running()
+        can_preview = self._has_alignment_waveforms() and not is_playing and not is_auto_aligning
+        self._set_align_auto_button_enabled(self._has_alignment_waveforms() and not is_auto_aligning)
         if self.align_preview_button is not None:
             self.align_preview_button.configure(state="normal" if can_preview else "disabled")
         if self.align_stop_preview_button is not None:
@@ -1953,6 +2025,7 @@ class KaraokeHiresApp:
         self._stop_alignment_preview(log_message=False)
         self.align_generate_button.configure(state="disabled")
         self.align_export_button.configure(state="disabled")
+        self._set_align_auto_button_enabled(False)
         if self.align_preview_button is not None:
             self.align_preview_button.configure(state="disabled")
         self.align_progress.start(10)
@@ -2012,7 +2085,95 @@ class KaraokeHiresApp:
 
         messagebox.showerror(APP_TITLE, message)
 
+    def _auto_align_waveforms(self) -> None:
+        if self.align_auto_worker and self.align_auto_worker.is_alive():
+            messagebox.showinfo(APP_TITLE, "当前自动对齐任务还在处理，请稍等。")
+            return
+
+        if not self._has_alignment_waveforms() or self.align_viewer is None:
+            messagebox.showerror(APP_TITLE, "请先生成波形。")
+            return
+
+        self._stop_alignment_preview(log_message=False)
+        target_track = ALIGN_TARGET_VIDEO if self._is_align_video_target() else ALIGN_TARGET_AUDIO
+        target_label = "字幕视频" if target_track == ALIGN_TARGET_VIDEO else "原唱音源"
+        video_waveform = self.align_viewer.video_waveform
+        audio_waveform = self.align_viewer.audio_waveform
+        assert video_waveform is not None
+        assert audio_waveform is not None
+
+        self.align_generate_button.configure(state="disabled")
+        self._set_align_auto_button_enabled(False)
+        self.align_export_button.configure(state="disabled")
+        if self.align_preview_button is not None:
+            self.align_preview_button.configure(state="disabled")
+        self.align_progress.start(10)
+        self.align_status_var.set("自动对齐中...")
+
+        def worker() -> None:
+            try:
+                result = estimate_waveform_alignment(
+                    video_waveform,
+                    audio_waveform,
+                    target_track=target_track,
+                )
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc)
+                self._append_align_log(f"自动对齐失败: {message}")
+                self._post_ui(lambda message=message: self._finish_auto_align(False, message, None, target_label))
+                return
+
+            self._post_ui(lambda result=result: self._finish_auto_align(True, "", result, target_label))
+
+        self.align_auto_worker = threading.Thread(target=worker, daemon=True)
+        self.align_auto_worker.start()
+
+    def _finish_auto_align(
+        self,
+        success: bool,
+        message: str,
+        result: AutoAlignResult | None,
+        target_label: str,
+    ) -> None:
+        self.align_progress.stop()
+        self.align_generate_button.configure(state="normal")
+        self.align_export_button.configure(state="normal" if self._has_alignment_waveforms() else "disabled")
+        self._refresh_alignment_preview_controls()
+
+        if not success or result is None:
+            self.align_status_var.set("自动对齐失败")
+            messagebox.showerror(APP_TITLE, message)
+            return
+
+        if self.align_viewer is None:
+            return
+
+        self.align_viewer.set_offset(result.target_offset_seconds)
+        self.align_viewer.set_playhead(
+            max(0.0, result.media_offset_seconds),
+            keep_visible=True,
+        )
+        confidence_percent = int(round(result.confidence * 100))
+        self.align_status_var.set(f"自动对齐完成，置信度 {confidence_percent}%")
+        self._append_align_log(
+            "自动对齐完成: "
+            f"移动{target_label} {format_offset(result.target_offset_seconds)}，"
+            f"媒体相对偏移 {format_offset(result.media_offset_seconds)}，"
+            f"置信度 {confidence_percent}%"
+        )
+        self._append_align_log(
+            "自动对齐评分: "
+            f"score={result.score:.3f}, second={result.second_score:.3f}, "
+            f"overlap={result.overlap_seconds:.2f}s, search=±{result.search_seconds:.0f}s"
+        )
+        if result.confidence < 0.55:
+            self._append_align_log("自动对齐置信度偏低，建议用播放预览再确认。")
+
     def _start_alignment_preview(self) -> None:
+        if self._is_auto_align_running():
+            messagebox.showinfo(APP_TITLE, "当前自动对齐任务还在处理，请稍等。")
+            return
+
         if not self._has_alignment_waveforms():
             messagebox.showerror(APP_TITLE, "请先生成波形并完成对齐。")
             return
@@ -2095,6 +2256,9 @@ class KaraokeHiresApp:
         if self.align_export_worker and self.align_export_worker.is_alive():
             messagebox.showinfo(APP_TITLE, "当前导出任务还在处理，请稍等。")
             return
+        if self._is_auto_align_running():
+            messagebox.showinfo(APP_TITLE, "当前自动对齐任务还在处理，请稍等。")
+            return
 
         try:
             video_path, audio_path = self._validate_alignment_inputs()
@@ -2138,6 +2302,7 @@ class KaraokeHiresApp:
         encode_mode = self.align_encode_mode_var.get()
         self.align_generate_button.configure(state="disabled")
         self.align_export_button.configure(state="disabled")
+        self._set_align_auto_button_enabled(False)
         if self.align_preview_button is not None:
             self.align_preview_button.configure(state="disabled")
         self.align_progress.start(10)
