@@ -21,9 +21,11 @@ from krok_helper.audio_alignment import (
     DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE,
     ENCODE_MODE_HARDWARE,
     ENCODE_MODE_SOFTWARE,
+    LEAD_FILL_BLACK,
+    LEAD_FILL_WHITE,
     WaveformData,
     export_aligned_audio,
-    export_aligned_video,
+    export_aligned_video_v2 as export_aligned_video,
     estimate_waveform_alignment,
     extract_waveform,
     format_offset,
@@ -37,6 +39,7 @@ from krok_helper.config import (
     WINDOW_WIDTH,
 )
 from krok_helper.errors import ProcessingError
+from krok_helper.ffmpeg import find_tool, probe_media
 from krok_helper.pipeline import (
     DEFAULT_OFF_NAME_TEMPLATE,
     DEFAULT_ON_NAME_TEMPLATE,
@@ -69,6 +72,17 @@ OUTPUT_NAME_MODE_LABELS = {
     OUTPUT_NAME_MODE_FIXED: "默认命名: on_vocal.mkv / off_vocal.mkv",
     OUTPUT_NAME_MODE_TEMPLATE: "自定义模板: 使用你自己的命名范式",
 }
+
+
+def format_media_duration(seconds: float | None) -> str:
+    if seconds is None or seconds <= 0:
+        return "时长未知"
+
+    minutes = int(seconds // 60)
+    remainder = seconds - minutes * 60
+    if minutes:
+        return f"{minutes}:{remainder:06.3f}"
+    return f"{seconds:.3f}s"
 
 
 class DropZone:
@@ -208,17 +222,20 @@ class WaveformViewer:
         on_offset_changed,
         on_playhead_changed,
         on_playhead_released,
+        on_trim_changed,
     ) -> None:
         self.mode_var = mode_var
         self.target_var = target_var
         self.on_offset_changed = on_offset_changed
         self.on_playhead_changed = on_playhead_changed
         self.on_playhead_released = on_playhead_released
+        self.on_trim_changed = on_trim_changed
         self.video_waveform: WaveformData | None = None
         self.audio_waveform: WaveformData | None = None
         self.offset_seconds = 0.0
         self.playhead_seconds = 0.0
         self.view_start_seconds = 0.0
+        self.trim_end_seconds: float | None = None
         self.pixels_per_second = 120.0
         self.label_gutter_width = 190
         self.ruler_height = 28
@@ -258,8 +275,10 @@ class WaveformViewer:
         self.view_start_seconds = 0.0
         self.offset_seconds = 0.0
         self.playhead_seconds = 0.0
+        self.trim_end_seconds = None
         self.on_offset_changed(self.offset_seconds)
         self.on_playhead_changed(self.playhead_seconds)
+        self.on_trim_changed(self.trim_end_seconds)
         self.draw()
 
     def clear(self) -> None:
@@ -268,8 +287,10 @@ class WaveformViewer:
         self.view_start_seconds = 0.0
         self.offset_seconds = 0.0
         self.playhead_seconds = 0.0
+        self.trim_end_seconds = None
         self.on_offset_changed(self.offset_seconds)
         self.on_playhead_changed(self.playhead_seconds)
+        self.on_trim_changed(self.trim_end_seconds)
         self.draw()
 
     def set_offset(self, seconds: float) -> None:
@@ -287,6 +308,17 @@ class WaveformViewer:
         if notify:
             self.on_playhead_changed(self.playhead_seconds)
         self.draw()
+
+    def set_trim_end(self, seconds: float | None) -> None:
+        if seconds is None:
+            self.trim_end_seconds = None
+        else:
+            self.trim_end_seconds = self._clamp_timeline_seconds(seconds)
+        self.on_trim_changed(self.trim_end_seconds)
+        self.draw()
+
+    def clear_trim_end(self) -> None:
+        self.set_trim_end(None)
 
     def set_zoom(self, pixels_per_second: float) -> None:
         plot_left, plot_width = self._plot_bounds()
@@ -495,7 +527,7 @@ class WaveformViewer:
         self.canvas.create_text(
             14,
             center_y - 11,
-            text=label,
+            text=f"{label}  ({format_media_duration(waveform.duration)})",
             anchor="w",
             fill="#1f2937",
             font=("Microsoft YaHei UI", 10, "bold"),
@@ -528,6 +560,38 @@ class WaveformViewer:
         start_x = plot_left + int((timeline_offset - self.view_start_seconds) * self.pixels_per_second)
         if plot_left <= start_x <= width:
             self.canvas.create_line(start_x, top + 6, start_x, bottom - 6, fill=color, dash=(4, 3))
+
+        end_seconds = timeline_offset + waveform.duration
+        end_x = plot_left + int((end_seconds - self.view_start_seconds) * self.pixels_per_second)
+        if plot_left <= end_x <= width:
+            self.canvas.create_line(end_x, top + 6, end_x, bottom - 6, fill=color, dash=(2, 4))
+            self.canvas.create_text(
+                end_x - 4,
+                top + 12,
+                text="末尾",
+                anchor="e",
+                fill=color,
+                font=("Segoe UI", 9, "bold"),
+            )
+
+    def _draw_trim_marker(self, width: int, height: int, plot_left: int) -> None:
+        if self.trim_end_seconds is None:
+            return
+
+        x = plot_left + int((self.trim_end_seconds - self.view_start_seconds) * self.pixels_per_second)
+        if x < plot_left or x > width:
+            return
+
+        color = "#7c3aed"
+        self.canvas.create_line(x, 0, x, height, fill=color, width=2, dash=(6, 3))
+        self.canvas.create_text(
+            x - 6 if x > width - 120 else x + 6,
+            height - 12,
+            text=f"尾裁 {self.trim_end_seconds:.3f}s",
+            anchor="e" if x > width - 120 else "w",
+            fill=color,
+            font=("Segoe UI", 9, "bold"),
+        )
 
     def draw(self) -> None:
         width = max(1, self.canvas.winfo_width())
@@ -591,6 +655,7 @@ class WaveformViewer:
         if plot_left <= zero_x <= width:
             self.canvas.create_line(zero_x, 0, zero_x, height, fill="#111827", dash=(2, 3))
 
+        self._draw_trim_marker(width, height, plot_left)
         self._draw_playhead(width, height, plot_left)
 
 
@@ -618,10 +683,17 @@ class KaraokeHiresApp:
         self.align_status_var = tk.StringVar(value="准备生成波形")
         self.align_offset_var = tk.StringVar(value="字幕视频偏移 +0.000s")
         self.align_playhead_var = tk.StringVar(value="播放位置 0.000s")
+        self.align_trim_var = tk.StringVar(value="视频尾裁 未设置")
+        self.align_video_info_var = tk.StringVar(value="字幕视频: 时长未知")
+        self.align_audio_info_var = tk.StringVar(value="原唱音源: 时长未知")
         self.align_target_var = tk.StringVar(value=ALIGN_TARGET_VIDEO)
         self.align_drag_mode_var = tk.StringVar(value="offset")
         self.align_encode_mode_var = tk.StringVar(value=ENCODE_MODE_SOFTWARE)
         self.align_zoom_var = tk.DoubleVar(value=120.0)
+        self.align_extra_wav_var = tk.BooleanVar(value=False)
+        self.align_force_1080p60_var = tk.BooleanVar(value=False)
+        self.align_auto_trim_var = tk.BooleanVar(value=False)
+        self.align_lead_fill_var = tk.StringVar(value=LEAD_FILL_BLACK)
 
         self.log_queue: queue.Queue[str] = queue.Queue()
         self.align_log_queue: queue.Queue[str] = queue.Queue()
@@ -654,6 +726,7 @@ class KaraokeHiresApp:
         self.align_log_text: tk.Text | None = None
         self.align_move_radio: ttk.Radiobutton | None = None
         self.align_encode_row: ttk.Frame | None = None
+        self.align_video_option_widgets: list[tk.Widget] = []
         self.align_auto_button: ttk.Button | None = None
         self.align_preview_button: ttk.Button | None = None
         self.align_stop_preview_button: ttk.Button | None = None
@@ -1085,6 +1158,8 @@ class KaraokeHiresApp:
             on_click=self._choose_align_audio,
         )
         self.align_audio_zone.frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        ttk.Label(drop_row, textvariable=self.align_video_info_var).grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(drop_row, textvariable=self.align_audio_info_var).grid(row=1, column=1, sticky="w", pady=(8, 0))
 
         actions = ttk.Frame(shell)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
@@ -1194,8 +1269,57 @@ class KaraokeHiresApp:
             row=0, column=4, padx=(6, 0)
         )
 
+        trim_row = ttk.Frame(control_panel)
+        trim_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(trim_row, textvariable=self.align_trim_var).grid(row=0, column=0, sticky="w")
+        trim_mark_button = ttk.Button(trim_row, text="将当前播放头设为尾裁点", command=self._mark_align_trim_end)
+        trim_mark_button.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        trim_clear_button = ttk.Button(trim_row, text="清除尾裁点", command=self._clear_align_trim_end)
+        trim_clear_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
+
+        option_row = ttk.Frame(control_panel)
+        option_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Checkbutton(option_row, text="额外再导出一份对齐后的 WAV", variable=self.align_extra_wav_var).grid(
+            row=0, column=0, sticky="w"
+        )
+        force_1080p60_check = ttk.Checkbutton(
+            option_row,
+            text="导出视频时重编码为 1080p 60fps",
+            variable=self.align_force_1080p60_var,
+        )
+        force_1080p60_check.grid(row=0, column=1, sticky="w", padx=(14, 0))
+        auto_trim_check = ttk.Checkbutton(
+            option_row,
+            text="导出视频时自动裁到音频末尾",
+            variable=self.align_auto_trim_var,
+            command=self._refresh_align_trim_status,
+        )
+        auto_trim_check.grid(row=0, column=2, sticky="w", padx=(14, 0))
+
+        lead_fill_row = ttk.Frame(control_panel)
+        lead_fill_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(lead_fill_row, text="视频前导画面").grid(row=0, column=0, sticky="w")
+        lead_black_radio = ttk.Radiobutton(
+            lead_fill_row,
+            text="前黑",
+            variable=self.align_lead_fill_var,
+            value=LEAD_FILL_BLACK,
+        )
+        lead_black_radio.grid(row=0, column=1, sticky="w", padx=(12, 0))
+        lead_white_radio = ttk.Radiobutton(
+            lead_fill_row,
+            text="前白",
+            variable=self.align_lead_fill_var,
+            value=LEAD_FILL_WHITE,
+        )
+        lead_white_radio.grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+        self.align_video_option_widgets.extend(
+            [trim_mark_button, trim_clear_button, force_1080p60_check, auto_trim_check, lead_black_radio, lead_white_radio]
+        )
+
         self.align_encode_row = ttk.Frame(control_panel)
-        self.align_encode_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.align_encode_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Label(self.align_encode_row, text="补黑编码").grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(
             self.align_encode_row,
@@ -1211,7 +1335,7 @@ class KaraokeHiresApp:
         ).grid(row=0, column=2, sticky="w", padx=(10, 0))
 
         zoom_row = ttk.Frame(control_panel)
-        zoom_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        zoom_row.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         zoom_row.columnconfigure(1, weight=1)
         ttk.Label(zoom_row, text="缩放").grid(row=0, column=0, sticky="w")
         ttk.Scale(
@@ -1226,7 +1350,7 @@ class KaraokeHiresApp:
         )
 
         shortcut_row = ttk.Frame(control_panel)
-        shortcut_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        shortcut_row.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Label(
             shortcut_row,
             text="快捷键: 空格生成波形 / 播放 / 停止，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认",
@@ -1245,6 +1369,7 @@ class KaraokeHiresApp:
             on_offset_changed=self._handle_align_offset_changed,
             on_playhead_changed=self._handle_align_playhead_changed,
             on_playhead_released=self._handle_align_playhead_released,
+            on_trim_changed=self._handle_align_trim_changed,
         )
         self.align_viewer.canvas.grid(row=0, column=0, sticky="nsew")
 
@@ -1278,6 +1403,7 @@ class KaraokeHiresApp:
         )
         self.align_log_text.grid(row=1, column=0, sticky="ew")
         self.align_log_text.configure(state="disabled")
+        self._refresh_align_trim_status()
         self._refresh_align_target_ui()
         self._bind_alignment_spacebar_shortcuts(shell)
 
@@ -1690,16 +1816,37 @@ class KaraokeHiresApp:
     def set_align_video_path(self, path: Path) -> None:
         self.align_video_var.set(str(path))
         self.align_video_zone.set_path(path)
+        self._update_alignment_media_info()
         self._invalidate_alignment_waveforms()
 
     def set_align_audio_path(self, path: Path) -> None:
         self.align_audio_var.set(str(path))
         self.align_audio_zone.set_path(path)
+        self._update_alignment_media_info()
         self._invalidate_alignment_waveforms()
+
+    def _update_alignment_media_info(self) -> None:
+        self.align_video_info_var.set(self._build_alignment_media_info(self.align_video_var.get().strip(), "字幕视频"))
+        self.align_audio_info_var.set(self._build_alignment_media_info(self.align_audio_var.get().strip(), "原唱音源"))
+
+    def _build_alignment_media_info(self, raw_path: str, label: str) -> str:
+        if not raw_path:
+            return f"{label}: 时长未知"
+
+        try:
+            path = Path(raw_path).expanduser()
+            ffmpeg_dir = self._resolve_ffmpeg_dir()
+            ffprobe_path = find_tool("ffprobe.exe", ffmpeg_dir)
+            info = probe_media(ffprobe_path, path)
+        except Exception:
+            return f"{label}: 时长未知"
+
+        return f"{label}: {format_media_duration(info.duration)}"
 
     def set_ffmpeg_dir(self, path: Path) -> None:
         self.ffmpeg_dir_var.set(str(path))
         self._refresh_ffmpeg_display()
+        self._update_alignment_media_info()
 
     def set_output_name_mode(self, mode: str) -> None:
         if mode == OUTPUT_NAME_MODE_VIDEO_NAME:
@@ -1944,12 +2091,27 @@ class KaraokeHiresApp:
         label = "字幕视频偏移" if self._is_align_video_target() else "原唱音源偏移"
         self.align_offset_var.set(f"{label} {format_offset(seconds)}")
 
+        self._refresh_align_trim_status()
+
     def _handle_align_playhead_changed(self, seconds: float) -> None:
         self.align_playhead_var.set(f"播放位置 {seconds:.3f}s")
 
     def _handle_align_playhead_released(self, _seconds: float) -> None:
         if self.align_preview_process is not None and self.align_preview_process.is_running():
             self._start_alignment_preview()
+
+    def _handle_align_trim_changed(self, seconds: float | None) -> None:
+        self._refresh_align_trim_status(seconds)
+
+    def _mark_align_trim_end(self) -> None:
+        if self.align_viewer is None:
+            return
+        self.align_viewer.set_trim_end(self.align_viewer.playhead_seconds)
+
+    def _clear_align_trim_end(self) -> None:
+        if self.align_viewer is None:
+            return
+        self.align_viewer.clear_trim_end()
 
     def _is_align_video_target(self) -> bool:
         return self.align_target_var.get() == ALIGN_TARGET_VIDEO
@@ -1963,6 +2125,60 @@ class KaraokeHiresApp:
 
     def _is_auto_align_running(self) -> bool:
         return self.align_auto_worker is not None and self.align_auto_worker.is_alive()
+
+    def _alignment_view_source_starts(self) -> tuple[float, float]:
+        if self.align_viewer is None:
+            return 0.0, 0.0
+
+        view_start = self.align_viewer.view_start_seconds
+        video_offset = self.align_viewer.offset_seconds if self._is_align_video_target() else 0.0
+        audio_offset = self.align_viewer.offset_seconds if not self._is_align_video_target() else 0.0
+        return max(0.0, view_start - video_offset), max(0.0, view_start - audio_offset)
+
+    def _compute_video_trim_duration(self) -> float | None:
+        if not self._is_align_video_target():
+            return None
+        if self.align_viewer is None or self.align_viewer.video_waveform is None:
+            return None
+
+        base_duration = max(0.0, self.align_viewer.video_waveform.duration + self.align_viewer.offset_seconds)
+        if base_duration <= 0:
+            return None
+
+        candidates = [base_duration]
+        if self.align_viewer.trim_end_seconds is not None:
+            candidates.append(self.align_viewer.trim_end_seconds)
+        if (
+            self.align_auto_trim_var.get()
+            and self.align_viewer.audio_waveform is not None
+            and self.align_viewer.audio_waveform.duration > 0
+        ):
+            candidates.append(self.align_viewer.audio_waveform.duration)
+
+        trim_duration = min(candidates)
+        if trim_duration < base_duration - 0.001:
+            return max(0.001, trim_duration)
+        return None
+
+    def _refresh_align_trim_status(self, trim_seconds: float | None = None) -> None:
+        if not self._is_align_video_target():
+            self.align_trim_var.set("视频尾裁 仅在导出字幕视频时生效")
+            return
+
+        manual_trim = trim_seconds
+        if manual_trim is None and self.align_viewer is not None:
+            manual_trim = self.align_viewer.trim_end_seconds
+
+        parts: list[str] = []
+        if manual_trim is not None:
+            parts.append(f"手动尾裁到 {manual_trim:.3f}s")
+        if self.align_auto_trim_var.get():
+            auto_trim = self._compute_video_trim_duration()
+            if auto_trim is not None and self.align_viewer is not None and self.align_viewer.audio_waveform is not None:
+                parts.append(f"自动最多保留到音频末尾 {self.align_viewer.audio_waveform.duration:.3f}s")
+            else:
+                parts.append("自动尾裁已开启")
+        self.align_trim_var.set(f"视频尾裁 {'；'.join(parts) if parts else '未设置'}")
 
     def _set_align_auto_button_enabled(self, enabled: bool) -> None:
         if self.align_auto_button is None:
@@ -1995,6 +2211,12 @@ class KaraokeHiresApp:
                     child.configure(state=state)
                 except tk.TclError:
                     pass
+        for widget in self.align_video_option_widgets:
+            try:
+                widget.configure(state="normal" if is_video_target else "disabled")
+            except tk.TclError:
+                pass
+        self._refresh_align_trim_status()
 
     def _invalidate_alignment_waveforms(self) -> None:
         self._stop_alignment_preview(log_message=False)
@@ -2128,6 +2350,8 @@ class KaraokeHiresApp:
                     video_waveform=video_waveform,
                     audio_waveform=audio_waveform,
                 )
+                self.align_video_info_var.set(f"字幕视频: {format_media_duration(video_waveform.duration)}")
+                self.align_audio_info_var.set(f"原唱音源: {format_media_duration(audio_waveform.duration)}")
                 self._refresh_align_target_ui()
                 self._refresh_alignment_preview_controls()
             return
@@ -2150,6 +2374,7 @@ class KaraokeHiresApp:
         audio_waveform = self.align_viewer.audio_waveform
         assert video_waveform is not None
         assert audio_waveform is not None
+        video_start_seconds, audio_start_seconds = self._alignment_view_source_starts()
 
         self.align_generate_button.configure(state="disabled")
         self._set_align_auto_button_enabled(False)
@@ -2158,6 +2383,9 @@ class KaraokeHiresApp:
             self.align_preview_button.configure(state="disabled")
         self.align_progress.start(10)
         self.align_status_var.set("自动对齐中...")
+        self._append_align_log(
+            f"自动对齐分析范围从当前视图左边界开始: 视频 {video_start_seconds:.3f}s, 音频 {audio_start_seconds:.3f}s"
+        )
 
         def worker() -> None:
             try:
@@ -2165,6 +2393,8 @@ class KaraokeHiresApp:
                     video_waveform,
                     audio_waveform,
                     target_track=target_track,
+                    video_start_seconds=video_start_seconds,
+                    audio_start_seconds=audio_start_seconds,
                 )
             except Exception as exc:  # noqa: BLE001
                 message = str(exc)
@@ -2349,6 +2579,20 @@ class KaraokeHiresApp:
         output_path = Path(output_path_raw).expanduser()
         offset_seconds = self.align_viewer.offset_seconds
         encode_mode = self.align_encode_mode_var.get()
+        try:
+            video_trim_duration = self._compute_video_trim_duration() if is_video_target else None
+            extra_wav_output: Path | None = None
+            if self.align_extra_wav_var.get():
+                extra_wav_candidate = self._render_alignment_output_path(
+                    video_path=video_path,
+                    audio_path=audio_path,
+                    is_video_target=False,
+                )
+                if not (not is_video_target and output_path == extra_wav_candidate):
+                    extra_wav_output = extra_wav_candidate
+        except ProcessingError as exc:
+            messagebox.showerror(APP_TITLE, str(exc))
+            return
         self.align_generate_button.configure(state="disabled")
         self.align_export_button.configure(state="disabled")
         self._set_align_auto_button_enabled(False)
@@ -2359,6 +2603,7 @@ class KaraokeHiresApp:
 
         def worker() -> None:
             try:
+                outputs: list[Path] = []
                 if is_video_target:
                     output = export_aligned_video(
                         video_path=video_path,
@@ -2367,7 +2612,11 @@ class KaraokeHiresApp:
                         ffmpeg_dir=ffmpeg_dir,
                         logger=self._append_align_log,
                         encode_mode=encode_mode,
+                        lead_fill_color=self.align_lead_fill_var.get(),
+                        force_1080p60=self.align_force_1080p60_var.get(),
+                        output_duration_seconds=video_trim_duration,
                     )
+                    outputs.append(output)
                 else:
                     output = export_aligned_audio(
                         audio_path=audio_path,
@@ -2375,17 +2624,29 @@ class KaraokeHiresApp:
                         offset_seconds=offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
                         logger=self._append_align_log,
-                )
+                    )
+                    outputs.append(output)
+
+                if extra_wav_output is not None:
+                    outputs.append(
+                        export_aligned_audio(
+                            audio_path=audio_path,
+                            output_path=extra_wav_output,
+                            offset_seconds=offset_seconds,
+                            ffmpeg_dir=ffmpeg_dir,
+                            logger=self._append_align_log,
+                        )
+                    )
             except Exception as exc:  # noqa: BLE001
                 message = str(exc)
                 self._append_align_log(f"导出失败: {message}")
                 self._post_ui(
-                    lambda message=message: self._finish_aligned_export(False, message, None, output_kind)
+                    lambda message=message: self._finish_aligned_export_v2(False, message, None, output_kind)
                 )
                 return
 
             self._post_ui(
-                lambda output=output: self._finish_aligned_export(True, "", output, output_kind)
+                lambda outputs=outputs: self._finish_aligned_export_v2(True, "", outputs, output_kind)
             )
 
         self.align_export_worker = threading.Thread(target=worker, daemon=True)
@@ -2395,7 +2656,7 @@ class KaraokeHiresApp:
         self,
         success: bool,
         message: str,
-        output_path: Path | None,
+        output_paths: list[Path] | None,
         output_kind: str,
     ) -> None:
         self.align_progress.stop()
@@ -2404,8 +2665,27 @@ class KaraokeHiresApp:
         self._refresh_alignment_preview_controls()
         self.align_status_var.set("导出完成" if success else "导出失败")
 
-        if success and output_path is not None:
-            messagebox.showinfo(APP_TITLE, f"{output_kind}已导出:\n{output_path}")
+        if success and output_paths:
+            messagebox.showinfo(APP_TITLE, f"{output_kind}已导出:\n" + "\n".join(str(path) for path in output_paths))
+            return
+
+        messagebox.showerror(APP_TITLE, message)
+
+    def _finish_aligned_export_v2(
+        self,
+        success: bool,
+        message: str,
+        output_paths: list[Path] | None,
+        output_kind: str,
+    ) -> None:
+        self.align_progress.stop()
+        self.align_generate_button.configure(state="normal")
+        self.align_export_button.configure(state="normal")
+        self._refresh_alignment_preview_controls()
+        self.align_status_var.set("导出完成" if success else "导出失败")
+
+        if success and output_paths:
+            messagebox.showinfo(APP_TITLE, f"{output_kind}已导出:\n" + "\n".join(str(path) for path in output_paths))
             return
 
         messagebox.showerror(APP_TITLE, message)

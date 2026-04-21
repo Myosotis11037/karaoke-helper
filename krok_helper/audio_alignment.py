@@ -22,6 +22,11 @@ DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE = "{video_name}_aligned"
 DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE = "{audio_name}_aligned"
 ENCODE_MODE_SOFTWARE = "software"
 ENCODE_MODE_HARDWARE = "hardware"
+LEAD_FILL_BLACK = "black"
+LEAD_FILL_WHITE = "white"
+FORCED_OUTPUT_WIDTH = 1920
+FORCED_OUTPUT_HEIGHT = 1080
+FORCED_OUTPUT_FPS = "60"
 COMMON_VIDEO_ENCODERS = {
     "h264": "libx264",
     "hevc": "libx265",
@@ -349,12 +354,28 @@ def _correlation_score(reference: list[float], target: list[float], offset_steps
     return score, overlap
 
 
+def _slice_waveform_peaks(
+    waveform: WaveformData,
+    start_seconds: float,
+) -> tuple[list[float], float]:
+    start_seconds = max(0.0, start_seconds)
+    if start_seconds >= waveform.duration:
+        return [], 0.0
+
+    start_index = max(0, int(start_seconds * waveform.peaks_per_second))
+    sliced = waveform.peaks[start_index:]
+    duration = max(0.0, waveform.duration - start_seconds)
+    return sliced, duration
+
+
 def estimate_waveform_alignment(
     video_waveform: WaveformData,
     audio_waveform: WaveformData,
     *,
     target_track: str,
     search_seconds: float = AUTO_ALIGN_SEARCH_SECONDS,
+    video_start_seconds: float = 0.0,
+    audio_start_seconds: float = 0.0,
 ) -> AutoAlignResult:
     if not video_waveform.peaks or not audio_waveform.peaks:
         raise ProcessingError("没有可用于自动对齐的波形数据。")
@@ -365,13 +386,18 @@ def estimate_waveform_alignment(
     if video_waveform.peaks_per_second != audio_waveform.peaks_per_second:
         raise ProcessingError("两条波形的分辨率不一致，无法自动对齐。")
 
-    reference = _normalize_envelope(audio_waveform.peaks)
-    target = _normalize_envelope(video_waveform.peaks)
+    sliced_video_peaks, sliced_video_duration = _slice_waveform_peaks(video_waveform, video_start_seconds)
+    sliced_audio_peaks, sliced_audio_duration = _slice_waveform_peaks(audio_waveform, audio_start_seconds)
+    reference = _normalize_envelope(sliced_audio_peaks)
+    target = _normalize_envelope(sliced_video_peaks)
     if not reference or not target:
         raise ProcessingError("波形能量变化太少，无法自动对齐。")
 
     max_offset_steps = max(1, int(round(search_seconds * peaks_per_second)))
-    min_overlap_steps = max(1, int(round(min(10.0, min(video_waveform.duration, audio_waveform.duration) * 0.25) * peaks_per_second)))
+    min_overlap_steps = max(
+        1,
+        int(round(min(10.0, min(sliced_video_duration, sliced_audio_duration) * 0.25) * peaks_per_second)),
+    )
     best_offset_steps = 0
     best_score = -1.0
     second_score = -1.0
@@ -456,6 +482,8 @@ def _build_black_segment_command(
     source_payload: dict,
     output_path: Path,
     duration_seconds: float,
+    *,
+    lead_fill_color: str = LEAD_FILL_BLACK,
 ) -> list[str]:
     video_stream = _first_video_stream(source_payload)
     audio_streams = _audio_streams(source_payload)
@@ -472,7 +500,7 @@ def _build_black_segment_command(
         "-f",
         "lavfi",
         "-i",
-        f"color=c=black:s={width}x{height}:r={frame_rate}:d={duration_seconds:.6f}",
+        f"color=c={lead_fill_color}:s={width}x{height}:r={frame_rate}:d={duration_seconds:.6f}",
     ]
 
     for audio_stream in audio_streams:
@@ -588,6 +616,8 @@ def _try_export_with_concat_copy(
     output_path: Path,
     offset_seconds: float,
     logger: Logger,
+    *,
+    lead_fill_color: str = LEAD_FILL_BLACK,
 ) -> bool:
     payload = _probe_payload(ffprobe_path, video_path)
     subtitles = _subtitle_streams(payload)
@@ -610,6 +640,7 @@ def _try_export_with_concat_copy(
                 source_payload=payload,
                 output_path=black_path,
                 duration_seconds=offset_seconds,
+                lead_fill_color=lead_fill_color,
             ),
             logger,
         )
@@ -649,7 +680,7 @@ def _try_export_with_concat_copy(
     return output_path.is_file() and os.path.getsize(output_path) > 0
 
 
-def build_aligned_audio_command(
+def _build_aligned_audio_command_legacy(
     ffmpeg_path: str,
     audio_path: Path,
     output_path: Path,
@@ -661,6 +692,13 @@ def build_aligned_audio_command(
         output_path = output_path.with_suffix(".wav")
 
     command = [ffmpeg_path, "-y", "-hide_banner"]
+    should_try_concat_copy = (
+        offset_seconds > 0 and not force_1080p60 and output_duration_seconds is None
+    )
+    if force_1080p60:
+        logger("视频输出: 强制重编码为 1920x1080 / 60fps")
+    if output_duration_seconds is not None:
+        logger(f"视频尾部裁剪: 输出时长限制为 {output_duration_seconds:.3f}s")
     if offset_seconds < 0:
         command.extend(["-ss", f"{abs(offset_seconds):.6f}"])
 
@@ -676,7 +714,7 @@ def build_aligned_audio_command(
         ]
     )
 
-    if offset_seconds > 0:
+    if should_try_concat_copy:
         delay_ms = max(0, int(round(offset_seconds * 1000)))
         command.extend(["-af", f"adelay={delay_ms}:all=1"])
 
@@ -760,6 +798,191 @@ def export_aligned_audio(
         raise ProcessingError(f"导出失败，未生成有效文件: {output_path}")
 
     logger(f"对齐音频导出完成: {output_path}")
+    return output_path
+
+
+def build_aligned_audio_command(
+    ffmpeg_path: str,
+    audio_path: Path,
+    output_path: Path,
+    offset_seconds: float,
+    *,
+    source_payload: dict | None = None,
+) -> list[str]:
+    if output_path.suffix.lower() != ".wav":
+        output_path = output_path.with_suffix(".wav")
+
+    command = [ffmpeg_path, "-y", "-hide_banner"]
+    if offset_seconds < 0:
+        command.extend(["-ss", f"{abs(offset_seconds):.6f}"])
+
+    command.extend(
+        [
+            "-i",
+            str(audio_path),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-sn",
+            "-dn",
+        ]
+    )
+
+    if offset_seconds > 0:
+        delay_ms = max(0, int(round(offset_seconds * 1000)))
+        command.extend(["-af", f"adelay={delay_ms}:all=1"])
+
+    audio_streams = _audio_streams(source_payload) if source_payload is not None else []
+    first_audio_stream = audio_streams[0] if audio_streams else {}
+    source_codec = str(first_audio_stream.get("codec_name") or "").lower()
+    sample_format = str(first_audio_stream.get("sample_fmt") or "").lower()
+    sample_bits = str(
+        first_audio_stream.get("bits_per_raw_sample")
+        or first_audio_stream.get("bits_per_sample")
+        or ""
+    ).lower()
+    pcm_codec = "pcm_s16le"
+    if "dbl" in sample_format or "pcm_f64" in source_codec or sample_bits == "64":
+        pcm_codec = "pcm_f64le"
+    elif "flt" in sample_format or "pcm_f32" in source_codec:
+        pcm_codec = "pcm_f32le"
+    elif sample_bits == "24" or "s24" in sample_format:
+        pcm_codec = "pcm_s24le"
+    elif sample_bits == "32" or "s32" in sample_format:
+        pcm_codec = "pcm_s32le"
+    elif sample_bits == "8" or "u8" in sample_format:
+        pcm_codec = "pcm_u8"
+    command.extend(["-c:a", pcm_codec])
+
+    sample_rate = first_audio_stream.get("sample_rate")
+    if sample_rate:
+        command.extend(["-ar", str(sample_rate)])
+    channels = first_audio_stream.get("channels")
+    if channels:
+        command.extend(["-ac", str(channels)])
+
+    command.extend(["-f", "wav"])
+    command.append(str(output_path))
+    return command
+
+
+def export_aligned_video_v2(
+    video_path: Path,
+    output_path: Path,
+    offset_seconds: float,
+    ffmpeg_dir: Path | None,
+    logger: Logger,
+    encode_mode: str = ENCODE_MODE_SOFTWARE,
+    lead_fill_color: str = LEAD_FILL_BLACK,
+    force_1080p60: bool = False,
+    output_duration_seconds: float | None = None,
+) -> Path:
+    if encode_mode not in {ENCODE_MODE_SOFTWARE, ENCODE_MODE_HARDWARE}:
+        encode_mode = ENCODE_MODE_SOFTWARE
+
+    ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
+    ffprobe_path = find_tool("ffprobe.exe", ffmpeg_dir)
+    media_info = probe_media(ffprobe_path, video_path)
+    source_payload = _probe_payload(ffprobe_path, video_path)
+    if media_info.video_streams == 0:
+        raise ProcessingError(f"字幕视频里没有检测到视频流: {video_path.name}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    should_try_concat_copy = (
+        offset_seconds > 0 and not force_1080p60 and output_duration_seconds is None
+    )
+
+    logger(f"导出对齐视频: {output_path.name}")
+    logger(f"字幕视频偏移: {format_offset(offset_seconds)}")
+    if force_1080p60:
+        logger("视频输出: 强制重编码为 1920x1080 / 60fps")
+    if output_duration_seconds is not None:
+        logger(f"视频尾部裁剪: 输出时长限制为 {output_duration_seconds:.3f}s")
+    if offset_seconds < 0:
+        logger(f"处理方式: 裁掉字幕视频开头 {abs(offset_seconds):.3f}s")
+    elif offset_seconds > 0:
+        logger(
+            "处理方式: "
+            f"先尝试生成 {offset_seconds:.3f}s {lead_fill_color} 前导画面并 concat -c copy，"
+            "失败则自动回退到重编码补前导"
+        )
+    else:
+        logger("处理方式: 不改时间轴，仅处理所需的重编码或裁剪选项")
+
+    if should_try_concat_copy:
+        try:
+            if _try_export_with_concat_copy(
+                ffmpeg_path=ffmpeg_path,
+                ffprobe_path=ffprobe_path,
+                video_path=video_path,
+                output_path=output_path,
+                offset_seconds=offset_seconds,
+                logger=logger,
+                lead_fill_color=lead_fill_color,
+            ):
+                logger(f"一级策略成功，对齐视频导出完成: {output_path}")
+                return output_path
+        except ProcessingError as exc:
+            logger(f"一级策略失败，改用重编码方案: {exc}")
+            try:
+                if output_path.exists():
+                    output_path.unlink()
+            except OSError:
+                pass
+
+    video_stream = _first_video_stream(source_payload)
+    video_codec = str(video_stream.get("codec_name") or "h264")
+    frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
+    audio_streams = _audio_streams(source_payload)
+    audio_codec = str(audio_streams[0].get("codec_name") or "aac") if audio_streams else "none"
+    encode_label = "硬编快速" if encode_mode == ENCODE_MODE_HARDWARE else "软编省空间"
+    logger(
+        "重编码策略: 使用滤镜处理时间轴，"
+        f"编码模式={encode_label}，video={video_codec}, fps={frame_rate}, audio={audio_codec}"
+    )
+
+    command = build_aligned_video_command(
+        ffmpeg_path=ffmpeg_path,
+        video_path=video_path,
+        output_path=output_path,
+        offset_seconds=offset_seconds,
+        has_audio=media_info.audio_streams > 0,
+        source_payload=source_payload,
+        encode_mode=encode_mode,
+        lead_fill_color=lead_fill_color,
+        force_1080p60=force_1080p60,
+        output_duration_seconds=output_duration_seconds,
+    )
+    try:
+        run_command(command, logger)
+    except ProcessingError as exc:
+        if (offset_seconds > 0 or force_1080p60) and encode_mode == ENCODE_MODE_HARDWARE:
+            logger(f"硬编失败，自动改用软编重试: {exc}")
+            fallback_command = build_aligned_video_command(
+                ffmpeg_path=ffmpeg_path,
+                video_path=video_path,
+                output_path=output_path,
+                offset_seconds=offset_seconds,
+                has_audio=media_info.audio_streams > 0,
+                source_payload=source_payload,
+                encode_mode=ENCODE_MODE_SOFTWARE,
+                lead_fill_color=lead_fill_color,
+                force_1080p60=force_1080p60,
+                output_duration_seconds=output_duration_seconds,
+            )
+            try:
+                run_command(fallback_command, logger)
+            except ProcessingError as fallback_exc:
+                raise ProcessingError(
+                    f"导出对齐视频失败: {output_path.name}\n{fallback_exc}"
+                ) from fallback_exc
+        else:
+            raise ProcessingError(f"导出对齐视频失败: {output_path.name}\n{exc}") from exc
+
+    if not output_path.is_file() or os.path.getsize(output_path) == 0:
+        raise ProcessingError(f"导出失败，未生成有效文件: {output_path}")
+
+    logger(f"对齐视频导出完成: {output_path}")
     return output_path
 
 
@@ -879,20 +1102,31 @@ def build_aligned_video_command(
     has_audio: bool = True,
     source_payload: dict | None = None,
     encode_mode: str = ENCODE_MODE_SOFTWARE,
+    lead_fill_color: str = LEAD_FILL_BLACK,
+    force_1080p60: bool = False,
+    output_duration_seconds: float | None = None,
 ) -> list[str]:
     command = [
         ffmpeg_path,
         "-y",
         "-hide_banner",
     ]
+    if output_duration_seconds is not None:
+        output_duration_seconds = max(0.001, output_duration_seconds)
     if offset_seconds < 0:
         command.extend(["-ss", f"{abs(offset_seconds):.6f}"])
 
-    if offset_seconds <= 0:
+    if offset_seconds <= 0 and not force_1080p60:
         command.extend(
             [
                 "-i",
                 str(video_path),
+            ]
+        )
+        if output_duration_seconds is not None:
+            command.extend(["-t", f"{output_duration_seconds:.6f}"])
+        command.extend(
+            [
                 "-map",
                 "0",
                 "-c",
@@ -908,40 +1142,71 @@ def build_aligned_video_command(
     audio_streams = _audio_streams(source_payload) if source_payload is not None else []
     first_audio_stream = audio_streams[0] if audio_streams else {}
     frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
+    target_frame_rate = FORCED_OUTPUT_FPS if force_1080p60 else frame_rate
     pixel_format = str(video_stream.get("pix_fmt") or "yuv420p")
-    delay_ms = max(0, int(round(offset_seconds * 1000)))
-    filters = [
-        f"[0:v:0]tpad=start_duration={offset_seconds:.6f}:start_mode=add:color=black,"
-        f"setpts=PTS-STARTPTS,fps=fps={frame_rate}[v]"
-    ]
+
+    subtitle_input_index = 0
+    if offset_seconds > 0:
+        delay_ms = max(0, int(round(offset_seconds * 1000)))
+        subtitle_input_index = 1
+        command.extend(
+            [
+                "-i",
+                str(video_path),
+                "-itsoffset",
+                f"{offset_seconds:.6f}",
+                "-i",
+                str(video_path),
+            ]
+        )
+        video_filter = (
+            f"[0:v:0]tpad=start_duration={offset_seconds:.6f}:start_mode=add:color={lead_fill_color},"
+            "setpts=PTS-STARTPTS"
+        )
+    else:
+        delay_ms = 0
+        command.extend(["-i", str(video_path)])
+        video_filter = "[0:v:0]setpts=PTS-STARTPTS"
+
+    if force_1080p60:
+        video_filter += (
+            f",scale={FORCED_OUTPUT_WIDTH}:{FORCED_OUTPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
+            f"pad={FORCED_OUTPUT_WIDTH}:{FORCED_OUTPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black"
+        )
+    video_filter += f",fps=fps={target_frame_rate}[v]"
+    filters = [video_filter]
     maps = ["-map", "[v]"]
     if has_audio:
-        filters.append(f"[0:a:0]adelay={delay_ms}:all=1[a]")
+        audio_filter = "[0:a:0]asetpts=PTS-STARTPTS"
+        if delay_ms > 0:
+            audio_filter += f",adelay={delay_ms}:all=1"
+        audio_filter += "[a]"
+        filters.append(audio_filter)
         maps.extend(["-map", "[a]"])
 
     command.extend(
         [
-            "-i",
-            str(video_path),
-            "-itsoffset",
-            f"{offset_seconds:.6f}",
-            "-i",
-            str(video_path),
             "-filter_complex",
             ";".join(filters),
+        ]
+    )
+    if output_duration_seconds is not None:
+        command.extend(["-t", f"{output_duration_seconds:.6f}"])
+    command.extend(
+        [
             *maps,
             "-map",
-            "1:s?",
+            f"{subtitle_input_index}:s?",
             "-map",
-            "1:d?",
+            f"{subtitle_input_index}:d?",
             "-map",
-            "1:t?",
+            f"{subtitle_input_index}:t?",
             "-map_metadata",
             "0",
         ]
     )
     command.extend(_video_encoding_options(video_stream, encode_mode))
-    command.extend(["-pix_fmt", pixel_format, "-r", frame_rate])
+    command.extend(["-pix_fmt", pixel_format, "-r", target_frame_rate])
     if has_audio:
         command.extend(_audio_encoding_options(first_audio_stream))
     command.extend(["-c:s", "copy", "-c:d", "copy", "-c:t", "copy", str(output_path)])
@@ -955,6 +1220,9 @@ def export_aligned_video(
     ffmpeg_dir: Path | None,
     logger: Logger,
     encode_mode: str = ENCODE_MODE_SOFTWARE,
+    lead_fill_color: str = LEAD_FILL_BLACK,
+    force_1080p60: bool = False,
+    output_duration_seconds: float | None = None,
 ) -> Path:
     if encode_mode not in {ENCODE_MODE_SOFTWARE, ENCODE_MODE_HARDWARE}:
         encode_mode = ENCODE_MODE_SOFTWARE
@@ -988,6 +1256,7 @@ def export_aligned_video(
                 output_path=output_path,
                 offset_seconds=offset_seconds,
                 logger=logger,
+                lead_fill_color=lead_fill_color,
             ):
                 logger(f"一级策略成功，对齐视频导出完成: {output_path}")
                 return output_path
@@ -1018,11 +1287,14 @@ def export_aligned_video(
         has_audio=media_info.audio_streams > 0,
         source_payload=source_payload,
         encode_mode=encode_mode,
+        lead_fill_color=lead_fill_color,
+        force_1080p60=force_1080p60,
+        output_duration_seconds=output_duration_seconds,
     )
     try:
         run_command(command, logger)
     except ProcessingError as exc:
-        if offset_seconds > 0 and encode_mode == ENCODE_MODE_HARDWARE:
+        if (offset_seconds > 0 or force_1080p60) and encode_mode == ENCODE_MODE_HARDWARE:
             logger(f"硬编快速失败，自动改用软编省空间重试: {exc}")
             fallback_command = build_aligned_video_command(
                 ffmpeg_path=ffmpeg_path,
@@ -1032,6 +1304,9 @@ def export_aligned_video(
                 has_audio=media_info.audio_streams > 0,
                 source_payload=source_payload,
                 encode_mode=ENCODE_MODE_SOFTWARE,
+                lead_fill_color=lead_fill_color,
+                force_1080p60=force_1080p60,
+                output_duration_seconds=output_duration_seconds,
             )
             try:
                 run_command(fallback_command, logger)
