@@ -526,11 +526,19 @@ class WaveformViewer:
         self.canvas.create_rectangle(0, top, plot_left, bottom, fill="#ffffff", outline="")
         self.canvas.create_text(
             14,
-            center_y - 11,
-            text=f"{label}  ({format_media_duration(waveform.duration)})",
+            center_y - 18,
+            text=label,
             anchor="w",
             fill="#1f2937",
             font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self.canvas.create_text(
+            14,
+            center_y + 8,
+            text=f"总时长 {format_media_duration(waveform.duration)}",
+            anchor="w",
+            fill="#5b6677",
+            font=("Microsoft YaHei UI", 9),
         )
         self.canvas.create_line(plot_left, center_y, width, center_y, fill="#d5dce6")
         self.canvas.create_line(plot_left, top + 6, plot_left, bottom - 6, fill="#e5e7eb")
@@ -665,6 +673,10 @@ class KaraokeHiresApp:
         self.root.title(APP_TITLE)
         self.root.geometry(self._build_centered_geometry(WINDOW_WIDTH, WINDOW_HEIGHT))
         self.root.minsize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+        try:
+            self.root.state("zoomed")
+        except tk.TclError:
+            self.root.attributes("-zoomed", True)
         self.root.configure(bg="#eef2f7")
 
         self.video_var = tk.StringVar()
@@ -879,6 +891,7 @@ class KaraokeHiresApp:
         style.configure("TFrame", background="#eef2f7")
         style.configure("TLabel", background="#eef2f7", foreground="#1f2937", font=default_font)
         style.configure("TButton", padding=(14, 10), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Compact.TButton", padding=(8, 3), font=("Microsoft YaHei UI", 10, "bold"))
         style.configure(
             "Accent.TButton",
             padding=(14, 10),
@@ -1112,7 +1125,8 @@ class KaraokeHiresApp:
         shell = ttk.Frame(parent, padding=20)
         shell.pack(fill="both", expand=True)
         shell.columnconfigure(0, weight=1)
-        shell.rowconfigure(4, weight=1)
+        shell.rowconfigure(4, weight=3, minsize=160)
+        shell.rowconfigure(5, weight=2, minsize=170)
 
         header = ttk.Frame(shell)
         header.grid(row=0, column=0, sticky="ew")
@@ -1270,15 +1284,25 @@ class KaraokeHiresApp:
         )
 
         trim_row = ttk.Frame(control_panel)
-        trim_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        trim_row.grid(row=3, column=0, columnspan=2, sticky="w", pady=(2, 0))
         ttk.Label(trim_row, textvariable=self.align_trim_var).grid(row=0, column=0, sticky="w")
-        trim_mark_button = ttk.Button(trim_row, text="将当前播放头设为尾裁点", command=self._mark_align_trim_end)
+        trim_mark_button = ttk.Button(
+            trim_row,
+            text="将当前播放头设为尾裁点",
+            command=self._mark_align_trim_end,
+            style="Compact.TButton",
+        )
         trim_mark_button.grid(row=0, column=1, sticky="w", padx=(12, 0))
-        trim_clear_button = ttk.Button(trim_row, text="清除尾裁点", command=self._clear_align_trim_end)
+        trim_clear_button = ttk.Button(
+            trim_row,
+            text="清除尾裁点",
+            command=self._clear_align_trim_end,
+            style="Compact.TButton",
+        )
         trim_clear_button.grid(row=0, column=2, sticky="w", padx=(8, 0))
 
         option_row = ttk.Frame(control_panel)
-        option_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        option_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Checkbutton(option_row, text="额外再导出一份对齐后的 WAV", variable=self.align_extra_wav_var).grid(
             row=0, column=0, sticky="w"
         )
@@ -1297,7 +1321,7 @@ class KaraokeHiresApp:
         auto_trim_check.grid(row=0, column=2, sticky="w", padx=(14, 0))
 
         lead_fill_row = ttk.Frame(control_panel)
-        lead_fill_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        lead_fill_row.grid(row=5, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(lead_fill_row, text="视频前导画面").grid(row=0, column=0, sticky="w")
         lead_black_radio = ttk.Radiobutton(
             lead_fill_row,
@@ -1319,7 +1343,7 @@ class KaraokeHiresApp:
         )
 
         self.align_encode_row = ttk.Frame(control_panel)
-        self.align_encode_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        self.align_encode_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(self.align_encode_row, text="补黑编码").grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(
             self.align_encode_row,
@@ -1335,7 +1359,7 @@ class KaraokeHiresApp:
         ).grid(row=0, column=2, sticky="w", padx=(10, 0))
 
         zoom_row = ttk.Frame(control_panel)
-        zoom_row.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        zoom_row.grid(row=7, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         zoom_row.columnconfigure(1, weight=1)
         ttk.Label(zoom_row, text="缩放").grid(row=0, column=0, sticky="w")
         ttk.Scale(
@@ -1350,7 +1374,7 @@ class KaraokeHiresApp:
         )
 
         shortcut_row = ttk.Frame(control_panel)
-        shortcut_row.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        shortcut_row.grid(row=8, column=0, columnspan=2, sticky="ew", pady=(4, 0))
         ttk.Label(
             shortcut_row,
             text="快捷键: 空格生成波形 / 播放 / 停止，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认",
@@ -1383,8 +1407,9 @@ class KaraokeHiresApp:
             padx=14,
             pady=8,
         )
-        log_panel.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        log_panel.grid(row=5, column=0, sticky="nsew", pady=(10, 0))
         log_panel.columnconfigure(0, weight=1)
+        log_panel.rowconfigure(1, weight=1)
         tk.Label(
             log_panel,
             text="对齐日志",
@@ -1394,14 +1419,14 @@ class KaraokeHiresApp:
         ).grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.align_log_text = tk.Text(
             log_panel,
-            height=3,
+            height=5,
             wrap="word",
             font=("Consolas", 10),
             relief="flat",
             bg="#ffffff",
             fg="#1f2937",
         )
-        self.align_log_text.grid(row=1, column=0, sticky="ew")
+        self.align_log_text.grid(row=1, column=0, sticky="nsew")
         self.align_log_text.configure(state="disabled")
         self._refresh_align_trim_status()
         self._refresh_align_target_ui()
