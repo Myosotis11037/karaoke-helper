@@ -64,9 +64,12 @@ def warn_duration_mismatch(
 
 def log_audio_format_mismatch(
     logger: Logger,
-    on_vocal_info: MediaInfo,
-    off_vocal_info: MediaInfo,
+    on_vocal_info: MediaInfo | None,
+    off_vocal_info: MediaInfo | None,
 ) -> None:
+    if on_vocal_info is None or off_vocal_info is None:
+        return
+
     if on_vocal_info.path.suffix.lower() == off_vocal_info.path.suffix.lower():
         return
 
@@ -274,9 +277,17 @@ def resolve_output_paths(
     output_name_mode: str,
     on_name_template: str | None = None,
     off_name_template: str | None = None,
-) -> tuple[Path, Path]:
+    *,
+    include_on: bool = True,
+    include_off: bool = True,
+) -> tuple[Path | None, Path | None]:
+    if not include_on and not include_off:
+        raise ProcessingError("至少需要生成原唱或伴奏中的一个输出文件。")
     if output_name_mode == OUTPUT_NAME_MODE_FIXED:
-        return output_dir / "on_vocal.mkv", output_dir / "off_vocal.mkv"
+        return (
+            output_dir / "on_vocal.mkv" if include_on else None,
+            output_dir / "off_vocal.mkv" if include_off else None,
+        )
 
     if output_name_mode == OUTPUT_NAME_MODE_VIDEO_NAME:
         on_name_template = DEFAULT_ON_NAME_TEMPLATE
@@ -284,19 +295,28 @@ def resolve_output_paths(
         output_name_mode = OUTPUT_NAME_MODE_TEMPLATE
 
     if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
-        on_template = on_name_template or DEFAULT_ON_NAME_TEMPLATE
-        off_template = off_name_template or DEFAULT_OFF_NAME_TEMPLATE
-        on_stem = render_output_stem(on_template, video_path, "原唱")
-        off_stem = render_output_stem(off_template, video_path, "伴奏")
-        return output_dir / f"{on_stem}.mkv", output_dir / f"{off_stem}.mkv"
+        on_output: Path | None = None
+        off_output: Path | None = None
+
+        if include_on:
+            on_template = on_name_template or DEFAULT_ON_NAME_TEMPLATE
+            on_stem = render_output_stem(on_template, video_path, "原唱")
+            on_output = output_dir / f"{on_stem}.mkv"
+
+        if include_off:
+            off_template = off_name_template or DEFAULT_OFF_NAME_TEMPLATE
+            off_stem = render_output_stem(off_template, video_path, "伴奏")
+            off_output = output_dir / f"{off_stem}.mkv"
+
+        return on_output, off_output
 
     raise ProcessingError(f"不支持的输出命名模式: {output_name_mode}")
 
 
 def run_pipeline(
     video_path: Path,
-    on_vocal_path: Path,
-    off_vocal_path: Path,
+    on_vocal_path: Path | None,
+    off_vocal_path: Path | None,
     output_dir: Path | None,
     ffmpeg_dir: Path | None,
     output_name_mode: str,
@@ -312,24 +332,31 @@ def run_pipeline(
     logger(describe_tool_source(ffmpeg_path, ffmpeg_dir))
     logger("正在分析输入文件...")
 
+    if on_vocal_path is None and off_vocal_path is None:
+        raise ProcessingError("至少需要提供原唱音频或伴奏音频中的一个。")
+
     video_info = probe_media(ffprobe_path, video_path)
-    on_vocal_info = probe_media(ffprobe_path, on_vocal_path)
-    off_vocal_info = probe_media(ffprobe_path, off_vocal_path)
+    on_vocal_info = probe_media(ffprobe_path, on_vocal_path) if on_vocal_path is not None else None
+    off_vocal_info = probe_media(ffprobe_path, off_vocal_path) if off_vocal_path is not None else None
 
     if video_info.video_streams == 0:
         raise ProcessingError("字幕视频里没有检测到视频流。")
-    if on_vocal_info.audio_streams == 0:
+    if on_vocal_info is not None and on_vocal_info.audio_streams == 0:
         raise ProcessingError("原唱无损文件里没有检测到音频流。")
-    if off_vocal_info.audio_streams == 0:
+    if off_vocal_info is not None and off_vocal_info.audio_streams == 0:
         raise ProcessingError("伴奏无损文件里没有检测到音频流。")
 
     log_media_summary(logger, "字幕视频", video_info)
-    log_media_summary(logger, "原唱无损", on_vocal_info)
-    log_media_summary(logger, "伴奏无损", off_vocal_info)
+    if on_vocal_info is not None:
+        log_media_summary(logger, "原唱无损", on_vocal_info)
+    if off_vocal_info is not None:
+        log_media_summary(logger, "伴奏无损", off_vocal_info)
     log_audio_format_mismatch(logger, on_vocal_info, off_vocal_info)
 
-    warn_duration_mismatch(logger, video_info, on_vocal_info, "原唱无损")
-    warn_duration_mismatch(logger, video_info, off_vocal_info, "伴奏无损")
+    if on_vocal_info is not None:
+        warn_duration_mismatch(logger, video_info, on_vocal_info, "原唱无损")
+    if off_vocal_info is not None:
+        warn_duration_mismatch(logger, video_info, off_vocal_info, "伴奏无损")
 
     output_dir = resolve_output_dir(video_path, output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -339,32 +366,42 @@ def run_pipeline(
         output_name_mode,
         on_name_template=on_name_template,
         off_name_template=off_name_template,
+        include_on=on_vocal_info is not None,
+        include_off=off_vocal_info is not None,
     )
     logger(f"输出命名模式: {output_name_mode}")
-    logger(f"目标文件名: {on_output.name} / {off_output.name}")
+    target_names = [path.name for path in (on_output, off_output) if path is not None]
+    logger(f"目标文件名: {' / '.join(target_names)}")
 
     with TemporaryDirectory(prefix="krok-helper-") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
-        outputs = [
-            process_output(
-                ffmpeg_path,
-                logger,
-                video_info,
-                on_vocal_info,
-                on_output,
-                temp_dir / "on_vocal.normalized.flac",
-                "On Vocal",
-            ),
-            process_output(
-                ffmpeg_path,
-                logger,
-                video_info,
-                off_vocal_info,
-                off_output,
-                temp_dir / "off_vocal.normalized.flac",
-                "Off Vocal",
-            ),
-        ]
+        outputs: list[Path] = []
+
+        if on_vocal_info is not None and on_output is not None:
+            outputs.append(
+                process_output(
+                    ffmpeg_path,
+                    logger,
+                    video_info,
+                    on_vocal_info,
+                    on_output,
+                    temp_dir / "on_vocal.normalized.flac",
+                    "On Vocal",
+                )
+            )
+
+        if off_vocal_info is not None and off_output is not None:
+            outputs.append(
+                process_output(
+                    ffmpeg_path,
+                    logger,
+                    video_info,
+                    off_vocal_info,
+                    off_output,
+                    temp_dir / "off_vocal.normalized.flac",
+                    "Off Vocal",
+                )
+            )
 
     logger(f"输出目录: {output_dir}")
     logger("全部处理完成。")

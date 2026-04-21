@@ -47,9 +47,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def run_cli(args: argparse.Namespace) -> int:
-    required = [args.video, args.on_audio, args.off_audio]
-    if any(value is None for value in required):
-        raise ProcessingError("命令行模式需要同时提供 --video、--on-audio 和 --off-audio。")
+    if args.video is None or (args.on_audio is None and args.off_audio is None):
+        raise ProcessingError("命令行模式至少需要提供 --video，以及 --on-audio 或 --off-audio 中的一个。")
 
     saved_settings = load_app_settings()
     output_name_mode = args.output_name_mode or saved_settings.output_name_mode
@@ -66,8 +65,8 @@ def run_cli(args: argparse.Namespace) -> int:
 
     outputs = run_pipeline(
         video_path=args.video.expanduser(),
-        on_vocal_path=args.on_audio.expanduser(),
-        off_vocal_path=args.off_audio.expanduser(),
+        on_vocal_path=args.on_audio.expanduser() if args.on_audio else None,
+        off_vocal_path=args.off_audio.expanduser() if args.off_audio else None,
         output_dir=args.output_dir.expanduser() if args.output_dir else None,
         ffmpeg_dir=ffmpeg_dir,
         output_name_mode=output_name_mode,
@@ -107,7 +106,7 @@ def run_gui(args: argparse.Namespace) -> int:
 
 def main() -> int:
     args = parse_args()
-    cli_requested = all(value is not None for value in [args.video, args.on_audio, args.off_audio])
+    cli_requested = args.video is not None and (args.on_audio is not None or args.off_audio is not None)
 
     if cli_requested and not args.gui:
         try:

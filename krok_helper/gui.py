@@ -60,8 +60,13 @@ AUDIO_FILETYPES = [
     ("音频文件", "*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv"),
     ("所有文件", "*.*"),
 ]
+ALIGN_AUDIO_FILETYPES = [
+    ("音频或 MP4 文件", "*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv *.mp4"),
+    ("所有文件", "*.*"),
+]
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi"}
 AUDIO_EXTENSIONS = {".flac", ".wav", ".mp3", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
+ALIGN_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS | {".mp4"}
 FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 ALIGN_TARGET_VIDEO = "video"
 ALIGN_TARGET_AUDIO = "audio"
@@ -997,7 +1002,7 @@ class KaraokeHiresApp:
 
         ttk.Label(
             header,
-            text="把三个文件拖进下方卡片，或点击卡片选择文件。输出目录会自动使用字幕视频所在目录。",
+            text="把字幕视频拖进下方卡片，再按需放入原唱音频和/或伴奏音频。至少提供一条音频就可以开始生成。",
             font=("Microsoft YaHei UI", 11),
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
 
@@ -1051,7 +1056,7 @@ class KaraokeHiresApp:
         self.on_vocal_zone = DropZone(
             card_row,
             title="原唱音频",
-            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n拖入原唱音频或含单音轨的 mkv。",
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可单独生成原唱 Hi-Res 视频，也可和伴奏一起生成。",
             extensions=AUDIO_EXTENSIONS,
             on_click=self._choose_on_audio,
         )
@@ -1060,7 +1065,7 @@ class KaraokeHiresApp:
         self.off_vocal_zone = DropZone(
             card_row,
             title="伴奏音频",
-            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n拖入伴奏音频或含单音轨的 mkv。",
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可单独生成伴奏 Hi-Res 视频，也可和原唱一起生成。",
             extensions=AUDIO_EXTENSIONS,
             on_click=self._choose_off_audio,
         )
@@ -1167,8 +1172,8 @@ class KaraokeHiresApp:
         self.align_audio_zone = DropZone(
             drop_row,
             title="原唱音源",
-            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可作为固定参考，也可导出修正后的音频。",
-            extensions=AUDIO_EXTENSIONS,
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv / mp4\n可拖入音频或带音轨的 mp4，作为固定参考或导出修正后的音频。",
+            extensions=ALIGN_AUDIO_EXTENSIONS,
             on_click=self._choose_align_audio,
         )
         self.align_audio_zone.frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
@@ -1892,12 +1897,28 @@ class KaraokeHiresApp:
             raise ProcessingError("输出命名模式无效，请重新选择。")
         return output_name_mode
 
-    def _resolve_output_name_templates(self, *, require_valid: bool) -> tuple[str, str]:
-        on_template = self.on_name_template_var.get().strip() or DEFAULT_ON_NAME_TEMPLATE
-        off_template = self.off_name_template_var.get().strip() or DEFAULT_OFF_NAME_TEMPLATE
+    def _resolve_output_name_templates(
+        self,
+        *,
+        require_valid: bool,
+        include_on: bool = True,
+        include_off: bool = True,
+    ) -> tuple[str | None, str | None]:
+        on_template = (
+            self.on_name_template_var.get().strip() or DEFAULT_ON_NAME_TEMPLATE
+            if include_on
+            else None
+        )
+        off_template = (
+            self.off_name_template_var.get().strip() or DEFAULT_OFF_NAME_TEMPLATE
+            if include_off
+            else None
+        )
         if require_valid:
-            on_template = validate_output_name_template(on_template, "原唱")
-            off_template = validate_output_name_template(off_template, "伴奏")
+            if on_template is not None:
+                on_template = validate_output_name_template(on_template, "原唱")
+            if off_template is not None:
+                off_template = validate_output_name_template(off_template, "伴奏")
         return on_template, off_template
 
     def _resolve_alignment_name_templates(self, *, require_valid: bool) -> tuple[str, str]:
@@ -2042,7 +2063,7 @@ class KaraokeHiresApp:
     def _choose_align_audio(self) -> None:
         path = filedialog.askopenfilename(
             title="选择需要对齐的原唱音源",
-            filetypes=AUDIO_FILETYPES,
+            filetypes=ALIGN_AUDIO_FILETYPES,
             initialdir=self._current_align_browse_dir(),
         )
         if path:
@@ -2751,31 +2772,44 @@ class KaraokeHiresApp:
         output_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer", str(output_dir)])
 
-    def _validate_inputs(self) -> tuple[Path, Path, Path, Path, Path | None, str, str | None, str | None]:
+    def _validate_inputs(
+        self,
+    ) -> tuple[Path, Path | None, Path | None, Path, Path | None, str, str | None, str | None]:
         video_path = Path(self.video_var.get()).expanduser()
-        on_vocal_path = Path(self.on_vocal_var.get()).expanduser()
-        off_vocal_path = Path(self.off_vocal_var.get()).expanduser()
+        on_vocal_raw = self.on_vocal_var.get().strip()
+        off_vocal_raw = self.off_vocal_var.get().strip()
+        on_vocal_path = Path(on_vocal_raw).expanduser() if on_vocal_raw else None
+        off_vocal_path = Path(off_vocal_raw).expanduser() if off_vocal_raw else None
         output_dir = self._resolve_output_dir()
         output_name_mode = self._resolve_output_name_mode()
         ffmpeg_dir = self._resolve_ffmpeg_dir()
 
-        missing = [
-            label
-            for label, path in [
-                ("字幕视频", video_path),
-                ("原唱音频", on_vocal_path),
-                ("伴奏音频", off_vocal_path),
-            ]
-            if not path.is_file()
-        ]
+        missing = []
+        if not video_path.is_file():
+            missing.append("字幕视频")
+        if on_vocal_path is not None and not on_vocal_path.is_file():
+            missing.append("原唱音频")
+        if off_vocal_path is not None and not off_vocal_path.is_file():
+            missing.append("伴奏音频")
         if missing:
             raise ProcessingError(f"请先选择有效的文件: {', '.join(missing)}")
 
-        if on_vocal_path.resolve() == off_vocal_path.resolve():
+        if on_vocal_path is None and off_vocal_path is None:
+            raise ProcessingError("请至少选择原唱音频或伴奏音频中的一个。")
+
+        if (
+            on_vocal_path is not None
+            and off_vocal_path is not None
+            and on_vocal_path.resolve() == off_vocal_path.resolve()
+        ):
             raise ProcessingError("原唱音频和伴奏音频不能是同一个文件。")
 
         if output_name_mode == OUTPUT_NAME_MODE_TEMPLATE:
-            on_template, off_template = self._resolve_output_name_templates(require_valid=True)
+            on_template, off_template = self._resolve_output_name_templates(
+                require_valid=True,
+                include_on=on_vocal_path is not None,
+                include_off=off_vocal_path is not None,
+            )
         else:
             on_template, off_template = None, None
 
