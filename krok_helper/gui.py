@@ -208,6 +208,11 @@ class DropZone:
         self.path_var.set(str(path))
         self._set_visual_state(selected=True)
 
+    def clear_path(self) -> None:
+        self.path = None
+        self.path_var.set("未选择文件")
+        self._set_visual_state(selected=False)
+
     def contains_widget(self, widget) -> bool:
         current = widget
         while current is not None:
@@ -1110,20 +1115,24 @@ class KaraokeHiresApp:
 
         controls = ttk.Frame(shell)
         controls.grid(row=5, column=0, sticky="ew", pady=(18, 0))
-        controls.columnconfigure(2, weight=1)
+        controls.columnconfigure(3, weight=1)
 
         self.start_button = ttk.Button(controls, text="开始生成", command=self._start)
         self.start_button.grid(row=0, column=0, sticky="w")
 
-        ttk.Button(controls, text="打开输出目录", command=self._open_output_dir).grid(
+        ttk.Button(controls, text="清空已选文件", command=self._clear_hires_inputs).grid(
             row=0, column=1, sticky="w", padx=(10, 0)
         )
 
+        ttk.Button(controls, text="打开输出目录", command=self._open_output_dir).grid(
+            row=0, column=2, sticky="w", padx=(10, 0)
+        )
+
         self.progress = ttk.Progressbar(controls, mode="indeterminate", length=180)
-        self.progress.grid(row=0, column=2, sticky="e")
+        self.progress.grid(row=0, column=3, sticky="e")
 
         ttk.Label(controls, textvariable=self.status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=3, sticky="e", padx=(12, 0)
+            row=0, column=4, sticky="e", padx=(12, 0)
         )
 
     def _build_alignment_ui(self, parent) -> None:
@@ -1182,7 +1191,7 @@ class KaraokeHiresApp:
 
         actions = ttk.Frame(shell)
         actions.grid(row=2, column=0, sticky="ew", pady=(0, 10))
-        actions.columnconfigure(6, weight=1)
+        actions.columnconfigure(7, weight=1)
         self.align_generate_button = ttk.Button(actions, text="生成波形", command=self._start_waveform_analysis)
         self.align_generate_button.grid(row=0, column=0, sticky="w")
         self.align_auto_button = ttk.Button(
@@ -1205,10 +1214,13 @@ class KaraokeHiresApp:
         ttk.Button(actions, text="打开输出目录", command=self._open_align_output_dir).grid(
             row=0, column=5, sticky="w", padx=(10, 0)
         )
+        ttk.Button(actions, text="清空已选文件", command=self._clear_alignment_inputs).grid(
+            row=0, column=6, sticky="w", padx=(10, 0)
+        )
         self.align_progress = ttk.Progressbar(actions, mode="indeterminate", length=170)
-        self.align_progress.grid(row=0, column=6, sticky="e")
+        self.align_progress.grid(row=0, column=7, sticky="e")
         ttk.Label(actions, textvariable=self.align_status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
-            row=0, column=7, sticky="e", padx=(12, 0)
+            row=0, column=8, sticky="e", padx=(12, 0)
         )
 
         control_panel = tk.Frame(
@@ -1835,6 +1847,20 @@ class KaraokeHiresApp:
         self.video_zone.set_path(path)
         self.output_dir_var.set(str(resolve_output_dir(path)))
 
+    def _clear_hires_inputs(self) -> None:
+        if self.worker and self.worker.is_alive():
+            messagebox.showinfo(APP_TITLE, "当前生成任务还在处理中，请稍等。")
+            return
+
+        self.video_var.set("")
+        self.on_vocal_var.set("")
+        self.off_vocal_var.set("")
+        self.video_zone.clear_path()
+        self.on_vocal_zone.clear_path()
+        self.off_vocal_zone.clear_path()
+        self.output_dir_var.set("跟随字幕视频所在目录")
+        self.status_var.set("已清空已选文件")
+
     def set_on_vocal_path(self, path: Path) -> None:
         self.on_vocal_var.set(str(path))
         self.on_vocal_zone.set_path(path)
@@ -1854,6 +1880,26 @@ class KaraokeHiresApp:
         self.align_audio_zone.set_path(path)
         self._update_alignment_media_info()
         self._invalidate_alignment_waveforms()
+
+    def _clear_alignment_inputs(self) -> None:
+        if self.align_worker and self.align_worker.is_alive():
+            messagebox.showinfo(APP_TITLE, "当前波形任务还在处理，请稍等。")
+            return
+        if self._is_auto_align_running():
+            messagebox.showinfo(APP_TITLE, "当前自动对齐任务还在处理，请稍等。")
+            return
+        if self.align_export_worker and self.align_export_worker.is_alive():
+            messagebox.showinfo(APP_TITLE, "当前导出任务还在处理，请稍等。")
+            return
+
+        self._stop_alignment_preview(log_message=False)
+        self.align_video_var.set("")
+        self.align_audio_var.set("")
+        self.align_video_zone.clear_path()
+        self.align_audio_zone.clear_path()
+        self._update_alignment_media_info()
+        self._invalidate_alignment_waveforms()
+        self.align_status_var.set("已清空已选文件")
 
     def _update_alignment_media_info(self) -> None:
         self.align_video_info_var.set(self._build_alignment_media_info(self.align_video_var.get().strip(), "字幕视频"))
