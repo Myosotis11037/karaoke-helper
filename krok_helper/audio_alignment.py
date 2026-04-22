@@ -7,7 +7,6 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from krok_helper.errors import ProcessingError
 from krok_helper.ffmpeg import _build_subprocess_kwargs, find_tool, probe_media, run_command
@@ -292,11 +291,6 @@ def _audio_encoding_options(audio_stream: dict, stream_index: int | None = None)
     return options
 
 
-def _concat_file_line(path: Path) -> str:
-    escaped = path.resolve().as_posix().replace("'", "'\\''")
-    return f"file '{escaped}'"
-
-
 def _samples_from_pcm(raw: bytes) -> array.array:
     samples = array.array("h")
     if raw:
@@ -477,209 +471,6 @@ def extract_waveform(
     )
 
 
-def _build_black_segment_command(
-    ffmpeg_path: str,
-    source_payload: dict,
-    output_path: Path,
-    duration_seconds: float,
-    *,
-    lead_fill_color: str = LEAD_FILL_BLACK,
-) -> list[str]:
-    video_stream = _first_video_stream(source_payload)
-    audio_streams = _audio_streams(source_payload)
-
-    width = int(video_stream.get("width") or 1920)
-    height = int(video_stream.get("height") or 1080)
-    frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
-    pixel_format = str(video_stream.get("pix_fmt") or "yuv420p")
-
-    command = [
-        ffmpeg_path,
-        "-y",
-        "-hide_banner",
-        "-f",
-        "lavfi",
-        "-i",
-        f"color=c={lead_fill_color}:s={width}x{height}:r={frame_rate}:d={duration_seconds:.6f}",
-    ]
-
-    for audio_stream in audio_streams:
-        sample_rate = str(audio_stream.get("sample_rate") or "48000")
-        command.extend(
-            [
-                "-f",
-                "lavfi",
-                "-t",
-                f"{duration_seconds:.6f}",
-                "-i",
-                f"anullsrc=channel_layout={_channel_layout(audio_stream)}:sample_rate={sample_rate}",
-            ]
-        )
-
-    command.extend(["-map", "0:v:0"])
-    for index in range(len(audio_streams)):
-        command.extend(["-map", f"{index + 1}:a:0"])
-
-    command.extend(_video_encoding_options(video_stream))
-    command.extend(["-pix_fmt", pixel_format, "-r", frame_rate])
-
-    for index, audio_stream in enumerate(audio_streams):
-        command.extend(_audio_encoding_options(audio_stream, index))
-
-    command.extend(["-map_metadata", "-1", str(output_path)])
-    return command
-
-
-def _build_concat_copy_command(ffmpeg_path: str, concat_list_path: Path, output_path: Path) -> list[str]:
-    return [
-        ffmpeg_path,
-        "-y",
-        "-hide_banner",
-        "-f",
-        "concat",
-        "-safe",
-        "0",
-        "-i",
-        str(concat_list_path),
-        "-map",
-        "0",
-        "-c",
-        "copy",
-        str(output_path),
-    ]
-
-
-def _build_timestamp_normalization_command(
-    ffmpeg_path: str,
-    input_path: Path,
-    output_path: Path,
-) -> list[str]:
-    return [
-        ffmpeg_path,
-        "-y",
-        "-hide_banner",
-        "-fflags",
-        "+genpts",
-        "-i",
-        str(input_path),
-        "-map",
-        "0",
-        "-c",
-        "copy",
-        "-avoid_negative_ts",
-        "make_zero",
-        str(output_path),
-    ]
-
-
-def _validate_concat_output(
-    ffprobe_path: str,
-    source_payload: dict,
-    output_path: Path,
-    offset_seconds: float,
-    logger: Logger,
-) -> None:
-    output_payload = _probe_payload(ffprobe_path, output_path)
-    for codec_type, label in [("video", "视频"), ("audio", "音频"), ("subtitle", "字幕")]:
-        source_count = _stream_count(source_payload, codec_type)
-        output_count = _stream_count(output_payload, codec_type)
-        if output_count < source_count:
-            raise ProcessingError(
-                f"concat 输出缺少{label}流: 源文件 {source_count} 条，输出 {output_count} 条"
-            )
-
-    source_duration = _duration_from_payload(source_payload)
-    output_duration = _duration_from_payload(output_payload)
-    if source_duration is not None and output_duration is not None:
-        expected_duration = source_duration + offset_seconds
-        tolerance = max(2.0, expected_duration * 0.03)
-        lower_limit = max(0.0, expected_duration - tolerance)
-        upper_limit = expected_duration + tolerance
-        logger(
-            "一级策略: 时长校验 "
-            f"源 {source_duration:.3f}s + 黑场 {offset_seconds:.3f}s = 预期 {expected_duration:.3f}s，"
-            f"输出 {output_duration:.3f}s"
-        )
-        if not lower_limit <= output_duration <= upper_limit:
-            raise ProcessingError(
-                "concat 输出时长异常: "
-                f"预期约 {expected_duration:.3f}s，实际 {output_duration:.3f}s"
-            )
-    else:
-        logger("一级策略: ffprobe 未能读取完整时长，跳过时长校验")
-
-
-def _try_export_with_concat_copy(
-    ffmpeg_path: str,
-    ffprobe_path: str,
-    video_path: Path,
-    output_path: Path,
-    offset_seconds: float,
-    logger: Logger,
-    *,
-    lead_fill_color: str = LEAD_FILL_BLACK,
-) -> bool:
-    payload = _probe_payload(ffprobe_path, video_path)
-    subtitles = _subtitle_streams(payload)
-    if subtitles:
-        logger(
-            f"检测到 {len(subtitles)} 条字幕流，concat 无损拼接可能因流结构不一致而失败，"
-            "会先尝试，失败后自动回退。"
-        )
-
-    with TemporaryDirectory(prefix="krok-align-concat-") as temp_dir_raw:
-        temp_dir = Path(temp_dir_raw)
-        black_path = temp_dir / "black.mkv"
-        concat_list_path = temp_dir / "concat.txt"
-        normalized_source_path = temp_dir / "source.normalized.mkv"
-
-        logger("一级策略: 读取源视频参数并生成黑场片段")
-        run_command(
-            _build_black_segment_command(
-                ffmpeg_path=ffmpeg_path,
-                source_payload=payload,
-                output_path=black_path,
-                duration_seconds=offset_seconds,
-                lead_fill_color=lead_fill_color,
-            ),
-            logger,
-        )
-        concat_list_path.write_text(
-            "\n".join([_concat_file_line(black_path), _concat_file_line(video_path)]) + "\n",
-            encoding="utf-8",
-        )
-
-        logger("一级策略: 尝试 concat -c copy 无损拼接")
-        run_command(_build_concat_copy_command(ffmpeg_path, concat_list_path, output_path), logger)
-        try:
-            _validate_concat_output(ffprobe_path, payload, output_path, offset_seconds, logger)
-        except ProcessingError as exc:
-            logger(f"一级策略: 直接 concat 校验失败，尝试先无损规范化源视频时间戳: {exc}")
-            try:
-                if output_path.exists():
-                    output_path.unlink()
-            except OSError:
-                pass
-
-            run_command(
-                _build_timestamp_normalization_command(
-                    ffmpeg_path,
-                    video_path,
-                    normalized_source_path,
-                ),
-                logger,
-            )
-            concat_list_path.write_text(
-                "\n".join([_concat_file_line(black_path), _concat_file_line(normalized_source_path)]) + "\n",
-                encoding="utf-8",
-            )
-            logger("一级策略: 使用规范化源视频再次 concat -c copy")
-            run_command(_build_concat_copy_command(ffmpeg_path, concat_list_path, output_path), logger)
-            _validate_concat_output(ffprobe_path, payload, output_path, offset_seconds, logger)
-
-    return output_path.is_file() and os.path.getsize(output_path) > 0
-
-
 def export_aligned_audio(
     audio_path: Path,
     output_path: Path,
@@ -816,9 +607,6 @@ def export_aligned_video_v2(
         raise ProcessingError(f"字幕视频里没有检测到视频流: {video_path.name}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    should_try_concat_copy = (
-        offset_seconds > 0 and not force_1080p60 and output_duration_seconds is None
-    )
 
     logger(f"导出对齐视频: {output_path.name}")
     logger(f"字幕视频偏移: {format_offset(offset_seconds)}")
@@ -827,36 +615,11 @@ def export_aligned_video_v2(
     if output_duration_seconds is not None:
         logger(f"视频尾部裁剪: 输出时长限制为 {output_duration_seconds:.3f}s")
     if offset_seconds < 0:
-        logger(f"处理方式: 裁掉字幕视频开头 {abs(offset_seconds):.3f}s")
+        logger(f"处理方式: 裁掉字幕视频开头 {abs(offset_seconds):.3f}s，并重编码导出")
     elif offset_seconds > 0:
-        logger(
-            "处理方式: "
-            f"先尝试生成 {offset_seconds:.3f}s {lead_fill_color} 前导画面并 concat -c copy，"
-            "失败则自动回退到重编码补前导"
-        )
+        logger(f"处理方式: 给字幕视频前面补 {offset_seconds:.3f}s {lead_fill_color} 前导画面，并重编码导出")
     else:
-        logger("处理方式: 不改时间轴，仅处理所需的重编码或裁剪选项")
-
-    if should_try_concat_copy:
-        try:
-            if _try_export_with_concat_copy(
-                ffmpeg_path=ffmpeg_path,
-                ffprobe_path=ffprobe_path,
-                video_path=video_path,
-                output_path=output_path,
-                offset_seconds=offset_seconds,
-                logger=logger,
-                lead_fill_color=lead_fill_color,
-            ):
-                logger(f"一级策略成功，对齐视频导出完成: {output_path}")
-                return output_path
-        except ProcessingError as exc:
-            logger(f"一级策略失败，改用重编码方案: {exc}")
-            try:
-                if output_path.exists():
-                    output_path.unlink()
-            except OSError:
-                pass
+        logger("处理方式: 不改时间轴，直接重编码导出视频")
 
     video_stream = _first_video_stream(source_payload)
     video_codec = str(video_stream.get("codec_name") or "h264")
@@ -884,7 +647,7 @@ def export_aligned_video_v2(
     try:
         run_command(command, logger)
     except ProcessingError as exc:
-        if (offset_seconds > 0 or force_1080p60) and encode_mode == ENCODE_MODE_HARDWARE:
+        if encode_mode == ENCODE_MODE_HARDWARE:
             logger(f"硬编失败，自动改用软编重试: {exc}")
             fallback_command = build_aligned_video_command(
                 ffmpeg_path=ffmpeg_path,
@@ -1044,28 +807,6 @@ def build_aligned_video_command(
     if offset_seconds < 0:
         command.extend(["-ss", f"{abs(offset_seconds):.6f}"])
 
-    if offset_seconds <= 0 and not force_1080p60:
-        command.extend(
-            [
-                "-i",
-                str(video_path),
-            ]
-        )
-        if output_duration_seconds is not None:
-            command.extend(["-t", f"{output_duration_seconds:.6f}"])
-        command.extend(
-            [
-                "-map",
-                "0",
-                "-c",
-                "copy",
-            ]
-        )
-        if offset_seconds < 0:
-            command.extend(["-avoid_negative_ts", "make_zero"])
-        command.append(str(output_path))
-        return command
-
     video_stream = _first_video_stream(source_payload) if source_payload is not None else {}
     audio_streams = _audio_streams(source_payload) if source_payload is not None else []
     first_audio_stream = audio_streams[0] if audio_streams else {}
@@ -1152,101 +893,14 @@ def export_aligned_video(
     force_1080p60: bool = False,
     output_duration_seconds: float | None = None,
 ) -> Path:
-    if encode_mode not in {ENCODE_MODE_SOFTWARE, ENCODE_MODE_HARDWARE}:
-        encode_mode = ENCODE_MODE_SOFTWARE
-
-    ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
-    ffprobe_path = find_tool("ffprobe.exe", ffmpeg_dir)
-    media_info = probe_media(ffprobe_path, video_path)
-    source_payload = _probe_payload(ffprobe_path, video_path)
-    if media_info.video_streams == 0:
-        raise ProcessingError(f"字幕视频里没有检测到视频流: {video_path.name}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    logger(f"导出对齐视频: {output_path.name}")
-    logger(f"字幕视频偏移: {format_offset(offset_seconds)}")
-    if offset_seconds < 0:
-        logger(f"处理方式: 裁掉字幕视频开头 {abs(offset_seconds):.3f}s")
-    elif offset_seconds > 0:
-        logger(
-            f"处理方式: 先尝试生成 {offset_seconds:.3f}s 黑场并 concat -c copy，"
-            "失败则自动回退到重编码补黑"
-        )
-    else:
-        logger("处理方式: 不改变时间轴，仅复制视频容器")
-
-    if offset_seconds > 0:
-        try:
-            if _try_export_with_concat_copy(
-                ffmpeg_path=ffmpeg_path,
-                ffprobe_path=ffprobe_path,
-                video_path=video_path,
-                output_path=output_path,
-                offset_seconds=offset_seconds,
-                logger=logger,
-                lead_fill_color=lead_fill_color,
-            ):
-                logger(f"一级策略成功，对齐视频导出完成: {output_path}")
-                return output_path
-        except ProcessingError as exc:
-            logger(f"一级策略失败，改用二级策略: {exc}")
-            try:
-                if output_path.exists():
-                    output_path.unlink()
-            except OSError:
-                pass
-        video_stream = _first_video_stream(source_payload)
-        video_codec = str(video_stream.get("codec_name") or "h264")
-        frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
-        audio_streams = _audio_streams(source_payload)
-        audio_codec = str(audio_streams[0].get("codec_name") or "aac") if audio_streams else "none"
-        encode_label = "硬编快速" if encode_mode == ENCODE_MODE_HARDWARE else "软编省空间"
-        logger(
-            "二级策略: 使用 tpad / adelay 重编码生成前黑视频，"
-            f"编码模式={encode_label}，尽量沿用源参数: "
-            f"video={video_codec}, fps={frame_rate}, audio={audio_codec}"
-        )
-
-    command = build_aligned_video_command(
-        ffmpeg_path=ffmpeg_path,
+    return export_aligned_video_v2(
         video_path=video_path,
         output_path=output_path,
         offset_seconds=offset_seconds,
-        has_audio=media_info.audio_streams > 0,
-        source_payload=source_payload,
+        ffmpeg_dir=ffmpeg_dir,
+        logger=logger,
         encode_mode=encode_mode,
         lead_fill_color=lead_fill_color,
         force_1080p60=force_1080p60,
         output_duration_seconds=output_duration_seconds,
     )
-    try:
-        run_command(command, logger)
-    except ProcessingError as exc:
-        if (offset_seconds > 0 or force_1080p60) and encode_mode == ENCODE_MODE_HARDWARE:
-            logger(f"硬编快速失败，自动改用软编省空间重试: {exc}")
-            fallback_command = build_aligned_video_command(
-                ffmpeg_path=ffmpeg_path,
-                video_path=video_path,
-                output_path=output_path,
-                offset_seconds=offset_seconds,
-                has_audio=media_info.audio_streams > 0,
-                source_payload=source_payload,
-                encode_mode=ENCODE_MODE_SOFTWARE,
-                lead_fill_color=lead_fill_color,
-                force_1080p60=force_1080p60,
-                output_duration_seconds=output_duration_seconds,
-            )
-            try:
-                run_command(fallback_command, logger)
-            except ProcessingError as fallback_exc:
-                raise ProcessingError(
-                    f"导出对齐视频失败: {output_path.name}\n{fallback_exc}"
-                ) from fallback_exc
-        else:
-            raise ProcessingError(f"导出对齐视频失败: {output_path.name}\n{exc}") from exc
-
-    if not output_path.is_file() or os.path.getsize(output_path) == 0:
-        raise ProcessingError(f"导出失败，未生成有效文件: {output_path}")
-
-    logger(f"对齐视频导出完成: {output_path}")
-    return output_path
