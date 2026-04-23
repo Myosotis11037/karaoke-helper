@@ -417,18 +417,18 @@ class WaveformView(QWidget):
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "生成波形后会在这里显示对齐视图")
             return
 
-        outer_rect = self.rect().adjusted(8, 8, -8, -8)
+        outer_rect = self.rect().adjusted(0, 0, -1, -1)
         label_width = 148
         painter.setPen(QColor("#d5dce6"))
         painter.drawRect(outer_rect)
 
-        ruler_rect = outer_rect.adjusted(label_width, 0, -8, -(outer_rect.height() - 24))
+        ruler_rect = outer_rect.adjusted(label_width, 0, 0, -(outer_rect.height() - 24))
         painter.fillRect(ruler_rect, QColor("#fafbfc"))
         painter.setPen(QColor("#cfd7e2"))
         painter.drawRect(ruler_rect)
 
         content_rect = outer_rect.adjusted(0, 24, 0, 0)
-        track_gap = 12
+        track_gap = 0
         track_height = max(68, int((content_rect.height() - track_gap) / 2))
         video_label_rect = content_rect.adjusted(0, 0, -(content_rect.width() - label_width), -(content_rect.height() - track_height))
         video_rect = content_rect.adjusted(label_width, 0, 0, -(content_rect.height() - track_height))
@@ -569,6 +569,8 @@ class KrokHelperQtApp(QMainWindow):
         self.align_video_name_template_value = DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
         self.align_audio_name_template_value = DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
         self.ffmpeg_dir_text = ""
+        self._align_lead_fill_selection = LEAD_FILL_BLACK
+        self._align_encode_selection = ENCODE_MODE_SOFTWARE
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -644,9 +646,9 @@ class KrokHelperQtApp(QMainWindow):
                 border-color: #2f6fed;
             }
             QPushButton:disabled {
-                background: #f3f4f6;
-                border-color: #e5e7eb;
-                color: #9ca3af;
+                background: #e5e7eb;
+                border-color: #cbd5e1;
+                color: #94a3b8;
             }
             QPushButton[compact="true"] {
                 padding: 3px 8px;
@@ -664,12 +666,23 @@ class KrokHelperQtApp(QMainWindow):
             QRadioButton, QCheckBox {
                 background: transparent;
             }
+            QRadioButton:disabled, QCheckBox:disabled, QLabel:disabled {
+                color: #94a3b8;
+            }
             QRadioButton::indicator, QCheckBox::indicator {
                 width: 14px;
                 height: 14px;
                 border: 2px solid #94a3b8;
                 border-radius: 7px;
                 background: #ffffff;
+            }
+            QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {
+                border-color: #cbd5e1;
+                background: #e5e7eb;
+            }
+            QRadioButton::indicator:checked:disabled, QCheckBox::indicator:checked:disabled {
+                border-color: #cbd5e1;
+                background: #d1d5db;
             }
             QRadioButton::indicator:hover, QCheckBox::indicator:hover {
                 border-color: #60a5fa;
@@ -689,6 +702,29 @@ class KrokHelperQtApp(QMainWindow):
                 background: #ffffff;
                 border: 1px solid #c8d0da;
                 padding: 6px 8px;
+            }
+            QScrollBar:vertical {
+                background: #e2e8f0;
+                border-left: 1px solid #cbd5e1;
+                width: 14px;
+                margin: 0;
+            }
+            QScrollBar::handle:vertical {
+                background: #94a3b8;
+                border-radius: 6px;
+                min-height: 48px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #64748b;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+                background: transparent;
+                border: 0;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
             }
             """
         )
@@ -947,6 +983,7 @@ class KrokHelperQtApp(QMainWindow):
         header.setContentsMargins(0, 0, 0, 0)
         title = QLabel("音频波形对齐")
         title.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 20pt; font-weight: 700;')
+        alignment_title_height = title.sizeHint().height()
         desc = QLabel("把字幕视频和原唱音源放进来，选择要修正的对象，手动对齐波形后导出对应文件。")
         desc.setWordWrap(True)
         settings_button = QPushButton("对齐设置")
@@ -992,6 +1029,7 @@ class KrokHelperQtApp(QMainWindow):
 
         actions = QHBoxLayout()
         actions.setContentsMargins(0, 0, 0, 10)
+        actions.setSpacing(8)
         self.align_analyze_button = QPushButton("生成波形")
         self.align_analyze_button.clicked.connect(self._start_alignment_analysis)
         self.align_auto_button = QPushButton("自动对齐")
@@ -1105,9 +1143,9 @@ class KrokHelperQtApp(QMainWindow):
         trim_widget = QFrame()
         trim_widget.setObjectName("TrimRow")
         trim_widget.setFrameShape(QFrame.Shape.NoFrame)
-        trim_widget.setMinimumHeight(64)
+        trim_widget.setMinimumHeight(40)
         trim_layout = QGridLayout(trim_widget)
-        trim_layout.setContentsMargins(0, 0, 0, 10)
+        trim_layout.setContentsMargins(0, 0, 0, 0)
         trim_layout.setHorizontalSpacing(8)
         trim_layout.setVerticalSpacing(4)
         trim_header = QHBoxLayout()
@@ -1117,29 +1155,29 @@ class KrokHelperQtApp(QMainWindow):
         self.align_trim_label = QLabel("未设置")
         self.align_trim_label.setWordWrap(False)
         self.align_trim_label.setMinimumHeight(22)
-        mark_trim_button = QPushButton("将当前播放头设为尾裁点")
-        mark_trim_button.setMinimumHeight(34)
-        mark_trim_button.setStyleSheet("color: #111827;")
-        mark_trim_button.clicked.connect(lambda: self.waveform_view.set_trim_end(self.waveform_view.playhead_seconds))
-        clear_trim_button = QPushButton("清除尾裁点")
-        clear_trim_button.setMinimumHeight(34)
-        clear_trim_button.setStyleSheet("color: #111827;")
-        clear_trim_button.clicked.connect(self.waveform_view.clear_trim_end)
+        self.align_trim_mark_button = QPushButton("将当前播放头设为尾裁点")
+        self.align_trim_mark_button.setMinimumHeight(34)
+        self.align_trim_mark_button.clicked.connect(
+            lambda: self.waveform_view.set_trim_end(self.waveform_view.playhead_seconds)
+        )
+        self.align_trim_clear_button = QPushButton("清除尾裁点")
+        self.align_trim_clear_button.setMinimumHeight(34)
+        self.align_trim_clear_button.clicked.connect(self.waveform_view.clear_trim_end)
         trim_header.addWidget(trim_title_label)
         trim_header.addWidget(self.align_trim_label)
-        trim_header.addWidget(mark_trim_button)
-        trim_header.addWidget(clear_trim_button)
+        trim_header.addWidget(self.align_trim_mark_button)
+        trim_header.addWidget(self.align_trim_clear_button)
         trim_header.addStretch(1)
         trim_layout.addLayout(trim_header, 0, 0)
         control_layout.addWidget(trim_widget, 3, 0, 1, 2)
-        control_layout.setRowMinimumHeight(3, 64)
+        control_layout.setRowMinimumHeight(3, 40)
 
         option_row_widget = QFrame()
         option_row_widget.setFrameShape(QFrame.Shape.NoFrame)
         option_row_widget.setStyleSheet("background: transparent; border: 0;")
-        option_row_widget.setMinimumHeight(36)
+        option_row_widget.setMinimumHeight(24)
         option_row = QHBoxLayout(option_row_widget)
-        option_row.setContentsMargins(0, 4, 0, 0)
+        option_row.setContentsMargins(0, 0, 0, 0)
         option_row.setSpacing(12)
         self.align_extra_wav_check = QCheckBox("额外再导出一份对齐后的 WAV")
         self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
@@ -1150,12 +1188,12 @@ class KrokHelperQtApp(QMainWindow):
         option_row.addWidget(self.align_auto_trim_check)
         option_row.addStretch(1)
         control_layout.addWidget(option_row_widget, 4, 0, 1, 2)
-        control_layout.setRowMinimumHeight(4, 36)
+        control_layout.setRowMinimumHeight(4, 24)
 
-        lead_row_widget = QFrame()
-        lead_row_widget.setFrameShape(QFrame.Shape.NoFrame)
-        lead_row_widget.setStyleSheet("background: transparent; border: 0;")
-        lead_row = QHBoxLayout(lead_row_widget)
+        self.align_lead_row_widget = QFrame()
+        self.align_lead_row_widget.setFrameShape(QFrame.Shape.NoFrame)
+        self.align_lead_row_widget.setStyleSheet("background: transparent; border: 0;")
+        lead_row = QHBoxLayout(self.align_lead_row_widget)
         lead_row.setContentsMargins(0, 0, 0, 0)
         lead_row.addWidget(QLabel("视频前导画面"))
         self.align_lead_fill_black_radio = QRadioButton("前黑")
@@ -1168,7 +1206,7 @@ class KrokHelperQtApp(QMainWindow):
         lead_row.addWidget(self.align_lead_fill_black_radio)
         lead_row.addWidget(self.align_lead_fill_white_radio)
         lead_row.addStretch(1)
-        control_layout.addWidget(lead_row_widget, 5, 0, 1, 2)
+        control_layout.addWidget(self.align_lead_row_widget, 5, 0, 1, 2)
 
         encode_row = QHBoxLayout()
         encode_row.setContentsMargins(0, 0, 0, 0)
@@ -1204,13 +1242,16 @@ class KrokHelperQtApp(QMainWindow):
 
         shortcut_hint = QLabel("快捷键: 空格生成波形 / 播放 / 停止，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认。")
         shortcut_hint.setWordWrap(True)
-        shortcut_hint.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #6b7280;')
+        shortcut_hint.setStyleSheet(
+            'font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #6b7280; '
+            'background: #f1f5f9; border-radius: 4px; padding: 4px 8px;'
+        )
         control_layout.addWidget(shortcut_hint, 8, 0, 1, 2)
         control_panel.setFixedHeight(max(260, control_panel.sizeHint().height()))
         shell.addWidget(control_panel)
         shell.addSpacing(10)
 
-        self.waveform_view.setFixedHeight(280)
+        self.waveform_view.setFixedHeight(200)
         shell.addWidget(self.waveform_view)
         shell.addSpacing(10)
 
@@ -1227,7 +1268,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_log.setMinimumHeight(120)
         log_layout.addWidget(log_title, 0, 0)
         log_layout.addWidget(self.align_log, 1, 0)
-        log_panel.setFixedHeight(max(170, log_panel.sizeHint().height()))
+        log_panel.setFixedHeight(max(135, log_panel.sizeHint().height() - alignment_title_height))
         shell.addWidget(log_panel)
         shell.addStretch(1)
 
@@ -1885,12 +1926,45 @@ class KrokHelperQtApp(QMainWindow):
     def _refresh_align_target_ui(self) -> None:
         is_video_target = self._is_align_video_target()
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
+        self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
-        self.align_encode_row_widget.setEnabled(is_video_target)
+        self.align_trim_mark_button.setEnabled(is_video_target)
+        self.align_trim_clear_button.setEnabled(is_video_target)
         self.align_force_1080p60_check.setEnabled(is_video_target)
         self.align_auto_trim_check.setEnabled(is_video_target)
-        self.align_lead_fill_black_radio.setEnabled(is_video_target)
-        self.align_lead_fill_white_radio.setEnabled(is_video_target)
+        if is_video_target:
+            self.align_lead_row_widget.setEnabled(True)
+            self.align_encode_row_widget.setEnabled(True)
+            if self._align_lead_fill_selection == LEAD_FILL_WHITE:
+                self.align_lead_fill_white_radio.setChecked(True)
+            else:
+                self.align_lead_fill_black_radio.setChecked(True)
+            if self._align_encode_selection == ENCODE_MODE_HARDWARE:
+                self.align_encode_hardware_radio.setChecked(True)
+            else:
+                self.align_encode_software_radio.setChecked(True)
+        else:
+            if self.align_lead_fill_white_radio.isChecked():
+                self._align_lead_fill_selection = LEAD_FILL_WHITE
+            else:
+                self._align_lead_fill_selection = LEAD_FILL_BLACK
+            if self.align_encode_hardware_radio.isChecked():
+                self._align_encode_selection = ENCODE_MODE_HARDWARE
+            else:
+                self._align_encode_selection = ENCODE_MODE_SOFTWARE
+
+            self.align_lead_fill_group.setExclusive(False)
+            self.align_lead_fill_black_radio.setChecked(False)
+            self.align_lead_fill_white_radio.setChecked(False)
+            self.align_lead_fill_group.setExclusive(True)
+
+            self.align_encode_group.setExclusive(False)
+            self.align_encode_software_radio.setChecked(False)
+            self.align_encode_hardware_radio.setChecked(False)
+            self.align_encode_group.setExclusive(True)
+
+            self.align_lead_row_widget.setEnabled(False)
+            self.align_encode_row_widget.setEnabled(False)
         self._refresh_align_trim_status(self.waveform_view.trim_end_seconds)
 
     def _handle_waveform_offset_changed(self, seconds: float) -> None:
