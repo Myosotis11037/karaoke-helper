@@ -709,11 +709,18 @@ class KrokHelperQtApp(QMainWindow):
             QRadioButton:disabled, QCheckBox:disabled, QLabel:disabled {
                 color: #94a3b8;
             }
-            QRadioButton::indicator, QCheckBox::indicator {
-                width: 14px;
-                height: 14px;
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
                 border: 2px solid #94a3b8;
-                border-radius: 7px;
+                border-radius: 9px;
+                background: #ffffff;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border: 2px solid #94a3b8;
+                border-radius: 9px;
                 background: #ffffff;
             }
             QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {
@@ -727,9 +734,20 @@ class KrokHelperQtApp(QMainWindow):
             QRadioButton::indicator:hover, QCheckBox::indicator:hover {
                 border-color: #60a5fa;
             }
-            QRadioButton::indicator:checked, QCheckBox::indicator:checked {
+            QRadioButton::indicator:checked {
                 border: 2px solid #2563eb;
-                border-radius: 7px;
+                border-radius: 9px;
+                background: qradialgradient(
+                    cx: 0.5, cy: 0.5, radius: 0.55, fx: 0.5, fy: 0.5,
+                    stop: 0 #2563eb,
+                    stop: 0.34 #2563eb,
+                    stop: 0.35 #ffffff,
+                    stop: 1 #ffffff
+                );
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #2563eb;
+                border-radius: 9px;
                 background: qradialgradient(
                     cx: 0.5, cy: 0.5, radius: 0.55, fx: 0.5, fy: 0.5,
                     stop: 0 #2563eb,
@@ -1985,6 +2003,9 @@ class KrokHelperQtApp(QMainWindow):
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
         self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
+        if not is_video_target:
+            self.align_extra_wav_check.setChecked(False)
+        self.align_extra_wav_check.setEnabled(is_video_target)
         self.align_trim_mark_button.setEnabled(is_video_target)
         self.align_trim_clear_button.setEnabled(is_video_target)
         self.align_force_1080p60_check.setEnabled(is_video_target)
