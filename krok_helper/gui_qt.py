@@ -396,6 +396,16 @@ class WaveformView(QWidget):
         self.view_start_seconds = 0.0
         self.set_zoom(120.0)
 
+    def jump_to_end(self) -> None:
+        if not self.video_waveform or not self.audio_waveform:
+            return
+        visible_seconds = self._visible_seconds()
+        video_end = self.video_waveform.duration + (self.offset_seconds if self.target_track == ALIGN_TARGET_VIDEO else 0.0)
+        audio_end = self.audio_waveform.duration + (self.offset_seconds if self.target_track == ALIGN_TARGET_AUDIO else 0.0)
+        timeline_end = max(video_end, audio_end)
+        self.view_start_seconds = max(0.0, timeline_end - visible_seconds)
+        self.update()
+
     def source_starts(self) -> tuple[float, float]:
         video_offset = self.offset_seconds if self.target_track == ALIGN_TARGET_VIDEO else 0.0
         audio_offset = self.offset_seconds if self.target_track == ALIGN_TARGET_AUDIO else 0.0
@@ -535,6 +545,17 @@ class WaveformView(QWidget):
             top = center_y - int(amplitude * usable_height)
             bottom = center_y + int(amplitude * usable_height)
             painter.drawLine(x, top, x, bottom)
+
+        track_end_seconds = waveform.duration + track_offset
+        end_x = self._time_to_x(track_end_seconds, rect.left())
+        if rect.left() < end_x < rect.right():
+            end_x_int = int(end_x)
+            painter.fillRect(end_x_int + 1, rect.top() + 1, rect.right() - end_x_int - 1, rect.height() - 2, QColor("#f8fafc"))
+            painter.setPen(QPen(QColor("#94a3b8"), 1, Qt.PenStyle.DashLine))
+            painter.drawLine(end_x_int, rect.top() + 1, end_x_int, rect.bottom() - 1)
+            painter.setPen(QColor("#94a3b8"))
+            painter.setFont(QFont("Microsoft YaHei UI", 8))
+            painter.drawText(end_x_int + 4, rect.top() + 12, "结束")
 
     def _draw_label_block(self, painter: QPainter, rect, title: str, duration_text: str) -> None:
         painter.fillRect(rect, QColor("#ffffff"))
@@ -1307,15 +1328,23 @@ class KrokHelperQtApp(QMainWindow):
 
         zoom_row = QHBoxLayout()
         zoom_row.setContentsMargins(0, 0, 0, 0)
+        zoom_row.setSpacing(8)
         zoom_row.addWidget(QLabel("缩放"))
         self.align_zoom_slider = QSlider(Qt.Orientation.Horizontal)
         self.align_zoom_slider.setRange(20, 800)
         self.align_zoom_slider.setValue(120)
         self.align_zoom_slider.valueChanged.connect(lambda value: self.waveform_view.set_zoom(float(value)))
+        jump_to_end_button = QPushButton("跳到末尾")
+        jump_to_end_button.setMinimumHeight(42)
+        jump_to_end_button.setMinimumWidth(86)
+        jump_to_end_button.clicked.connect(self.waveform_view.jump_to_end)
         reset_view_button = QPushButton("回到开头")
-        reset_view_button.setMinimumHeight(34)
+        reset_view_button.setMinimumHeight(42)
+        reset_view_button.setMinimumWidth(86)
         reset_view_button.clicked.connect(self.waveform_view.reset_view)
         zoom_row.addWidget(self.align_zoom_slider, 1)
+        zoom_row.addSpacing(10)
+        zoom_row.addWidget(jump_to_end_button)
         zoom_row.addWidget(reset_view_button)
         control_layout.addLayout(zoom_row, 7, 0, 1, 2)
 
