@@ -928,6 +928,11 @@ class KrokHelperQtApp(QMainWindow):
         return page
 
     def _build_alignment_page(self) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         page = QWidget()
         shell = QVBoxLayout(page)
         shell.setContentsMargins(20, 20, 20, 20)
@@ -961,6 +966,7 @@ class KrokHelperQtApp(QMainWindow):
             extensions=VIDEO_EXTENSIONS,
             min_height=150,
         )
+        self.align_video_zone.setFixedHeight(150)
         self.align_video_zone.browseRequested.connect(self._choose_align_video)
         self.align_video_zone.pathChanged.connect(self.set_align_video_path)
 
@@ -970,6 +976,7 @@ class KrokHelperQtApp(QMainWindow):
             extensions=ALIGN_AUDIO_EXTENSIONS,
             min_height=150,
         )
+        self.align_audio_zone.setFixedHeight(150)
         self.align_audio_zone.browseRequested.connect(self._choose_align_audio)
         self.align_audio_zone.pathChanged.connect(self.set_align_audio_path)
 
@@ -1098,9 +1105,9 @@ class KrokHelperQtApp(QMainWindow):
         trim_widget = QFrame()
         trim_widget.setObjectName("TrimRow")
         trim_widget.setFrameShape(QFrame.Shape.NoFrame)
-        trim_widget.setMinimumHeight(36)
+        trim_widget.setMinimumHeight(64)
         trim_layout = QGridLayout(trim_widget)
-        trim_layout.setContentsMargins(0, 0, 0, 0)
+        trim_layout.setContentsMargins(0, 0, 0, 10)
         trim_layout.setHorizontalSpacing(8)
         trim_layout.setVerticalSpacing(4)
         trim_header = QHBoxLayout()
@@ -1119,16 +1126,21 @@ class KrokHelperQtApp(QMainWindow):
         clear_trim_button.setStyleSheet("color: #111827;")
         clear_trim_button.clicked.connect(self.waveform_view.clear_trim_end)
         trim_header.addWidget(trim_title_label)
+        trim_header.addWidget(self.align_trim_label)
         trim_header.addWidget(mark_trim_button)
         trim_header.addWidget(clear_trim_button)
-        trim_header.addWidget(self.align_trim_label)
         trim_header.addStretch(1)
         trim_layout.addLayout(trim_header, 0, 0)
         control_layout.addWidget(trim_widget, 3, 0, 1, 2)
-        control_layout.setRowMinimumHeight(3, 36)
+        control_layout.setRowMinimumHeight(3, 64)
 
-        option_row = QHBoxLayout()
-        option_row.setContentsMargins(0, 0, 0, 0)
+        option_row_widget = QFrame()
+        option_row_widget.setFrameShape(QFrame.Shape.NoFrame)
+        option_row_widget.setStyleSheet("background: transparent; border: 0;")
+        option_row_widget.setMinimumHeight(36)
+        option_row = QHBoxLayout(option_row_widget)
+        option_row.setContentsMargins(0, 4, 0, 0)
+        option_row.setSpacing(12)
         self.align_extra_wav_check = QCheckBox("额外再导出一份对齐后的 WAV")
         self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
         self.align_auto_trim_check = QCheckBox("导出视频时自动裁到音频末尾")
@@ -1137,7 +1149,8 @@ class KrokHelperQtApp(QMainWindow):
         option_row.addWidget(self.align_force_1080p60_check)
         option_row.addWidget(self.align_auto_trim_check)
         option_row.addStretch(1)
-        control_layout.addLayout(option_row, 4, 0, 1, 2)
+        control_layout.addWidget(option_row_widget, 4, 0, 1, 2)
+        control_layout.setRowMinimumHeight(4, 36)
 
         lead_row_widget = QFrame()
         lead_row_widget.setFrameShape(QFrame.Shape.NoFrame)
@@ -1193,11 +1206,12 @@ class KrokHelperQtApp(QMainWindow):
         shortcut_hint.setWordWrap(True)
         shortcut_hint.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #6b7280;')
         control_layout.addWidget(shortcut_hint, 8, 0, 1, 2)
+        control_panel.setFixedHeight(max(260, control_panel.sizeHint().height()))
         shell.addWidget(control_panel)
         shell.addSpacing(10)
 
-        self.waveform_view.setMinimumHeight(280)
-        shell.addWidget(self.waveform_view, 3)
+        self.waveform_view.setFixedHeight(280)
+        shell.addWidget(self.waveform_view)
         shell.addSpacing(10)
 
         log_panel = QFrame()
@@ -1213,11 +1227,14 @@ class KrokHelperQtApp(QMainWindow):
         self.align_log.setMinimumHeight(120)
         log_layout.addWidget(log_title, 0, 0)
         log_layout.addWidget(self.align_log, 1, 0)
-        shell.addWidget(log_panel, 2)
+        log_panel.setFixedHeight(max(170, log_panel.sizeHint().height()))
+        shell.addWidget(log_panel)
+        shell.addStretch(1)
 
         self._refresh_align_target_ui()
         self._refresh_alignment_preview_controls()
-        return page
+        scroll.setWidget(page)
+        return scroll
 
     def _load_settings_into_ui(self) -> None:
         self.set_ffmpeg_dir(Path(self.settings.ffmpeg_dir) if self.settings.ffmpeg_dir.strip() else Path())
@@ -2183,5 +2200,5 @@ class KrokHelperQtApp(QMainWindow):
 def launch_qt_app() -> int:
     app = QApplication.instance() or QApplication([])
     window = KrokHelperQtApp()
-    window.show()
+    window.showMaximized()
     return app.exec()
