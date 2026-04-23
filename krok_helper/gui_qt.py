@@ -403,7 +403,7 @@ class WaveformView(QWidget):
         video_end = self.video_waveform.duration + (self.offset_seconds if self.target_track == ALIGN_TARGET_VIDEO else 0.0)
         audio_end = self.audio_waveform.duration + (self.offset_seconds if self.target_track == ALIGN_TARGET_AUDIO else 0.0)
         timeline_end = max(video_end, audio_end)
-        self.view_start_seconds = max(0.0, timeline_end - visible_seconds)
+        self.view_start_seconds = max(0.0, timeline_end - visible_seconds * (2 / 3))
         self.update()
 
     def source_starts(self) -> tuple[float, float]:
