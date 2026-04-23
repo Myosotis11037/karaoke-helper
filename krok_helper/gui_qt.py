@@ -7,7 +7,7 @@ from string import Formatter
 from typing import Callable
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -297,6 +297,7 @@ class WaveformView(QWidget):
         self._drag_start_x = 0.0
         self._drag_start_offset = 0.0
         self._drag_start_view = 0.0
+        self.track_label_width = 188
         self.setMinimumHeight(280)
         self.setMouseTracking(True)
 
@@ -418,7 +419,7 @@ class WaveformView(QWidget):
             return
 
         outer_rect = self.rect().adjusted(0, 0, -1, -1)
-        label_width = 148
+        label_width = self.track_label_width
         painter.setPen(QColor("#d5dce6"))
         painter.drawRect(outer_rect)
 
@@ -532,7 +533,7 @@ class WaveformView(QWidget):
             painter.drawText(int(x) + 2, rect.top() + 14, f"{tick_seconds:.1f}s")
 
     def _visible_seconds(self) -> float:
-        return max(1.0, (max(1, self.width() - 180)) / self.pixels_per_second)
+        return max(1.0, (max(1, self.width() - (self.track_label_width + 24))) / self.pixels_per_second)
 
     def _ensure_visible(self, seconds: float) -> None:
         visible_seconds = self._visible_seconds()
@@ -545,7 +546,7 @@ class WaveformView(QWidget):
         return left_edge + (seconds - self.view_start_seconds) * self.pixels_per_second
 
     def _set_playhead_from_x(self, x_pos: float) -> None:
-        rect_left = 156.0
+        rect_left = float(self.track_label_width)
         time_pos = self.view_start_seconds + max(0.0, x_pos - rect_left) / self.pixels_per_second
         self.set_playhead(time_pos)
 
@@ -1077,6 +1078,16 @@ class KrokHelperQtApp(QMainWindow):
 
         self.align_offset_label = QLabel("字幕视频偏移 +0.000s")
         self.align_offset_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 12pt; font-weight: 700;')
+        offset_font = QFont("Microsoft YaHei UI", 12)
+        offset_font.setBold(True)
+        offset_metrics = QFontMetrics(offset_font)
+        self.align_offset_label.setFixedWidth(
+            max(
+                offset_metrics.horizontalAdvance("字幕视频偏移 -99.999s"),
+                offset_metrics.horizontalAdvance("原唱音源偏移 -99.999s"),
+            )
+            + 12
+        )
         control_layout.addWidget(self.align_offset_label, 0, 0)
 
         target_row_widget = QFrame()
