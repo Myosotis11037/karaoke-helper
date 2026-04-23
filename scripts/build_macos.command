@@ -23,10 +23,10 @@ if ! "$PYTHON_BIN" -c "import PyInstaller" >/dev/null 2>&1; then
   "$PYTHON_BIN" -m pip install pyinstaller
 fi
 
-echo "Checking tkinterdnd2..."
-if ! "$PYTHON_BIN" -c "import tkinterdnd2" >/dev/null 2>&1; then
-  echo "tkinterdnd2 not found, installing..."
-  "$PYTHON_BIN" -m pip install tkinterdnd2
+echo "Checking PySide6..."
+if ! "$PYTHON_BIN" -c "import PySide6" >/dev/null 2>&1; then
+  echo "PySide6 not found, installing..."
+  "$PYTHON_BIN" -m pip install PySide6
 fi
 
 mkdir -p "$DIST_PATH" "$WORK_PATH" "$SPEC_PATH"
@@ -41,7 +41,7 @@ echo "Building macOS package..."
   --distpath "$DIST_PATH" \
   --workpath "$WORK_PATH" \
   --specpath "$SPEC_PATH" \
-  --collect-all tkinterdnd2 \
+  --collect-all PySide6 \
   app.py
 
 echo

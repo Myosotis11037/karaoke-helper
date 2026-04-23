@@ -4,14 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
-import tkinter as tk
-try:
-    from tkinterdnd2 import Tk as DnDTk
-except Exception:  # noqa: BLE001
-    DnDTk = None
-
 from krok_helper.errors import ProcessingError
-from krok_helper.gui import KaraokeHiresApp
+from krok_helper.gui_qt import KrokHelperQtApp
 from krok_helper.pipeline import (
     DEFAULT_OFF_NAME_TEMPLATE,
     DEFAULT_ON_NAME_TEMPLATE,
@@ -21,7 +15,9 @@ from krok_helper.pipeline import (
     run_pipeline,
 )
 from krok_helper.settings import load_app_settings
-from krok_helper.windows import apply_tk_scaling, enable_high_dpi_awareness
+from krok_helper.windows import enable_high_dpi_awareness
+
+from PySide6.QtWidgets import QApplication
 
 
 def parse_args() -> argparse.Namespace:
@@ -82,26 +78,25 @@ def run_cli(args: argparse.Namespace) -> int:
 
 def run_gui(args: argparse.Namespace) -> int:
     enable_high_dpi_awareness()
-    root = DnDTk() if DnDTk is not None else tk.Tk()
-    apply_tk_scaling(root)
-    app = KaraokeHiresApp(root)
+    qt_app = QApplication.instance() or QApplication(sys.argv)
+    window = KrokHelperQtApp()
     if args.video:
-        app.set_video_path(args.video.expanduser())
+        window.set_video_path(args.video.expanduser())
     if args.on_audio:
-        app.set_on_vocal_path(args.on_audio.expanduser())
+        window.set_on_vocal_path(args.on_audio.expanduser())
     if args.off_audio:
-        app.set_off_vocal_path(args.off_audio.expanduser())
+        window.set_off_vocal_path(args.off_audio.expanduser())
     if args.ffmpeg_dir:
-        app.set_ffmpeg_dir(args.ffmpeg_dir.expanduser())
+        window.set_ffmpeg_dir(args.ffmpeg_dir.expanduser())
     if args.output_name_mode:
-        app.set_output_name_mode(args.output_name_mode)
+        window.set_output_name_mode(args.output_name_mode)
     if args.on_name_template or args.off_name_template:
-        app.set_output_name_templates(
+        window.set_output_name_templates(
             args.on_name_template or DEFAULT_ON_NAME_TEMPLATE,
             args.off_name_template or DEFAULT_OFF_NAME_TEMPLATE,
         )
-    root.mainloop()
-    return 0
+    window.show()
+    return qt_app.exec()
 
 
 def main() -> int:
