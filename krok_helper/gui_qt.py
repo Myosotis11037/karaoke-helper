@@ -430,7 +430,10 @@ class WaveformView(QWidget):
             self._drag_start_x = event.position().x()
             self._drag_start_offset = self.offset_seconds
             self._drag_start_view = self.view_start_seconds
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            if event.position().y() <= 24 and event.position().x() >= self.track_label_width:
+                self._drag_kind = "playhead"
+                self._set_playhead_from_x(event.position().x())
+            elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
                 self._drag_kind = "playhead"
                 self._set_playhead_from_x(event.position().x())
             elif self.drag_mode == "pan":
@@ -631,6 +634,7 @@ class KrokHelperQtApp(QMainWindow):
         self._align_lead_fill_selection = LEAD_FILL_BLACK
         self._align_encode_selection = ENCODE_MODE_SOFTWARE
         self._media_duration_cache: dict[Path, str] = {}
+        self._suppress_preview_seek_restart = False
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -2093,6 +2097,15 @@ class KrokHelperQtApp(QMainWindow):
 
     def _handle_playhead_changed(self, seconds: float) -> None:
         self.align_playhead_label.setText(f"播放位置 {seconds:.3f}s")
+        if (
+            not self._suppress_preview_seek_restart
+            and self.align_preview_process is not None
+            and self.align_preview_process.is_running()
+        ):
+            self._restart_alignment_preview_from_playhead()
+
+    def _restart_alignment_preview_from_playhead(self) -> None:
+        self._start_alignment_preview()
 
     def _refresh_align_trim_status(self, trim_seconds: object) -> None:
         if not self._is_align_video_target():
@@ -2201,7 +2214,11 @@ class KrokHelperQtApp(QMainWindow):
             return
         if process.is_running():
             elapsed = time.monotonic() - self.align_preview_started_at
-            self.waveform_view.set_playhead(self.align_preview_start_seconds + elapsed, keep_visible=True)
+            self._suppress_preview_seek_restart = True
+            try:
+                self.waveform_view.set_playhead(self.align_preview_start_seconds + elapsed, keep_visible=True)
+            finally:
+                self._suppress_preview_seek_restart = False
             return
         self.preview_timer.stop()
         self.align_preview_process = None
