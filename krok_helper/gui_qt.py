@@ -76,6 +76,7 @@ ALIGN_TARGET_VIDEO = "video"
 ALIGN_TARGET_AUDIO = "audio"
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".mov", ".avi"}
 AUDIO_EXTENSIONS = {".flac", ".wav", ".mp3", ".m4a", ".aac", ".ape", ".alac", ".mkv"}
+HIRES_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS | {".mp4"}
 ALIGN_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS | {".mp4"}
 WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 ALIGNMENT_TEMPLATE_FORMATTER = Formatter()
@@ -1009,8 +1010,8 @@ class KrokHelperQtApp(QMainWindow):
 
         self.on_vocal_zone = DropZoneCard(
             title="原唱音频",
-            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可单独生成原唱 Hi-Res 视频，也可和伴奏一起生成。",
-            extensions=AUDIO_EXTENSIONS,
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv / mp4\n可单独生成原唱 Hi-Res 视频，也可和伴奏一起生成。",
+            extensions=HIRES_AUDIO_EXTENSIONS,
             min_height=190,
         )
         self.on_vocal_zone.browseRequested.connect(self._choose_on_audio)
@@ -1018,8 +1019,8 @@ class KrokHelperQtApp(QMainWindow):
 
         self.off_vocal_zone = DropZoneCard(
             title="伴奏音频",
-            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv\n可单独生成伴奏 Hi-Res 视频，也可和原唱一起生成。",
-            extensions=AUDIO_EXTENSIONS,
+            hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv / mp4\n可单独生成伴奏 Hi-Res 视频，也可和原唱一起生成。",
+            extensions=HIRES_AUDIO_EXTENSIONS,
             min_height=190,
         )
         self.off_vocal_zone.browseRequested.connect(self._choose_off_audio)
@@ -1465,12 +1466,22 @@ class KrokHelperQtApp(QMainWindow):
             self.set_video_path(Path(path))
 
     def _choose_on_audio(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择原唱音频", "", "音频文件 (*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv);;所有文件 (*.*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择原唱音频",
+            "",
+            "音频文件 (*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv *.mp4);;所有文件 (*.*)",
+        )
         if path:
             self.set_on_vocal_path(Path(path))
 
     def _choose_off_audio(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "选择伴奏音频", "", "音频文件 (*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv);;所有文件 (*.*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择伴奏音频",
+            "",
+            "音频文件 (*.flac *.wav *.mp3 *.m4a *.aac *.ape *.alac *.mkv *.mp4);;所有文件 (*.*)",
+        )
         if path:
             self.set_off_vocal_path(Path(path))
 
