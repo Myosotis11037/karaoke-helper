@@ -114,6 +114,8 @@ class DropZoneCard(QFrame):
         self.extensions = {ext.lower() for ext in extensions}
         self.path: Path | None = None
         self._hovered = False
+        self._drag_state = "idle"
+        self._default_action_text = "点击选择文件，或直接拖进这个区域"
 
         self.setObjectName("DropZoneCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -139,7 +141,7 @@ class DropZoneCard(QFrame):
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.path_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
-        self.action_label = QLabel("点击选择文件，或直接拖进这个区域")
+        self.action_label = QLabel(self._default_action_text)
         self.action_label.setObjectName("DropZoneAction")
         self.action_label.setWordWrap(True)
         self.action_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -157,11 +159,13 @@ class DropZoneCard(QFrame):
     def set_path(self, path: Path) -> None:
         self.path = path
         self.path_label.setText(str(path))
+        self._drag_state = "idle"
         self._refresh_style()
 
     def clear_path(self) -> None:
         self.path = None
         self.path_label.setText("未选择文件")
+        self._drag_state = "idle"
         self._refresh_style()
 
     def enterEvent(self, event) -> None:  # noqa: N802
@@ -184,21 +188,36 @@ class DropZoneCard(QFrame):
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         urls = event.mimeData().urls()
         if not urls:
+            self._drag_state = "reject"
+            self._refresh_style()
             event.ignore()
             return
         path = Path(urls[0].toLocalFile()).expanduser()
         if self.accepts(path):
+            self._drag_state = "accept"
+            self._refresh_style()
             event.acceptProposedAction()
             return
+        self._drag_state = "reject"
+        self._refresh_style()
         event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drag_state = "idle"
+        self._refresh_style()
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event) -> None:  # noqa: N802
         urls = event.mimeData().urls()
         if not urls:
+            self._drag_state = "idle"
+            self._refresh_style()
             event.ignore()
             return
         path = Path(urls[0].toLocalFile()).expanduser()
         if not self.accepts(path):
+            self._drag_state = "reject"
+            self._refresh_style()
             event.ignore()
             return
         self.set_path(path)
@@ -206,24 +225,42 @@ class DropZoneCard(QFrame):
         event.acceptProposedAction()
 
     def _refresh_style(self) -> None:
-        if self.path is not None:
+        border_width = 1
+        if self._drag_state == "accept":
+            background = "#dbeafe"
+            border = "#2563eb"
+            accent = "#1d4ed8"
+            border_width = 2
+            action_text = "松开鼠标即可导入这个文件"
+        elif self._drag_state == "reject":
+            background = "#fef2f2"
+            border = "#ef4444"
+            accent = "#b91c1c"
+            border_width = 2
+            action_text = "这个文件类型不支持，请换一个文件"
+        elif self.path is not None:
             background = "#ecfdf3"
             border = "#3aa76d"
             accent = "#177245"
+            action_text = self._default_action_text
         elif self._hovered:
             background = "#eef4ff"
             border = "#8aa8f8"
             accent = "#2f6fed"
+            action_text = self._default_action_text
         else:
             background = "#f6f8fb"
             border = "#d5dce6"
             accent = "#2f6fed"
+            action_text = self._default_action_text
+
+        self.action_label.setText(action_text)
 
         self.setStyleSheet(
             f"""
             QFrame#DropZoneCard {{
                 background: {background};
-                border: 1px solid {border};
+                border: {border_width}px solid {border};
             }}
             QLabel#DropZoneTitle {{
                 background: transparent;
@@ -572,6 +609,7 @@ class KrokHelperQtApp(QMainWindow):
         self.ffmpeg_dir_text = ""
         self._align_lead_fill_selection = LEAD_FILL_BLACK
         self._align_encode_selection = ENCODE_MODE_SOFTWARE
+        self._media_duration_cache: dict[Path, str] = {}
 
         self.setWindowTitle(APP_TITLE)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -666,6 +704,7 @@ class KrokHelperQtApp(QMainWindow):
             }
             QRadioButton, QCheckBox {
                 background: transparent;
+                spacing: 4px;
             }
             QRadioButton:disabled, QCheckBox:disabled, QLabel:disabled {
                 color: #94a3b8;
@@ -1246,6 +1285,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_zoom_slider.setValue(120)
         self.align_zoom_slider.valueChanged.connect(lambda value: self.waveform_view.set_zoom(float(value)))
         reset_view_button = QPushButton("回到开头")
+        reset_view_button.setMinimumHeight(34)
         reset_view_button.clicked.connect(self.waveform_view.reset_view)
         zoom_row.addWidget(self.align_zoom_slider, 1)
         zoom_row.addWidget(reset_view_button)
@@ -1311,12 +1351,12 @@ class KrokHelperQtApp(QMainWindow):
 
     def set_align_video_path(self, path: Path) -> None:
         self.align_video_zone.set_path(path)
-        self._refresh_media_info_labels()
+        self.align_video_info_label.setText(self._build_media_info(path, "字幕视频"))
         self._invalidate_alignment_waveforms()
 
     def set_align_audio_path(self, path: Path) -> None:
         self.align_audio_zone.set_path(path)
-        self._refresh_media_info_labels()
+        self.align_audio_info_label.setText(self._build_media_info(path, "原唱音源"))
         self._invalidate_alignment_waveforms()
 
     def set_ffmpeg_dir(self, path: Path) -> None:
@@ -1367,12 +1407,18 @@ class KrokHelperQtApp(QMainWindow):
     def _build_media_info(self, path: Path | None, label: str) -> str:
         if path is None:
             return f"{label}: 时长未知"
+        cache_key = path.expanduser()
+        cached_duration = self._media_duration_cache.get(cache_key)
+        if cached_duration is not None:
+            return f"{label}: {cached_duration}"
         try:
             ffprobe_path = find_tool("ffprobe.exe", self._resolve_ffmpeg_dir())
             info = probe_media(ffprobe_path, path)
         except Exception:  # noqa: BLE001
             return f"{label}: 时长未知"
-        return f"{label}: {format_media_duration(info.duration)}"
+        duration_text = format_media_duration(info.duration)
+        self._media_duration_cache[cache_key] = duration_text
+        return f"{label}: {duration_text}"
 
     def _open_settings_window(self, context: str) -> None:
         dialog = QDialog(self)
