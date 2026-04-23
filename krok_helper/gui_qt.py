@@ -86,6 +86,18 @@ def open_in_explorer(path: Path) -> None:
     subprocess.Popen(["explorer", str(path)])
 
 
+def apply_safe_label_metrics(
+    label: QLabel,
+    font: QFont,
+    *,
+    top_padding: int = 3,
+    bottom_padding: int = 2,
+) -> None:
+    margins = label.contentsMargins()
+    label.setContentsMargins(margins.left(), top_padding, margins.right(), bottom_padding)
+    label.setMinimumHeight(QFontMetrics(font).height() + top_padding + bottom_padding)
+
+
 def format_media_duration(seconds: float | None) -> str:
     if seconds is None or seconds <= 0:
         return "时长未知"
@@ -129,6 +141,9 @@ class DropZoneCard(QFrame):
         self.title_label = QLabel(title)
         self.title_label.setObjectName("DropZoneTitle")
         self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        title_font = QFont("Microsoft YaHei UI", 12)
+        title_font.setBold(True)
+        apply_safe_label_metrics(self.title_label, title_font)
 
         self.hint_label = QLabel(hint)
         self.hint_label.setObjectName("DropZoneHint")
@@ -1076,6 +1091,9 @@ class KrokHelperQtApp(QMainWindow):
         header.setContentsMargins(0, 0, 0, 0)
         title = QLabel("音频波形对齐")
         title.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 20pt; font-weight: 700;')
+        title_font = QFont("Microsoft YaHei UI", 20)
+        title_font.setBold(True)
+        apply_safe_label_metrics(title, title_font, top_padding=4, bottom_padding=3)
         alignment_title_height = title.sizeHint().height()
         desc = QLabel("把字幕视频和原唱音源放进来，选择要修正的对象，手动对齐波形后导出对应文件。")
         desc.setWordWrap(True)
@@ -1170,6 +1188,9 @@ class KrokHelperQtApp(QMainWindow):
 
         self.align_offset_label = QLabel("字幕视频偏移 +0.000s")
         self.align_offset_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 12pt; font-weight: 700;')
+        offset_title_font = QFont("Microsoft YaHei UI", 12)
+        offset_title_font.setBold(True)
+        apply_safe_label_metrics(self.align_offset_label, offset_title_font)
         offset_font = QFont("Microsoft YaHei UI", 12)
         offset_font.setBold(True)
         offset_metrics = QFontMetrics(offset_font)
