@@ -7,7 +7,7 @@ from string import Formatter
 from typing import Callable
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -70,6 +70,7 @@ from krok_helper.pipeline import (
     validate_output_name_template,
 )
 from krok_helper.settings import AppSettings, load_app_settings, save_app_settings
+from krok_helper.windows import set_explicit_app_user_model_id
 
 
 ALIGN_TARGET_VIDEO = "video"
@@ -82,9 +83,27 @@ WINDOWS_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 ALIGNMENT_TEMPLATE_FORMATTER = Formatter()
 FFMPEG_DIR_PLACEHOLDER = "未设置，将优先使用系统 PATH 中的 ffmpeg"
 
+APP_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo" / "logo.jpg"
+TASKBAR_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo" / "logo2.png"
+
 
 def open_in_explorer(path: Path) -> None:
     subprocess.Popen(["explorer", str(path)])
+
+
+def load_app_icon() -> QIcon | None:
+    if not APP_LOGO_PATH.exists():
+        return None
+    icon = QIcon(str(APP_LOGO_PATH))
+    return None if icon.isNull() else icon
+
+
+def load_taskbar_icon() -> QIcon | None:
+    if TASKBAR_LOGO_PATH.exists():
+        icon = QIcon(str(TASKBAR_LOGO_PATH))
+        if not icon.isNull():
+            return icon
+    return load_app_icon()
 
 
 def apply_safe_label_metrics(
@@ -653,6 +672,9 @@ class KrokHelperQtApp(QMainWindow):
         self._suppress_preview_seek_restart = False
 
         self.setWindowTitle(APP_TITLE)
+        app_icon = load_app_icon()
+        if app_icon is not None:
+            self.setWindowIcon(app_icon)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
@@ -2440,7 +2462,11 @@ class KrokHelperQtApp(QMainWindow):
 
 
 def launch_qt_app() -> int:
+    set_explicit_app_user_model_id("KrokHelper.Desktop")
     app = QApplication.instance() or QApplication([])
+    app_icon = load_taskbar_icon()
+    if app_icon is not None:
+        app.setWindowIcon(app_icon)
     window = KrokHelperQtApp()
     window.showMaximized()
     return app.exec()

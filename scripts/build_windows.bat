@@ -56,6 +56,7 @@ echo Building Windows package...
     --distpath "%DIST_PATH%" ^
     --workpath "%WORK_PATH%" ^
     --specpath "%SPEC_PATH%" ^
+    --add-data "krok_helper\assets\logo;krok_helper\assets\logo" ^
     --collect-all PySide6 ^
     app.py
 

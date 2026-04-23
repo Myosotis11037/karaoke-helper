@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from krok_helper.errors import ProcessingError
-from krok_helper.gui_qt import KrokHelperQtApp
+from krok_helper.gui_qt import KrokHelperQtApp, load_taskbar_icon
 from krok_helper.pipeline import (
     DEFAULT_OFF_NAME_TEMPLATE,
     DEFAULT_ON_NAME_TEMPLATE,
@@ -15,7 +15,7 @@ from krok_helper.pipeline import (
     run_pipeline,
 )
 from krok_helper.settings import load_app_settings
-from krok_helper.windows import enable_high_dpi_awareness
+from krok_helper.windows import enable_high_dpi_awareness, set_explicit_app_user_model_id
 
 from PySide6.QtWidgets import QApplication
 
@@ -78,7 +78,11 @@ def run_cli(args: argparse.Namespace) -> int:
 
 def run_gui(args: argparse.Namespace) -> int:
     enable_high_dpi_awareness()
+    set_explicit_app_user_model_id("KrokHelper.Desktop")
     qt_app = QApplication.instance() or QApplication(sys.argv)
+    app_icon = load_taskbar_icon()
+    if app_icon is not None:
+        qt_app.setWindowIcon(app_icon)
     window = KrokHelperQtApp()
     if args.video:
         window.set_video_path(args.video.expanduser())

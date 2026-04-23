@@ -68,6 +68,16 @@ def enable_high_dpi_awareness() -> None:
         pass
 
 
+def set_explicit_app_user_model_id(app_id: str) -> None:
+    if sys.platform != "win32":
+        return
+
+    try:
+        shell32.SetCurrentProcessExplicitAppUserModelID(str(app_id))
+    except Exception:
+        pass
+
+
 def apply_tk_scaling(root) -> None:
     if sys.platform != "win32":
         return
