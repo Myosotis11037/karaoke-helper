@@ -866,12 +866,14 @@ class KrokHelperQtApp(QMainWindow):
                 )
 
     def _bind_shortcuts(self) -> None:
-        shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
-        shortcut_space.activated.connect(self._handle_align_space_shortcut)
-        shortcut_export = QShortcut(QKeySequence("Ctrl+S"), self)
-        shortcut_export.activated.connect(self._handle_align_export_shortcut)
-        shortcut_auto = QShortcut(QKeySequence("Ctrl+D"), self)
-        shortcut_auto.activated.connect(self._handle_align_auto_shortcut)
+        self.shortcut_space = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self.shortcut_space.activated.connect(self._handle_align_space_shortcut)
+        self.shortcut_export = QShortcut(QKeySequence("Ctrl+S"), self)
+        self.shortcut_export.activated.connect(self._handle_align_export_shortcut)
+        self.shortcut_auto = QShortcut(QKeySequence("Ctrl+D"), self)
+        self.shortcut_auto.activated.connect(self._handle_align_auto_shortcut)
+        self.shortcut_drag_mode = QShortcut(QKeySequence("Alt+V"), self)
+        self.shortcut_drag_mode.activated.connect(self._handle_align_drag_mode_shortcut)
 
     def _focused_widget_is_text_input(self) -> bool:
         widget = QApplication.focusWidget()
@@ -897,6 +899,14 @@ class KrokHelperQtApp(QMainWindow):
         if self.active_module != "align" or self._focused_widget_is_text_input():
             return
         self._auto_align_waveforms()
+
+    def _handle_align_drag_mode_shortcut(self) -> None:
+        if self.active_module != "align" or self._focused_widget_is_text_input():
+            return
+        if self.align_drag_pan_radio.isChecked():
+            self.align_drag_offset_radio.setChecked(True)
+        else:
+            self.align_drag_pan_radio.setChecked(True)
 
     def _build_hires_page(self) -> QWidget:
         page = QWidget()
@@ -1309,7 +1319,9 @@ class KrokHelperQtApp(QMainWindow):
         zoom_row.addWidget(reset_view_button)
         control_layout.addLayout(zoom_row, 7, 0, 1, 2)
 
-        shortcut_hint = QLabel("快捷键: 空格生成波形 / 播放 / 停止，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认。")
+        shortcut_hint = QLabel(
+            "快捷键: 空格生成波形 / 播放 / 停止，Alt+V 切换拖动模式，Ctrl+D 自动对齐，Ctrl+S 导出当前对齐目标；自动对齐后请播放确认。"
+        )
         shortcut_hint.setWordWrap(True)
         shortcut_hint.setStyleSheet(
             'font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #6b7280; '
