@@ -516,7 +516,7 @@ class WaveformView(QWidget):
         if self.trim_end_seconds is not None:
             trim_x = self._time_to_x(self.trim_end_seconds, video_rect.left())
             painter.setPen(QPen(QColor("#eab308"), 2, Qt.PenStyle.DashLine))
-            painter.drawLine(int(trim_x), ruler_rect.top(), int(trim_x), audio_rect.bottom())
+            painter.drawLine(int(trim_x), video_rect.top(), int(trim_x), video_rect.bottom())
 
     def _draw_track(
         self,
