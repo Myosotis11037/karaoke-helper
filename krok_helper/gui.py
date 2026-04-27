@@ -965,7 +965,7 @@ class KaraokeHiresApp:
 
         tk.Label(
             sidebar,
-            text="Krok Helper",
+            text="卡拉OK工具箱",
             bg="#111827",
             fg="#ffffff",
             font=("Microsoft YaHei UI", 15, "bold"),

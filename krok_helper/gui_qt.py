@@ -942,7 +942,7 @@ class KrokHelperQtApp(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        title = QLabel("Krok Helper")
+        title = QLabel("卡拉OK工具箱")
         title.setObjectName("SidebarTitle")
         sidebar_layout.addWidget(title)
 

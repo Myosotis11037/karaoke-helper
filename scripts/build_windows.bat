@@ -5,7 +5,7 @@ setlocal
 cd /d "%~dp0\.."
 
 set "PYTHON_BIN=python"
-set "APP_NAME=Krok Helper"
+set "APP_NAME=卡拉OK工具箱"
 set "DIST_PATH=dist\windows"
 set "WORK_PATH=build\pyinstaller-windows"
 set "SPEC_PATH=build\spec-windows"

@@ -1,6 +1,6 @@
-# Krok Helper
+# 卡拉OK工具箱
 
-当前版本：`2.0.1`
+当前版本：`2.0.2`
 
 把卡拉 OK 字幕视频、原唱音频、伴奏音频准备好后，一次性输出两个最终文件：
 
@@ -188,7 +188,7 @@ D:\tools\ffmpeg\bin
 Windows 下默认保存到：
 
 ```text
-%APPDATA%\Krok Helper\settings.json
+%APPDATA%\卡拉OK工具箱\settings.json
 ```
 
 目前会保存：
@@ -219,13 +219,13 @@ scripts\build_windows.bat
 输出目录：
 
 ```text
-dist\windows\Krok Helper\
+dist\windows\卡拉OK工具箱\
 ```
 
 主程序：
 
 ```text
-dist\windows\Krok Helper\Krok Helper.exe
+dist\windows\卡拉OK工具箱\卡拉OK工具箱.exe
 ```
 
 ### macOS
@@ -245,7 +245,7 @@ chmod +x ./scripts/build_macos.command
 输出目录：
 
 ```text
-dist/macos/Krok Helper.app
+dist/macos/卡拉OK工具箱.app
 ```
 
 ## 依赖

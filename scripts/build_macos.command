@@ -5,7 +5,7 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
 PYTHON_BIN="${PYTHON_BIN:-python3}"
-APP_NAME="Krok Helper"
+APP_NAME="卡拉OK工具箱"
 DIST_PATH="$PROJECT_ROOT/dist/macos"
 WORK_PATH="$PROJECT_ROOT/build/pyinstaller-macos"
 SPEC_PATH="$PROJECT_ROOT/build/spec-macos"
