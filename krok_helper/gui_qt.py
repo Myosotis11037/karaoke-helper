@@ -693,12 +693,13 @@ class KrokHelperQtApp(QMainWindow):
         self._media_duration_cache: dict[Path, str] = {}
         self._suppress_preview_seek_restart = False
         self._restoring_from_maximized = False
+        self._startup_geometry_applied = False
 
         self.setWindowTitle(APP_TITLE)
         app_icon = load_app_icon()
         if app_icon is not None:
             self.setWindowIcon(app_icon)
-        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.resize(WINDOW_WIDTH, WINDOW_MIN_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
 
         self._apply_styles()
@@ -709,6 +710,12 @@ class KrokHelperQtApp(QMainWindow):
         self.preview_timer = QTimer(self)
         self.preview_timer.setInterval(300)
         self.preview_timer.timeout.connect(self._poll_alignment_preview)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        if not self._startup_geometry_applied:
+            self._startup_geometry_applied = True
+            QTimer.singleShot(0, self._apply_startup_window_geometry)
+        super().showEvent(event)
 
     def changeEvent(self, event) -> None:  # noqa: N802
         if event.type() == QEvent.Type.WindowStateChange:
@@ -724,6 +731,20 @@ class KrokHelperQtApp(QMainWindow):
                 self._restoring_from_maximized = True
                 QTimer.singleShot(0, self._restore_windowed_geometry_centered)
         super().changeEvent(event)
+
+    def _apply_startup_window_geometry(self) -> None:
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        target_width = min(
+            max(WINDOW_MIN_WIDTH, WINDOW_WIDTH),
+            max(WINDOW_MIN_WIDTH, available.width()),
+        )
+        target_height = min(WINDOW_MIN_HEIGHT, available.height())
+        left = available.x() + max(0, (available.width() - target_width) // 2)
+        top = available.y() + max(0, (available.height() - target_height) // 2)
+        self.setGeometry(left, top, target_width, target_height)
 
     def _restore_windowed_geometry_centered(self) -> None:
         try:
@@ -2592,5 +2613,5 @@ def launch_qt_app() -> int:
     if app_icon is not None:
         app.setWindowIcon(app_icon)
     window = KrokHelperQtApp()
-    window.showMaximized()
+    window.show()
     return app.exec()

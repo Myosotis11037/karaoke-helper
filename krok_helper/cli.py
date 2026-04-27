@@ -99,7 +99,7 @@ def run_gui(args: argparse.Namespace) -> int:
             args.on_name_template or DEFAULT_ON_NAME_TEMPLATE,
             args.off_name_template or DEFAULT_OFF_NAME_TEMPLATE,
         )
-    window.showMaximized()
+    window.show()
     return qt_app.exec()
 
 
