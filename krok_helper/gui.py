@@ -2228,7 +2228,8 @@ class KaraokeHiresApp:
         view_start = self.align_viewer.view_start_seconds
         video_offset = self.align_viewer.offset_seconds if self._is_align_video_target() else 0.0
         audio_offset = self.align_viewer.offset_seconds if not self._is_align_video_target() else 0.0
-        return max(0.0, view_start - video_offset), max(0.0, view_start - audio_offset)
+        timeline_start = max(view_start, video_offset, audio_offset, 0.0)
+        return max(0.0, timeline_start - video_offset), max(0.0, timeline_start - audio_offset)
 
     def _compute_video_trim_duration(self) -> float | None:
         if not self._is_align_video_target():

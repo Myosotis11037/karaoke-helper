@@ -444,7 +444,8 @@ class WaveformView(QWidget):
     def source_starts(self) -> tuple[float, float]:
         video_offset = self.offset_seconds if self.target_track == ALIGN_TARGET_VIDEO else 0.0
         audio_offset = self.offset_seconds if self.target_track == ALIGN_TARGET_AUDIO else 0.0
-        return max(0.0, self.view_start_seconds - video_offset), max(0.0, self.view_start_seconds - audio_offset)
+        timeline_start = max(self.view_start_seconds, video_offset, audio_offset, 0.0)
+        return max(0.0, timeline_start - video_offset), max(0.0, timeline_start - audio_offset)
 
     def wheelEvent(self, event) -> None:  # noqa: N802
         if not self.video_waveform or not self.audio_waveform:

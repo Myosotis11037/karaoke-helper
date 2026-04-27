@@ -414,7 +414,9 @@ def estimate_waveform_alignment(
     if best_score <= -1.0 or best_overlap <= 0:
         raise ProcessingError("未能在搜索范围内找到可靠的自动对齐位置。")
 
-    media_offset_seconds = best_offset_steps / peaks_per_second
+    delta_media_offset_seconds = best_offset_steps / peaks_per_second
+    current_media_offset_seconds = audio_start_seconds - video_start_seconds
+    media_offset_seconds = current_media_offset_seconds + delta_media_offset_seconds
     target_offset_seconds = media_offset_seconds if target_track == "video" else -media_offset_seconds
     separation = max(0.0, best_score - max(second_score, 0.0))
     confidence = max(0.0, min(1.0, best_score * 0.75 + separation * 0.5))
