@@ -424,12 +424,12 @@ class WaveformView(QWidget):
         self.update()
 
     def set_zoom(self, pixels_per_second: float) -> None:
-        self.pixels_per_second = max(20.0, min(1200.0, pixels_per_second))
-        self.update()
+        self._zoom_to(pixels_per_second, self._playhead_anchor_x())
 
     def reset_view(self) -> None:
+        self.pixels_per_second = 120.0
         self.view_start_seconds = 0.0
-        self.set_zoom(120.0)
+        self.update()
 
     def jump_to_end(self) -> None:
         if not self.video_waveform or not self.audio_waveform:
@@ -452,11 +452,8 @@ class WaveformView(QWidget):
         delta = event.angleDelta().y()
         if delta == 0:
             return
-        anchor_time = self.view_start_seconds + (event.position().x() / max(1.0, self.pixels_per_second))
         factor = 1.15 if delta > 0 else (1 / 1.15)
-        self.set_zoom(self.pixels_per_second * factor)
-        self.view_start_seconds = max(0.0, anchor_time - (event.position().x() / self.pixels_per_second))
-        self.update()
+        self._zoom_to(self.pixels_per_second * factor, self._playhead_anchor_x())
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if not self.video_waveform or not self.audio_waveform:
@@ -628,8 +625,27 @@ class WaveformView(QWidget):
             painter.drawLine(int(x), rect.bottom() - 6, int(x), rect.bottom())
             painter.drawText(int(x) + 2, rect.top() + 14, f"{tick_seconds:.1f}s")
 
+    def _plot_bounds(self) -> tuple[float, float]:
+        plot_left = float(self.track_label_width)
+        plot_width = max(1.0, float(self.width() - self.track_label_width - 1))
+        return plot_left, plot_width
+
+    def _zoom_to(self, pixels_per_second: float, anchor_x: float) -> None:
+        plot_left, plot_width = self._plot_bounds()
+        anchor_x = min(plot_left + plot_width, max(plot_left, anchor_x))
+        old_pixels_per_second = max(1.0, self.pixels_per_second)
+        anchor_seconds = self.view_start_seconds + (anchor_x - plot_left) / old_pixels_per_second
+        self.pixels_per_second = max(20.0, min(1200.0, pixels_per_second))
+        self.view_start_seconds = max(0.0, anchor_seconds - (anchor_x - plot_left) / self.pixels_per_second)
+        self.update()
+
+    def _playhead_anchor_x(self) -> float:
+        plot_left, plot_width = self._plot_bounds()
+        return min(plot_left + plot_width, max(plot_left, self._time_to_x(self.playhead_seconds, plot_left)))
+
     def _visible_seconds(self) -> float:
-        return max(1.0, (max(1, self.width() - (self.track_label_width + 24))) / self.pixels_per_second)
+        _plot_left, plot_width = self._plot_bounds()
+        return max(1.0, plot_width / self.pixels_per_second)
 
     def _ensure_visible(self, seconds: float) -> None:
         visible_seconds = self._visible_seconds()
@@ -642,8 +658,9 @@ class WaveformView(QWidget):
         return left_edge + (seconds - self.view_start_seconds) * self.pixels_per_second
 
     def _set_playhead_from_x(self, x_pos: float) -> None:
-        rect_left = float(self.track_label_width)
-        time_pos = self.view_start_seconds + max(0.0, x_pos - rect_left) / self.pixels_per_second
+        rect_left, rect_width = self._plot_bounds()
+        clamped_x = min(rect_left + rect_width, max(rect_left, x_pos))
+        time_pos = self.view_start_seconds + (clamped_x - rect_left) / self.pixels_per_second
         self.set_playhead(time_pos)
 
 

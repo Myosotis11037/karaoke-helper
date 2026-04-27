@@ -331,8 +331,7 @@ class WaveformViewer:
         self.set_trim_end(None)
 
     def set_zoom(self, pixels_per_second: float) -> None:
-        plot_left, plot_width = self._plot_bounds()
-        self._zoom_to(pixels_per_second, plot_left + plot_width / 2)
+        self._zoom_to(pixels_per_second, self._playhead_anchor_x())
 
     def reset_view(self) -> None:
         self.view_start_seconds = 0.0
@@ -391,7 +390,7 @@ class WaveformViewer:
             return
 
         factor = 1.18 if direction > 0 else 1 / 1.18
-        self._zoom_to(self.pixels_per_second * factor, event.x)
+        self._zoom_to(self.pixels_per_second * factor, self._playhead_anchor_x())
 
     def _zoom_to(self, pixels_per_second: float, anchor_x: float) -> None:
         plot_left, plot_width = self._plot_bounds()
@@ -418,6 +417,10 @@ class WaveformViewer:
 
     def _playhead_x(self, plot_left: int) -> int:
         return plot_left + int((self.playhead_seconds - self.view_start_seconds) * self.pixels_per_second)
+
+    def _playhead_anchor_x(self) -> float:
+        plot_left, plot_width = self._plot_bounds()
+        return min(plot_left + plot_width, max(plot_left, float(self._playhead_x(plot_left))))
 
     def _is_playhead_grab(self, event, plot_left: int) -> bool:
         if event.x < plot_left:
