@@ -5,11 +5,13 @@ setlocal
 cd /d "%~dp0\.."
 
 set "PYTHON_BIN=python"
-set "APP_NAME=卡拉OK工具箱"
+set "BUILD_NAME=KrokHelper"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "([char[]](0x5361,0x62C9,0x004F,0x004B,0x5DE5,0x5177,0x7BB1)) -join ''"`) do set "APP_NAME=%%I"
 set "DIST_PATH=dist\windows"
 set "WORK_PATH=build\pyinstaller-windows"
 set "SPEC_PATH=build\spec-windows"
 set "APP_DIST=%DIST_PATH%\%APP_NAME%"
+set "BUILD_DIST=%DIST_PATH%\%BUILD_NAME%"
 set "IS_CI="
 if defined CI set "IS_CI=1"
 
@@ -48,6 +50,8 @@ if errorlevel 1 (
 if not exist "%DIST_PATH%" mkdir "%DIST_PATH%"
 if not exist "%WORK_PATH%" mkdir "%WORK_PATH%"
 if not exist "%SPEC_PATH%" mkdir "%SPEC_PATH%"
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Get-ChildItem -LiteralPath '%SPEC_PATH%' -Filter '*.spec' -File -ErrorAction SilentlyContinue | Remove-Item -Force"
 
 echo Building Windows package...
 %PYTHON_BIN% -m PyInstaller ^
@@ -55,7 +59,7 @@ echo Building Windows package...
     --clean ^
     --windowed ^
     --onedir ^
-    --name "%APP_NAME%" ^
+    --name "%BUILD_NAME%" ^
     --distpath "%DIST_PATH%" ^
     --workpath "%WORK_PATH%" ^
     --specpath "%SPEC_PATH%" ^
@@ -107,7 +111,7 @@ if errorlevel 1 (
 
 echo Trimming Windows package...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$py = Join-Path (Resolve-Path '%APP_DIST%') '_internal\PySide6';" ^
+    "$py = Join-Path (Resolve-Path '%BUILD_DIST%') '_internal\PySide6';" ^
     "$translations = Join-Path $py 'translations';" ^
     "if (Test-Path $translations) { Get-ChildItem $translations -File | Where-Object { $_.Name -notin @('qtbase_zh_CN.qm','qtbase_zh_TW.qm','qtbase_ja.qm','qt_zh_CN.qm','qt_zh_TW.qm','qt_ja.qm') } | Remove-Item -Force };" ^
     "$plugins = Join-Path $py 'plugins';" ^
@@ -120,6 +124,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 if errorlevel 1 (
     echo.
     echo Package trimming failed.
+    if not defined IS_CI pause
+    exit /b 1
+)
+
+echo Renaming Windows package...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$appName = ([char[]](0x5361,0x62C9,0x004F,0x004B,0x5DE5,0x5177,0x7BB1)) -join '';" ^
+    "$distRoot = Resolve-Path '%DIST_PATH%';" ^
+    "$buildDir = Join-Path $distRoot '%BUILD_NAME%';" ^
+    "$targetDir = Join-Path $distRoot $appName;" ^
+    "if (-not (Test-Path $buildDir -PathType Container)) { throw 'Build output directory not found.' };" ^
+    "if (Test-Path $targetDir) { Remove-Item -LiteralPath $targetDir -Recurse -Force };" ^
+    "$buildExe = Join-Path $buildDir ('%BUILD_NAME%' + '.exe');" ^
+    "if (Test-Path $buildExe -PathType Leaf) { Rename-Item -LiteralPath $buildExe -NewName ($appName + '.exe') -Force };" ^
+    "Move-Item -LiteralPath $buildDir -Destination $targetDir -Force"
+if errorlevel 1 (
+    echo.
+    echo Package rename failed.
     if not defined IS_CI pause
     exit /b 1
 )
