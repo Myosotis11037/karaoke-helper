@@ -13,7 +13,9 @@ SPEC_PATH="$PROJECT_ROOT/build/spec-macos"
 echo "Checking Python..."
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   echo "Python 3 not found. Please install Python 3.10+ first."
-  read -r -p "Press Enter to close..."
+  if [ -z "${CI:-}" ]; then
+    read -r -p "Press Enter to close..."
+  fi
   exit 1
 fi
 
@@ -48,4 +50,6 @@ echo "Building macOS package..."
 echo
 echo "Build complete:"
 echo "$DIST_PATH/$APP_NAME.app"
-read -r -p "Press Enter to close..."
+if [ -z "${CI:-}" ]; then
+  read -r -p "Press Enter to close..."
+fi

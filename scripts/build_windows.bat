@@ -10,12 +10,14 @@ set "DIST_PATH=dist\windows"
 set "WORK_PATH=build\pyinstaller-windows"
 set "SPEC_PATH=build\spec-windows"
 set "APP_DIST=%DIST_PATH%\%APP_NAME%"
+set "IS_CI="
+if defined CI set "IS_CI=1"
 
 echo Checking Python...
 where %PYTHON_BIN% >nul 2>&1
 if errorlevel 1 (
     echo Python not found. Please install Python 3.10+ first.
-    pause
+    if not defined IS_CI pause
     exit /b 1
 )
 
@@ -26,7 +28,7 @@ if errorlevel 1 (
     %PYTHON_BIN% -m pip install pyinstaller
     if errorlevel 1 (
         echo Failed to install PyInstaller.
-        pause
+        if not defined IS_CI pause
         exit /b 1
     )
 )
@@ -38,7 +40,7 @@ if errorlevel 1 (
     %PYTHON_BIN% -m pip install PySide6
     if errorlevel 1 (
         echo Failed to install PySide6.
-        pause
+        if not defined IS_CI pause
         exit /b 1
     )
 )
@@ -99,7 +101,7 @@ echo Building Windows package...
 if errorlevel 1 (
     echo.
     echo Build failed.
-    pause
+    if not defined IS_CI pause
     exit /b 1
 )
 
@@ -118,11 +120,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 if errorlevel 1 (
     echo.
     echo Package trimming failed.
-    pause
+    if not defined IS_CI pause
     exit /b 1
 )
 
 echo.
 echo Build complete:
 echo %CD%\%APP_DIST%
-pause
+if not defined IS_CI pause
