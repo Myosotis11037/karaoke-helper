@@ -2728,7 +2728,7 @@ class KaraokeHiresApp:
                         export_aligned_audio(
                             audio_path=audio_path,
                             output_path=extra_wav_output,
-                            offset_seconds=offset_seconds,
+                            offset_seconds=0.0 if is_video_target else offset_seconds,
                             ffmpeg_dir=ffmpeg_dir,
                             logger=self._append_align_log,
                         )
