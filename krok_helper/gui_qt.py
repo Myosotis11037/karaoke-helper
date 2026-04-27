@@ -6,7 +6,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Callable
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -692,6 +692,7 @@ class KrokHelperQtApp(QMainWindow):
         self._align_encode_selection = ENCODE_MODE_SOFTWARE
         self._media_duration_cache: dict[Path, str] = {}
         self._suppress_preview_seek_restart = False
+        self._restoring_from_maximized = False
 
         self.setWindowTitle(APP_TITLE)
         app_icon = load_app_icon()
@@ -708,6 +709,41 @@ class KrokHelperQtApp(QMainWindow):
         self.preview_timer = QTimer(self)
         self.preview_timer.setInterval(300)
         self.preview_timer.timeout.connect(self._poll_alignment_preview)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.WindowStateChange:
+            old_state = event.oldState() if hasattr(event, "oldState") else Qt.WindowState.WindowNoState
+            current_state = self.windowState()
+            was_large = bool(
+                old_state & (Qt.WindowState.WindowMaximized | Qt.WindowState.WindowFullScreen)
+            )
+            is_large = bool(
+                current_state & (Qt.WindowState.WindowMaximized | Qt.WindowState.WindowFullScreen)
+            )
+            if was_large and not is_large and not self._restoring_from_maximized:
+                self._restoring_from_maximized = True
+                QTimer.singleShot(0, self._restore_windowed_geometry_centered)
+        super().changeEvent(event)
+
+    def _restore_windowed_geometry_centered(self) -> None:
+        try:
+            screen = self.screen() or QApplication.primaryScreen()
+            if screen is None:
+                return
+            available = screen.availableGeometry()
+            target_width = min(
+                max(WINDOW_MIN_WIDTH, WINDOW_WIDTH),
+                max(WINDOW_MIN_WIDTH, available.width()),
+            )
+            target_height = min(
+                WINDOW_MIN_HEIGHT,
+                max(WINDOW_MIN_HEIGHT, available.height()),
+            )
+            left = available.x() + max(0, (available.width() - target_width) // 2)
+            top = available.y() + max(0, (available.height() - target_height) // 2)
+            self.setGeometry(left, top, target_width, target_height)
+        finally:
+            self._restoring_from_maximized = False
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
