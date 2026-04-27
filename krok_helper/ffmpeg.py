@@ -5,8 +5,9 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Callable
 
-from krok_helper.errors import ProcessingError
+from krok_helper.errors import ExportCancelled, ProcessingError
 from krok_helper.models import MediaInfo
 from krok_helper.types import Logger
 
@@ -118,7 +119,24 @@ def probe_media(ffprobe_path: str, media_path: Path) -> MediaInfo:
     )
 
 
-def run_command(command: list[str], logger: Logger) -> None:
+def terminate_process(process: subprocess.Popen, *, timeout: float = 1.0) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=timeout)
+
+
+def run_command(
+    command: list[str],
+    logger: Logger,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    on_process_started: Callable[[subprocess.Popen | None], None] | None = None,
+) -> None:
     logger("执行命令:")
     logger(" ".join(f'"{part}"' if " " in part else part for part in command))
     process = subprocess.Popen(
@@ -130,13 +148,24 @@ def run_command(command: list[str], logger: Logger) -> None:
         errors="replace",
         **_build_subprocess_kwargs(),
     )
+    if on_process_started is not None:
+        on_process_started(process)
 
-    assert process.stdout is not None
-    for raw_line in process.stdout:
-        line = raw_line.strip()
-        if line:
-            logger(line)
+    try:
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if line:
+                logger(line)
+            if should_cancel is not None and should_cancel() and process.poll() is None:
+                terminate_process(process)
 
-    return_code = process.wait()
+        return_code = process.wait()
+    finally:
+        if on_process_started is not None:
+            on_process_started(None)
+
+    if should_cancel is not None and should_cancel():
+        raise ExportCancelled("已停止导出。")
     if return_code != 0:
         raise ProcessingError(f"ffmpeg 执行失败，退出码: {return_code}")

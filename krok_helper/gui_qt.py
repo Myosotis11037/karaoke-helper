@@ -57,8 +57,8 @@ from krok_helper.config import (
     WINDOW_MIN_WIDTH,
     WINDOW_WIDTH,
 )
-from krok_helper.errors import ProcessingError
-from krok_helper.ffmpeg import find_tool, probe_media
+from krok_helper.errors import ExportCancelled, ProcessingError
+from krok_helper.ffmpeg import find_tool, probe_media, terminate_process
 from krok_helper.pipeline import (
     DEFAULT_OFF_NAME_TEMPLATE,
     DEFAULT_ON_NAME_TEMPLATE,
@@ -676,6 +676,10 @@ class KrokHelperQtApp(QMainWindow):
         self.align_preview_process = None
         self.align_preview_started_at = 0.0
         self.align_preview_start_seconds = 0.0
+        self._align_export_cancel_requested = False
+        self._align_export_process: subprocess.Popen | None = None
+        self._align_export_expected_outputs: list[Path] = []
+        self._align_export_completed_outputs: list[Path] = []
         self.active_module = "align"
 
         self.output_name_mode_value = OUTPUT_NAME_MODE_FIXED
@@ -1193,6 +1197,9 @@ class KrokHelperQtApp(QMainWindow):
         self.align_stop_preview_button.clicked.connect(self._stop_alignment_preview)
         self.align_export_button = QPushButton("导出对齐视频")
         self.align_export_button.clicked.connect(self._start_aligned_export)
+        self.align_stop_export_button = QPushButton("停止导出")
+        self.align_stop_export_button.clicked.connect(self._stop_alignment_export)
+        self.align_stop_export_button.setEnabled(False)
         open_output_button = QPushButton("打开输出目录")
         open_output_button.clicked.connect(self._open_align_output_dir)
         clear_button = QPushButton("清空已选文件")
@@ -1210,6 +1217,7 @@ class KrokHelperQtApp(QMainWindow):
             self.align_preview_button,
             self.align_stop_preview_button,
             self.align_export_button,
+            self.align_stop_export_button,
             open_output_button,
             clear_button,
         ):
@@ -2217,15 +2225,51 @@ class KrokHelperQtApp(QMainWindow):
     def _refresh_alignment_preview_controls(self) -> None:
         has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
         is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
+        is_exporting = self._is_align_export_running()
         is_busy = (
             (self.align_analysis_task is not None and self.align_analysis_task.isRunning())
             or (self.align_auto_task is not None and self.align_auto_task.isRunning())
-            or (self.align_export_task is not None and self.align_export_task.isRunning())
+            or is_exporting
         )
         self.align_auto_button.setEnabled(has_waveforms and not is_playing and not is_busy)
         self.align_preview_button.setEnabled(has_waveforms and not is_playing and not is_busy)
         self.align_stop_preview_button.setEnabled(is_playing)
         self.align_export_button.setEnabled(has_waveforms and not is_playing and not is_busy)
+        self.align_stop_export_button.setEnabled(is_exporting)
+
+    def _is_align_export_running(self) -> bool:
+        return self.align_export_task is not None and self.align_export_task.isRunning()
+
+    def _register_align_export_process(self, process: subprocess.Popen | None) -> None:
+        self._align_export_process = process
+
+    def _cleanup_incomplete_align_exports(self) -> None:
+        completed = set(self._align_export_completed_outputs)
+        for path in self._align_export_expected_outputs:
+            if path in completed or not path.exists():
+                continue
+            try:
+                path.unlink()
+                self._append_align_log(f"已清理未完成的输出文件: {path}")
+            except OSError as exc:
+                self._append_align_log(f"清理未完成的输出文件失败: {path} ({exc})")
+
+    def _reset_align_export_state(self) -> None:
+        self._align_export_cancel_requested = False
+        self._align_export_process = None
+        self._align_export_expected_outputs = []
+        self._align_export_completed_outputs = []
+
+    def _stop_alignment_export(self) -> None:
+        if not self._is_align_export_running():
+            return
+        if not self._align_export_cancel_requested:
+            self._align_export_cancel_requested = True
+            self.align_status_label.setText("正在停止导出…")
+            self._append_align_log("正在停止导出…")
+        process = self._align_export_process
+        if process is not None:
+            terminate_process(process)
 
     def _is_align_video_target(self) -> bool:
         return self.align_target_video_radio.isChecked()
@@ -2376,6 +2420,12 @@ class KrokHelperQtApp(QMainWindow):
             )
             if not (not is_video_target and extra_candidate == output_path):
                 extra_wav_output = extra_candidate
+        self._align_export_cancel_requested = False
+        self._align_export_process = None
+        self._align_export_expected_outputs = [output_path]
+        if extra_wav_output is not None:
+            self._align_export_expected_outputs.append(extra_wav_output)
+        self._align_export_completed_outputs = []
 
         self._stop_alignment_preview(log_message=False)
         self.align_analyze_button.setEnabled(False)
@@ -2395,12 +2445,15 @@ class KrokHelperQtApp(QMainWindow):
                         offset_seconds=offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
                         logger=logger,
+                        should_cancel=lambda: self._align_export_cancel_requested,
+                        on_process_started=self._register_align_export_process,
                         encode_mode=encode_mode,
                         lead_fill_color=lead_fill_color,
                         force_1080p60=force_1080p60,
                         output_duration_seconds=video_trim_duration,
                     )
                 )
+                self._align_export_completed_outputs.append(outputs[-1])
             else:
                 outputs.append(
                     export_aligned_audio(
@@ -2409,8 +2462,11 @@ class KrokHelperQtApp(QMainWindow):
                         offset_seconds=offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
                         logger=logger,
+                        should_cancel=lambda: self._align_export_cancel_requested,
+                        on_process_started=self._register_align_export_process,
                     )
                 )
+                self._align_export_completed_outputs.append(outputs[-1])
             if extra_wav_output is not None:
                 outputs.append(
                     export_aligned_audio(
@@ -2419,8 +2475,11 @@ class KrokHelperQtApp(QMainWindow):
                         offset_seconds=0.0 if is_video_target else offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
                         logger=logger,
+                        should_cancel=lambda: self._align_export_cancel_requested,
+                        on_process_started=self._register_align_export_process,
                     )
                 )
+                self._align_export_completed_outputs.append(outputs[-1])
             return outputs
 
         self.align_export_task = BackgroundTask(runner)
@@ -2428,6 +2487,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_export_task.task_succeeded.connect(lambda outputs: self._finish_aligned_export(True, "", outputs, output_kind))
         self.align_export_task.task_failed.connect(lambda message: self._finish_aligned_export(False, message, None, output_kind))
         self.align_export_task.start()
+        self._refresh_alignment_preview_controls()
 
     def _finish_aligned_export(
         self,
@@ -2436,11 +2496,21 @@ class KrokHelperQtApp(QMainWindow):
         output_paths: object,
         output_kind: str,
     ) -> None:
+        was_cancelled = self._align_export_cancel_requested
+        self._align_export_process = None
         self.align_progress.setRange(0, 1)
-        self.align_progress.setValue(1 if success else 0)
+        self.align_progress.setValue(1 if success and not was_cancelled else 0)
         self.align_analyze_button.setEnabled(True)
+        if was_cancelled:
+            self._cleanup_incomplete_align_exports()
+            self.align_status_label.setText("导出已停止")
+            self._refresh_alignment_preview_controls()
+            self._reset_align_export_state()
+            self._append_align_log("导出任务已终止，未完成的输出文件已清理。")
+            return
         self.align_status_label.setText("导出完成" if success else "导出失败")
         self._refresh_alignment_preview_controls()
+        self._reset_align_export_state()
         if success and isinstance(output_paths, list):
             QMessageBox.information(self, APP_TITLE, f"{output_kind}已导出:\n" + "\n".join(str(path) for path in output_paths))
             return

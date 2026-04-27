@@ -7,8 +7,9 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
-from krok_helper.errors import ProcessingError
+from krok_helper.errors import ExportCancelled, ProcessingError
 from krok_helper.ffmpeg import _build_subprocess_kwargs, find_tool, probe_media, run_command
 from krok_helper.types import Logger
 
@@ -473,13 +474,32 @@ def extract_waveform(
     )
 
 
+def _raise_if_export_cancelled(should_cancel: Callable[[], bool] | None) -> None:
+    if should_cancel is not None and should_cancel():
+        raise ExportCancelled("已停止导出。")
+
+
+def _remove_incomplete_output(output_path: Path, logger: Logger) -> None:
+    if not output_path.exists():
+        return
+    try:
+        output_path.unlink()
+        logger(f"已清理未完成的输出文件: {output_path}")
+    except OSError as exc:
+        logger(f"清理未完成的输出文件失败: {output_path} ({exc})")
+
+
 def export_aligned_audio(
     audio_path: Path,
     output_path: Path,
     offset_seconds: float,
     ffmpeg_dir: Path | None,
     logger: Logger,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    on_process_started: Callable[[subprocess.Popen | None], None] | None = None,
 ) -> Path:
+    _raise_if_export_cancelled(should_cancel)
     ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
     ffprobe_path = find_tool("ffprobe.exe", ffmpeg_dir)
     media_info = probe_media(ffprobe_path, audio_path)
@@ -511,7 +531,12 @@ def export_aligned_audio(
                 source_payload=source_payload,
             ),
             logger,
+            should_cancel=should_cancel,
+            on_process_started=on_process_started,
         )
+    except ExportCancelled:
+        _remove_incomplete_output(output_path, logger)
+        raise
     except ProcessingError as exc:
         raise ProcessingError(f"导出对齐音频失败: {output_path.name}\n{exc}") from exc
 
@@ -593,11 +618,15 @@ def export_aligned_video_v2(
     offset_seconds: float,
     ffmpeg_dir: Path | None,
     logger: Logger,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    on_process_started: Callable[[subprocess.Popen | None], None] | None = None,
     encode_mode: str = ENCODE_MODE_SOFTWARE,
     lead_fill_color: str = LEAD_FILL_BLACK,
     force_1080p60: bool = False,
     output_duration_seconds: float | None = None,
 ) -> Path:
+    _raise_if_export_cancelled(should_cancel)
     if encode_mode not in {ENCODE_MODE_SOFTWARE, ENCODE_MODE_HARDWARE}:
         encode_mode = ENCODE_MODE_SOFTWARE
 
@@ -609,6 +638,7 @@ def export_aligned_video_v2(
         raise ProcessingError(f"字幕视频里没有检测到视频流: {video_path.name}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _raise_if_export_cancelled(should_cancel)
 
     logger(f"导出对齐视频: {output_path.name}")
     logger(f"字幕视频偏移: {format_offset(offset_seconds)}")
@@ -647,7 +677,12 @@ def export_aligned_video_v2(
         output_duration_seconds=output_duration_seconds,
     )
     try:
-        run_command(command, logger)
+        run_command(
+            command,
+            logger,
+            should_cancel=should_cancel,
+            on_process_started=on_process_started,
+        )
     except ProcessingError as exc:
         if encode_mode == ENCODE_MODE_HARDWARE:
             logger(f"硬编失败，自动改用软编重试: {exc}")
@@ -664,7 +699,12 @@ def export_aligned_video_v2(
                 output_duration_seconds=output_duration_seconds,
             )
             try:
-                run_command(fallback_command, logger)
+                run_command(
+                    fallback_command,
+                    logger,
+                    should_cancel=should_cancel,
+                    on_process_started=on_process_started,
+                )
             except ProcessingError as fallback_exc:
                 raise ProcessingError(
                     f"导出对齐视频失败: {output_path.name}\n{fallback_exc}"
@@ -890,6 +930,9 @@ def export_aligned_video(
     offset_seconds: float,
     ffmpeg_dir: Path | None,
     logger: Logger,
+    *,
+    should_cancel: Callable[[], bool] | None = None,
+    on_process_started: Callable[[subprocess.Popen | None], None] | None = None,
     encode_mode: str = ENCODE_MODE_SOFTWARE,
     lead_fill_color: str = LEAD_FILL_BLACK,
     force_1080p60: bool = False,
@@ -901,6 +944,8 @@ def export_aligned_video(
         offset_seconds=offset_seconds,
         ffmpeg_dir=ffmpeg_dir,
         logger=logger,
+        should_cancel=should_cancel,
+        on_process_started=on_process_started,
         encode_mode=encode_mode,
         lead_fill_color=lead_fill_color,
         force_1080p60=force_1080p60,
