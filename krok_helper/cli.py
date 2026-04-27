@@ -78,7 +78,7 @@ def run_cli(args: argparse.Namespace) -> int:
 
 def run_gui(args: argparse.Namespace) -> int:
     enable_high_dpi_awareness()
-    set_explicit_app_user_model_id("KrokHelper.Desktop")
+    set_explicit_app_user_model_id("KaraokeHelper.Desktop")
     qt_app = QApplication.instance() or QApplication(sys.argv)
     app_icon = load_taskbar_icon()
     if app_icon is not None:
