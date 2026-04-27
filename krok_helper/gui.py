@@ -32,6 +32,7 @@ from krok_helper.audio_alignment import (
     start_alignment_preview,
 )
 from krok_helper.config import (
+    APP_NAME,
     APP_TITLE,
     WINDOW_HEIGHT,
     WINDOW_MIN_HEIGHT,
@@ -965,7 +966,7 @@ class KaraokeHiresApp:
 
         tk.Label(
             sidebar,
-            text="卡拉OK工具箱",
+            text=APP_NAME,
             bg="#111827",
             fg="#ffffff",
             font=("Microsoft YaHei UI", 15, "bold"),

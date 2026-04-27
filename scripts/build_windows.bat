@@ -5,8 +5,8 @@ setlocal
 cd /d "%~dp0\.."
 
 set "PYTHON_BIN=python"
-set "BUILD_NAME=KrokHelper"
-for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "([char[]](0x5361,0x62C9,0x004F,0x004B,0x5DE5,0x5177,0x7BB1)) -join ''"`) do set "APP_NAME=%%I"
+set "BUILD_NAME=KaraokeHelper"
+set "APP_NAME=Karaoke Helper"
 set "DIST_PATH=dist\windows"
 set "WORK_PATH=build\pyinstaller-windows"
 set "SPEC_PATH=build\spec-windows"
@@ -130,15 +130,15 @@ if errorlevel 1 (
 
 echo Renaming Windows package...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$appName = ([char[]](0x5361,0x62C9,0x004F,0x004B,0x5DE5,0x5177,0x7BB1)) -join '';" ^
     "$distRoot = Resolve-Path '%DIST_PATH%';" ^
     "$buildDir = Join-Path $distRoot '%BUILD_NAME%';" ^
-    "$targetDir = Join-Path $distRoot $appName;" ^
+    "$targetDir = Join-Path $distRoot '%APP_NAME%';" ^
     "if (-not (Test-Path $buildDir -PathType Container)) { throw 'Build output directory not found.' };" ^
     "if (Test-Path $targetDir) { Remove-Item -LiteralPath $targetDir -Recurse -Force };" ^
+    "if (Test-Path $targetDir) { throw 'Existing target directory could not be removed.' };" ^
     "$buildExe = Join-Path $buildDir ('%BUILD_NAME%' + '.exe');" ^
-    "if (Test-Path $buildExe -PathType Leaf) { Rename-Item -LiteralPath $buildExe -NewName ($appName + '.exe') -Force };" ^
-    "Move-Item -LiteralPath $buildDir -Destination $targetDir -Force"
+    "if (Test-Path $buildExe -PathType Leaf) { Rename-Item -LiteralPath $buildExe -NewName ('%APP_NAME%' + '.exe') -Force };" ^
+    "Rename-Item -LiteralPath $buildDir -NewName '%APP_NAME%' -Force"
 if errorlevel 1 (
     echo.
     echo Package rename failed.

@@ -37,15 +37,15 @@ jobs:
         shell: powershell
         run: |
           Compress-Archive `
-            -Path "dist\windows\卡拉OK工具箱\*" `
-            -DestinationPath "KrokHelper-windows.zip" `
+            -Path "dist\windows\Karaoke Helper\*" `
+            -DestinationPath "KaraokeHelper-windows.zip" `
             -Force
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KrokHelper-windows
-          path: KrokHelper-windows.zip
+          name: KaraokeHelper-windows
+          path: KaraokeHelper-windows.zip
 
   build-macos:
     name: Build macOS
@@ -71,13 +71,13 @@ jobs:
       - name: Archive macOS package
         run: |
           cd dist/macos
-          ditto -c -k --sequesterRsrc --keepParent "卡拉OK工具箱.app" "../../KrokHelper-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "Karaoke Helper.app" "../../KaraokeHelper-macos.zip"
 
       - name: Upload macOS artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KrokHelper-macos
-          path: KrokHelper-macos.zip
+          name: KaraokeHelper-macos
+          path: KaraokeHelper-macos.zip
 
   release:
     name: Publish Release
@@ -91,13 +91,13 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: KrokHelper-windows
+          name: KaraokeHelper-windows
           path: release-assets/windows
 
       - name: Download macOS artifact
         uses: actions/download-artifact@v4
         with:
-          name: KrokHelper-macos
+          name: KaraokeHelper-macos
           path: release-assets/macos
 
       - name: Publish GitHub Release
@@ -105,5 +105,5 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            release-assets/windows/KrokHelper-windows.zip
-            release-assets/macos/KrokHelper-macos.zip
+            release-assets/windows/KaraokeHelper-windows.zip
+            release-assets/macos/KaraokeHelper-macos.zip

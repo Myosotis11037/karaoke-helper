@@ -51,6 +51,7 @@ from krok_helper.audio_alignment import (
     start_alignment_preview,
 )
 from krok_helper.config import (
+    APP_NAME,
     APP_TITLE,
     WINDOW_HEIGHT,
     WINDOW_MIN_HEIGHT,
@@ -942,7 +943,7 @@ class KrokHelperQtApp(QMainWindow):
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
 
-        title = QLabel("卡拉OK工具箱")
+        title = QLabel(APP_NAME)
         title.setObjectName("SidebarTitle")
         sidebar_layout.addWidget(title)
 
@@ -2607,7 +2608,7 @@ class KrokHelperQtApp(QMainWindow):
 
 
 def launch_qt_app() -> int:
-    set_explicit_app_user_model_id("KrokHelper.Desktop")
+    set_explicit_app_user_model_id("KaraokeHelper.Desktop")
     app = QApplication.instance() or QApplication([])
     app_icon = load_taskbar_icon()
     if app_icon is not None:

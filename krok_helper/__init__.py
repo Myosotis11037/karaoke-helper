@@ -1,2 +1,1 @@
-"""Krok Helper package."""
-
+"""Karaoke Helper package."""

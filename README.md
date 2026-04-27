@@ -1,4 +1,4 @@
-# 卡拉OK工具箱
+# Karaoke Helper
 
 当前版本：`2.0.2`
 
@@ -188,7 +188,7 @@ D:\tools\ffmpeg\bin
 Windows 下默认保存到：
 
 ```text
-%APPDATA%\卡拉OK工具箱\settings.json
+%APPDATA%\Karaoke Helper\settings.json
 ```
 
 目前会保存：
@@ -219,13 +219,13 @@ scripts\build_windows.bat
 输出目录：
 
 ```text
-dist\windows\卡拉OK工具箱\
+dist\windows\Karaoke Helper\
 ```
 
 主程序：
 
 ```text
-dist\windows\卡拉OK工具箱\卡拉OK工具箱.exe
+dist\windows\Karaoke Helper\Karaoke Helper.exe
 ```
 
 ### macOS
@@ -245,7 +245,7 @@ chmod +x ./scripts/build_macos.command
 输出目录：
 
 ```text
-dist/macos/卡拉OK工具箱.app
+dist/macos/Karaoke Helper.app
 ```
 
 ## 依赖
