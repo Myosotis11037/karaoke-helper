@@ -40,6 +40,7 @@ from krok_helper.audio_alignment import (
     ENCODE_MODE_HARDWARE,
     ENCODE_MODE_SOFTWARE,
     LEAD_FILL_BLACK,
+    LEAD_FILL_FREEZE,
     LEAD_FILL_WHITE,
     AutoAlignResult,
     WaveformData,
@@ -1429,13 +1430,16 @@ class KrokHelperQtApp(QMainWindow):
         lead_row.addWidget(QLabel("视频前导画面"))
         self.align_lead_fill_black_radio = QRadioButton("前黑")
         self.align_lead_fill_white_radio = QRadioButton("前白")
+        self.align_lead_fill_freeze_radio = QRadioButton("首帧定格")
         self.align_lead_fill_black_radio.setChecked(True)
         self.align_lead_fill_group = QButtonGroup(self)
         self.align_lead_fill_group.setExclusive(True)
         self.align_lead_fill_group.addButton(self.align_lead_fill_black_radio)
         self.align_lead_fill_group.addButton(self.align_lead_fill_white_radio)
+        self.align_lead_fill_group.addButton(self.align_lead_fill_freeze_radio)
         lead_row.addWidget(self.align_lead_fill_black_radio)
         lead_row.addWidget(self.align_lead_fill_white_radio)
+        lead_row.addWidget(self.align_lead_fill_freeze_radio)
         lead_row.addStretch(1)
         control_layout.addWidget(self.align_lead_row_widget, 5, 0, 1, 2)
 
@@ -2198,6 +2202,8 @@ class KrokHelperQtApp(QMainWindow):
             self.align_encode_row_widget.setEnabled(True)
             if self._align_lead_fill_selection == LEAD_FILL_WHITE:
                 self.align_lead_fill_white_radio.setChecked(True)
+            elif self._align_lead_fill_selection == LEAD_FILL_FREEZE:
+                self.align_lead_fill_freeze_radio.setChecked(True)
             else:
                 self.align_lead_fill_black_radio.setChecked(True)
             if self._align_encode_selection == ENCODE_MODE_HARDWARE:
@@ -2207,6 +2213,8 @@ class KrokHelperQtApp(QMainWindow):
         else:
             if self.align_lead_fill_white_radio.isChecked():
                 self._align_lead_fill_selection = LEAD_FILL_WHITE
+            elif self.align_lead_fill_freeze_radio.isChecked():
+                self._align_lead_fill_selection = LEAD_FILL_FREEZE
             else:
                 self._align_lead_fill_selection = LEAD_FILL_BLACK
             if self.align_encode_hardware_radio.isChecked():
@@ -2217,6 +2225,7 @@ class KrokHelperQtApp(QMainWindow):
             self.align_lead_fill_group.setExclusive(False)
             self.align_lead_fill_black_radio.setChecked(False)
             self.align_lead_fill_white_radio.setChecked(False)
+            self.align_lead_fill_freeze_radio.setChecked(False)
             self.align_lead_fill_group.setExclusive(True)
 
             self.align_encode_group.setExclusive(False)
@@ -2466,7 +2475,12 @@ class KrokHelperQtApp(QMainWindow):
         output_path = Path(output_path_text).expanduser()
         offset_seconds = self.waveform_view.offset_seconds
         encode_mode = ENCODE_MODE_HARDWARE if self.align_encode_hardware_radio.isChecked() else ENCODE_MODE_SOFTWARE
-        lead_fill_color = LEAD_FILL_WHITE if self.align_lead_fill_white_radio.isChecked() else LEAD_FILL_BLACK
+        if self.align_lead_fill_white_radio.isChecked():
+            lead_fill_color = LEAD_FILL_WHITE
+        elif self.align_lead_fill_freeze_radio.isChecked():
+            lead_fill_color = LEAD_FILL_FREEZE
+        else:
+            lead_fill_color = LEAD_FILL_BLACK
         force_1080p60 = self.align_force_1080p60_check.isChecked()
         video_trim_duration = self._compute_video_trim_duration() if is_video_target else None
         extra_wav_output: Path | None = None

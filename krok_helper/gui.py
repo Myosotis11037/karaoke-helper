@@ -22,6 +22,7 @@ from krok_helper.audio_alignment import (
     ENCODE_MODE_HARDWARE,
     ENCODE_MODE_SOFTWARE,
     LEAD_FILL_BLACK,
+    LEAD_FILL_FREEZE,
     LEAD_FILL_WHITE,
     WaveformData,
     export_aligned_audio,
@@ -1358,9 +1359,24 @@ class KaraokeHiresApp:
             value=LEAD_FILL_WHITE,
         )
         lead_white_radio.grid(row=0, column=2, sticky="w", padx=(10, 0))
+        lead_freeze_radio = ttk.Radiobutton(
+            lead_fill_row,
+            text="首帧定格",
+            variable=self.align_lead_fill_var,
+            value=LEAD_FILL_FREEZE,
+        )
+        lead_freeze_radio.grid(row=0, column=3, sticky="w", padx=(10, 0))
 
         self.align_video_option_widgets.extend(
-            [trim_mark_button, trim_clear_button, force_1080p60_check, auto_trim_check, lead_black_radio, lead_white_radio]
+            [
+                trim_mark_button,
+                trim_clear_button,
+                force_1080p60_check,
+                auto_trim_check,
+                lead_black_radio,
+                lead_white_radio,
+                lead_freeze_radio,
+            ]
         )
 
         self.align_encode_row = ttk.Frame(control_panel)

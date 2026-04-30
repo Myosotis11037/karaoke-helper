@@ -24,6 +24,7 @@ ENCODE_MODE_SOFTWARE = "software"
 ENCODE_MODE_HARDWARE = "hardware"
 LEAD_FILL_BLACK = "black"
 LEAD_FILL_WHITE = "white"
+LEAD_FILL_FREEZE = "freeze"
 FORCED_OUTPUT_WIDTH = 1920
 FORCED_OUTPUT_HEIGHT = 1080
 FORCED_OUTPUT_FPS = "60"
@@ -48,6 +49,14 @@ COMMON_AUDIO_ENCODERS = {
     "pcm_s24le": "pcm_s24le",
     "pcm_s32le": "pcm_s32le",
 }
+
+
+def _lead_fill_label(mode: str) -> str:
+    if mode == LEAD_FILL_WHITE:
+        return "前白"
+    if mode == LEAD_FILL_FREEZE:
+        return "首帧定格"
+    return "前黑"
 
 
 @dataclass
@@ -648,6 +657,8 @@ def export_aligned_video_v2(
     logger(f"Export aligned video: {output_path.name}")
     logger(f"Subtitle video offset: {format_offset(offset_seconds)}")
     logger(f"Replace audio track with: {audio_path.name}")
+    if offset_seconds > 0:
+        logger(f"Lead-in fill mode: {_lead_fill_label(lead_fill_color)}")
     if force_1080p60:
         logger("视频输出: 强制重编码为 1920x1080 / 60fps")
     if output_duration_seconds is not None:
@@ -878,10 +889,16 @@ def build_aligned_video_command(
                 str(video_path),
             ]
         )
-        video_filter = (
-            f"[0:v:0]tpad=start_duration={offset_seconds:.6f}:start_mode=add:color={lead_fill_color},"
-            "setpts=PTS-STARTPTS"
-        )
+        if lead_fill_color == LEAD_FILL_FREEZE:
+            video_filter = (
+                f"[0:v:0]tpad=start_duration={offset_seconds:.6f}:start_mode=clone,"
+                "setpts=PTS-STARTPTS"
+            )
+        else:
+            video_filter = (
+                f"[0:v:0]tpad=start_duration={offset_seconds:.6f}:start_mode=add:color={lead_fill_color},"
+                "setpts=PTS-STARTPTS"
+            )
     else:
         command.extend(["-i", str(video_path)])
         video_filter = "[0:v:0]setpts=PTS-STARTPTS"
