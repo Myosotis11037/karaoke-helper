@@ -1162,7 +1162,7 @@ class KaraokeHiresApp:
         ).grid(row=1, column=0, sticky="w", pady=(8, 0))
         ttk.Button(
             header,
-            text="对齐设置",
+            text="设置",
             command=lambda: self._open_settings_window(SETTINGS_CONTEXT_ALIGN),
         ).grid(
             row=0, column=1, sticky="e"
@@ -1324,7 +1324,7 @@ class KaraokeHiresApp:
 
         option_row = ttk.Frame(control_panel)
         option_row.grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Checkbutton(option_row, text="额外再导出一份对齐后的 WAV", variable=self.align_extra_wav_var).grid(
+        ttk.Checkbutton(option_row, text="额外导出一份原唱音源的wav文件", variable=self.align_extra_wav_var).grid(
             row=0, column=0, sticky="w"
         )
         force_1080p60_check = ttk.Checkbutton(
@@ -1365,16 +1365,16 @@ class KaraokeHiresApp:
 
         self.align_encode_row = ttk.Frame(control_panel)
         self.align_encode_row.grid(row=6, column=0, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Label(self.align_encode_row, text="补黑编码").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.align_encode_row, text="视频编码方式").grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(
             self.align_encode_row,
-            text="软编省空间",
+            text="软编（CPU）",
             variable=self.align_encode_mode_var,
             value=ENCODE_MODE_SOFTWARE,
         ).grid(row=0, column=1, sticky="w", padx=(12, 0))
         ttk.Radiobutton(
             self.align_encode_row,
-            text="硬编快速",
+            text="硬编（GPU）",
             variable=self.align_encode_mode_var,
             value=ENCODE_MODE_HARDWARE,
         ).grid(row=0, column=2, sticky="w", padx=(10, 0))
