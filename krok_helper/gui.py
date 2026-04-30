@@ -752,11 +752,14 @@ class KaraokeHiresApp:
         self.align_viewer: WaveformViewer | None = None
         self.align_log_text: tk.Text | None = None
         self.align_move_radio: ttk.Radiobutton | None = None
+        self.align_control_panel: tk.Frame | None = None
         self.align_encode_row: ttk.Frame | None = None
         self.align_video_option_widgets: list[tk.Widget] = []
         self.align_auto_button: ttk.Button | None = None
         self.align_preview_button: ttk.Button | None = None
         self.align_stop_preview_button: ttk.Button | None = None
+        self.align_open_output_button: ttk.Button | None = None
+        self.align_clear_button: ttk.Button | None = None
 
         self._load_saved_settings()
         self._configure_styles()
@@ -1222,6 +1225,14 @@ class KaraokeHiresApp:
         ttk.Button(actions, text="清空已选文件", command=self._clear_alignment_inputs).grid(
             row=0, column=6, sticky="w", padx=(10, 0)
         )
+        self.align_open_output_button = next(
+            (widget for widget in actions.grid_slaves(row=0, column=5) if isinstance(widget, ttk.Button)),
+            None,
+        )
+        self.align_clear_button = next(
+            (widget for widget in actions.grid_slaves(row=0, column=6) if isinstance(widget, ttk.Button)),
+            None,
+        )
         self.align_progress = ttk.Progressbar(actions, mode="indeterminate", length=170)
         self.align_progress.grid(row=0, column=7, sticky="e")
         ttk.Label(actions, textvariable=self.align_status_var, font=("Microsoft YaHei UI", 10, "bold")).grid(
@@ -1238,6 +1249,7 @@ class KaraokeHiresApp:
             padx=14,
             pady=8,
         )
+        self.align_control_panel = control_panel
         control_panel.grid(row=3, column=0, sticky="ew", pady=(0, 10))
         control_panel.columnconfigure(1, weight=1)
 
@@ -1467,6 +1479,7 @@ class KaraokeHiresApp:
         self.align_log_text.configure(state="disabled")
         self._refresh_align_trim_status()
         self._refresh_align_target_ui()
+        self._refresh_alignment_preview_controls()
         self._bind_alignment_spacebar_shortcuts(shell)
 
     def _update_output_template_state(self) -> None:
@@ -2235,6 +2248,11 @@ class KaraokeHiresApp:
             and self.align_viewer.audio_waveform is not None
         )
 
+    def _has_complete_alignment_inputs(self) -> bool:
+        video_path = Path(self.align_video_var.get()).expanduser()
+        audio_path = Path(self.align_audio_var.get()).expanduser()
+        return video_path.is_file() and audio_path.is_file()
+
     def _is_auto_align_running(self) -> bool:
         return self.align_auto_worker is not None and self.align_auto_worker.is_alive()
 
@@ -2301,6 +2319,14 @@ class KaraokeHiresApp:
             style="Accent.TButton" if enabled else "TButton",
         )
 
+    def _set_widget_state_recursive(self, widget, state: str) -> None:
+        try:
+            widget.configure(state=state)
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._set_widget_state_recursive(child, state)
+
     def _handle_align_target_changed(self) -> None:
         self._stop_alignment_preview(log_message=False)
         if self.align_viewer is not None:
@@ -2310,7 +2336,10 @@ class KaraokeHiresApp:
 
     def _refresh_align_target_ui(self) -> None:
         is_video_target = self._is_align_video_target()
+        has_waveforms = self._has_alignment_waveforms()
         self._handle_align_offset_changed(self.align_viewer.offset_seconds if self.align_viewer else 0.0)
+        if self.align_control_panel is not None:
+            self._set_widget_state_recursive(self.align_control_panel, "normal" if has_waveforms else "disabled")
         if self.align_move_radio is not None:
             self.align_move_radio.configure(text="移动字幕视频" if is_video_target else "移动原唱音源")
         if hasattr(self, "align_export_button"):
@@ -2321,12 +2350,12 @@ class KaraokeHiresApp:
             state = "normal" if is_video_target else "disabled"
             for child in self.align_encode_row.winfo_children():
                 try:
-                    child.configure(state=state)
+                    child.configure(state=state if has_waveforms else "disabled")
                 except tk.TclError:
                     pass
         for widget in self.align_video_option_widgets:
             try:
-                widget.configure(state="normal" if is_video_target else "disabled")
+                widget.configure(state="normal" if has_waveforms and is_video_target else "disabled")
             except tk.TclError:
                 pass
         self._refresh_align_trim_status()
@@ -2342,16 +2371,29 @@ class KaraokeHiresApp:
             self.align_preview_button.configure(state="disabled")
         self.align_status_var.set("准备生成波形")
         self._refresh_align_target_ui()
+        self._refresh_alignment_preview_controls()
 
     def _refresh_alignment_preview_controls(self) -> None:
+        has_inputs = self._has_complete_alignment_inputs()
+        has_waveforms = self._has_alignment_waveforms()
         is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
         is_auto_aligning = self._is_auto_align_running()
-        can_preview = self._has_alignment_waveforms() and not is_playing and not is_auto_aligning
-        self._set_align_auto_button_enabled(self._has_alignment_waveforms() and not is_auto_aligning)
+        is_analyzing = self.align_worker is not None and self.align_worker.is_alive()
+        is_exporting = self.align_export_worker is not None and self.align_export_worker.is_alive()
+        is_busy = is_analyzing or is_auto_aligning or is_exporting
+        can_preview = has_waveforms and not is_playing and not is_busy
+        self.align_generate_button.configure(state="normal" if has_inputs and not is_playing and not is_busy else "disabled")
+        self._set_align_auto_button_enabled(has_waveforms and not is_busy)
         if self.align_preview_button is not None:
             self.align_preview_button.configure(state="normal" if can_preview else "disabled")
         if self.align_stop_preview_button is not None:
             self.align_stop_preview_button.configure(state="normal" if is_playing else "disabled")
+        if self.align_export_button is not None:
+            self.align_export_button.configure(state="normal" if has_waveforms and not is_playing and not is_busy else "disabled")
+        if self.align_open_output_button is not None:
+            self.align_open_output_button.configure(state="normal" if has_waveforms else "disabled")
+        if self.align_clear_button is not None:
+            self.align_clear_button.configure(state="normal" if has_waveforms else "disabled")
 
     def _handle_align_zoom_change(self, value: str) -> None:
         if self.align_viewer is None:

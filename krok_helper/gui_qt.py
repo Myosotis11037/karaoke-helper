@@ -696,6 +696,11 @@ class KrokHelperQtApp(QMainWindow):
         self._suppress_preview_seek_restart = False
         self._restoring_from_maximized = False
         self._startup_geometry_applied = False
+        self.align_control_panel: QFrame | None = None
+        self.align_open_output_button: QPushButton | None = None
+        self.align_clear_button: QPushButton | None = None
+        self.align_jump_to_end_button: QPushButton | None = None
+        self.align_reset_view_button: QPushButton | None = None
 
         self.setWindowTitle(APP_TITLE)
         app_icon = load_app_icon()
@@ -1281,6 +1286,8 @@ class KrokHelperQtApp(QMainWindow):
             clear_button,
         ):
             actions.addWidget(button)
+        self.align_open_output_button = open_output_button
+        self.align_clear_button = clear_button
         actions.addStretch(1)
         actions.addWidget(self.align_progress)
         actions.addSpacing(12)
@@ -1288,6 +1295,7 @@ class KrokHelperQtApp(QMainWindow):
         shell.addLayout(actions)
 
         control_panel = QFrame()
+        self.align_control_panel = control_panel
         control_panel.setObjectName("ControlPanel")
         control_layout = QGridLayout(control_panel)
         control_layout.setContentsMargins(14, 12, 14, 12)
@@ -1474,10 +1482,12 @@ class KrokHelperQtApp(QMainWindow):
         jump_to_end_button.setMinimumHeight(42)
         jump_to_end_button.setMinimumWidth(86)
         jump_to_end_button.clicked.connect(self.waveform_view.jump_to_end)
+        self.align_jump_to_end_button = jump_to_end_button
         reset_view_button = QPushButton("回到开头")
         reset_view_button.setMinimumHeight(42)
         reset_view_button.setMinimumWidth(86)
         reset_view_button.clicked.connect(self.waveform_view.reset_view)
+        self.align_reset_view_button = reset_view_button
         zoom_row.addWidget(self.align_zoom_slider, 1)
         zoom_row.addSpacing(10)
         zoom_row.addWidget(jump_to_end_button)
@@ -2052,6 +2062,16 @@ class KrokHelperQtApp(QMainWindow):
             raise ProcessingError("请先选择有效的原唱音源。")
         return video_path, audio_path, ffmpeg_dir
 
+    def _has_complete_alignment_inputs(self) -> bool:
+        video_path = self.align_video_zone.path
+        audio_path = self.align_audio_zone.path
+        return (
+            video_path is not None
+            and audio_path is not None
+            and video_path.is_file()
+            and audio_path.is_file()
+        )
+
     def _invalidate_alignment_waveforms(self) -> None:
         self._stop_alignment_preview(log_message=False)
         self.waveform_view.clear()
@@ -2187,17 +2207,18 @@ class KrokHelperQtApp(QMainWindow):
 
     def _refresh_align_target_ui(self) -> None:
         is_video_target = self._is_align_video_target()
+        has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
         self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
         if not is_video_target:
             self.align_extra_wav_check.setChecked(False)
-        self.align_extra_wav_check.setEnabled(is_video_target)
-        self.align_trim_mark_button.setEnabled(is_video_target)
-        self.align_trim_clear_button.setEnabled(is_video_target)
-        self.align_force_1080p60_check.setEnabled(is_video_target)
-        self.align_auto_trim_check.setEnabled(is_video_target)
-        if is_video_target:
+        self.align_extra_wav_check.setEnabled(has_waveforms and is_video_target)
+        self.align_trim_mark_button.setEnabled(has_waveforms and is_video_target)
+        self.align_trim_clear_button.setEnabled(has_waveforms and is_video_target)
+        self.align_force_1080p60_check.setEnabled(has_waveforms and is_video_target)
+        self.align_auto_trim_check.setEnabled(has_waveforms and is_video_target)
+        if has_waveforms and is_video_target:
             self.align_lead_row_widget.setEnabled(True)
             self.align_encode_row_widget.setEnabled(True)
             if self._align_lead_fill_selection == LEAD_FILL_WHITE:
@@ -2235,6 +2256,9 @@ class KrokHelperQtApp(QMainWindow):
 
             self.align_lead_row_widget.setEnabled(False)
             self.align_encode_row_widget.setEnabled(False)
+        if self.align_control_panel is not None:
+            self.align_control_panel.setEnabled(has_waveforms)
+        self.waveform_view.setEnabled(has_waveforms)
         self._refresh_align_trim_status(self.waveform_view.trim_end_seconds)
 
     def _handle_waveform_offset_changed(self, seconds: float) -> None:
@@ -2290,6 +2314,7 @@ class KrokHelperQtApp(QMainWindow):
         return None
 
     def _refresh_alignment_preview_controls(self) -> None:
+        has_inputs = self._has_complete_alignment_inputs()
         has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
         is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
         is_exporting = self._is_align_export_running()
@@ -2298,11 +2323,21 @@ class KrokHelperQtApp(QMainWindow):
             or (self.align_auto_task is not None and self.align_auto_task.isRunning())
             or is_exporting
         )
+        self.align_analyze_button.setEnabled(has_inputs and not is_playing and not is_busy)
         self.align_auto_button.setEnabled(has_waveforms and not is_playing and not is_busy)
         self.align_preview_button.setEnabled(has_waveforms and not is_playing and not is_busy)
         self.align_stop_preview_button.setEnabled(is_playing)
         self.align_export_button.setEnabled(has_waveforms and not is_playing and not is_busy)
         self.align_stop_export_button.setEnabled(is_exporting)
+        if self.align_open_output_button is not None:
+            self.align_open_output_button.setEnabled(has_waveforms)
+        if self.align_clear_button is not None:
+            self.align_clear_button.setEnabled(has_waveforms)
+        if self.align_jump_to_end_button is not None:
+            self.align_jump_to_end_button.setEnabled(has_waveforms)
+        if self.align_reset_view_button is not None:
+            self.align_reset_view_button.setEnabled(has_waveforms)
+        self.align_zoom_slider.setEnabled(has_waveforms)
 
     def _is_align_export_running(self) -> bool:
         return self.align_export_task is not None and self.align_export_task.isRunning()
