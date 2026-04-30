@@ -2499,6 +2499,7 @@ class KrokHelperQtApp(QMainWindow):
                 outputs.append(
                     export_aligned_video(
                         video_path=video_path,
+                        audio_path=audio_path,
                         output_path=output_path,
                         offset_seconds=offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
