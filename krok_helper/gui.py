@@ -1359,21 +1359,21 @@ class KaraokeHiresApp:
         ttk.Label(lead_fill_row, text="视频前导画面").grid(row=0, column=0, sticky="w")
         lead_black_radio = ttk.Radiobutton(
             lead_fill_row,
-            text="前黑",
+            text="前黑（补黑屏）",
             variable=self.align_lead_fill_var,
             value=LEAD_FILL_BLACK,
         )
         lead_black_radio.grid(row=0, column=1, sticky="w", padx=(12, 0))
         lead_white_radio = ttk.Radiobutton(
             lead_fill_row,
-            text="前白",
+            text="前白（补白屏）",
             variable=self.align_lead_fill_var,
             value=LEAD_FILL_WHITE,
         )
         lead_white_radio.grid(row=0, column=2, sticky="w", padx=(10, 0))
         lead_freeze_radio = ttk.Radiobutton(
             lead_fill_row,
-            text="首帧定格",
+            text="首帧定格（用首帧补）",
             variable=self.align_lead_fill_var,
             value=LEAD_FILL_FREEZE,
         )
