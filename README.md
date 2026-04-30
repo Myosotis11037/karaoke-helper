@@ -39,7 +39,6 @@ krok-helper/
 │  ├─ config.py
 │  ├─ errors.py
 │  ├─ ffmpeg.py
-│  ├─ gui.py
 │  ├─ models.py
 │  ├─ pipeline.py
 │  ├─ settings.py
