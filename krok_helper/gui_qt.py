@@ -893,6 +893,39 @@ class KrokHelperQtApp(QMainWindow):
                 outline: none;
                 border: 0;
             }
+            QTableWidget#LyricsResultsTable {
+                background: #ffffff;
+                alternate-background-color: #ffffff;
+                border: 1px solid rgba(203, 213, 225, 0.8);
+                gridline-color: transparent;
+                selection-background-color: transparent;
+                selection-color: #111827;
+                outline: 0;
+            }
+            QTableWidget#LyricsResultsTable::item {
+                padding: 9px 10px;
+                border: 0;
+                border-bottom: 1px solid rgba(203, 213, 225, 0.45);
+            }
+            QTableWidget#LyricsResultsTable::item:hover {
+                background: #eef2f7;
+            }
+            QTableWidget#LyricsResultsTable::item:selected {
+                background: #dde3ea;
+                color: #111827;
+            }
+            QTableWidget#LyricsResultsTable::item:selected:hover {
+                background: #d7dee7;
+            }
+            QTableWidget#LyricsResultsTable QHeaderView::section {
+                background: #ffffff;
+                color: #111827;
+                border: 0;
+                border-bottom: 1px solid rgba(203, 213, 225, 0.6);
+                border-right: 1px solid rgba(203, 213, 225, 0.45);
+                padding: 8px 8px 10px 8px;
+                font-weight: 700;
+            }
             QHeaderView::section {
                 background: #eef2f7;
                 color: #111827;
@@ -1242,17 +1275,23 @@ class KrokHelperQtApp(QMainWindow):
         self.lyrics_results_summary_label.setStyleSheet('font-size: 9pt; color: #475569;')
         self.lyrics_results_summary_label.setFont(build_lyrics_ui_font(point_size=9.5))
         self.lyrics_results_table = QTableWidget(0, 5)
+        self.lyrics_results_table.setObjectName("LyricsResultsTable")
         self.lyrics_results_table.setHorizontalHeaderLabels(["歌曲", "艺术家", "专辑", "时长", "来源"])
         self.lyrics_results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.lyrics_results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.lyrics_results_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.lyrics_results_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.lyrics_results_table.setAlternatingRowColors(True)
+        self.lyrics_results_table.setAlternatingRowColors(False)
+        self.lyrics_results_table.setShowGrid(False)
+        self.lyrics_results_table.setMouseTracking(True)
+        self.lyrics_results_table.viewport().setMouseTracking(True)
+        self.lyrics_results_table.viewport().setCursor(Qt.CursorShape.PointingHandCursor)
         self.lyrics_results_table.setWordWrap(False)
         self.lyrics_results_table.setTextElideMode(Qt.TextElideMode.ElideRight)
         self.lyrics_results_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.lyrics_results_table.setFont(build_lyrics_ui_font(point_size=10.5))
         self.lyrics_results_table.verticalHeader().setVisible(False)
+        self.lyrics_results_table.verticalHeader().setDefaultSectionSize(42)
         self.lyrics_results_table.horizontalHeader().setStretchLastSection(False)
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
@@ -1615,7 +1654,6 @@ class KrokHelperQtApp(QMainWindow):
             return
 
         self._lyrics_loading_key = candidate.key
-        self.lyrics_status_label.setText(f"正在从 {candidate.provider_name} 加载歌词…")
 
         def runner(logger: Callable[[str], None]) -> LyricsSearchCandidate:
             _ = logger
@@ -1628,6 +1666,7 @@ class KrokHelperQtApp(QMainWindow):
 
     def _finish_lyrics_fetch_success(self, result: object) -> None:
         self.lyrics_fetch_task = None
+        self._lyrics_loading_key = ""
         loaded_candidate = result if isinstance(result, LyricsSearchCandidate) else None
         if loaded_candidate is not None:
             for index, candidate in enumerate(self.lyrics_search_results):
@@ -1636,9 +1675,6 @@ class KrokHelperQtApp(QMainWindow):
                     if self.lyrics_selected_candidate is not None and self.lyrics_selected_candidate.key == loaded_candidate.key:
                         self.lyrics_selected_candidate = loaded_candidate
                     break
-            self.lyrics_status_label.setText(f"已加载 {loaded_candidate.provider_name} 歌词。")
-        else:
-            self.lyrics_status_label.setText("歌词已加载。")
         self._refresh_lyrics_preview()
         if self.lyrics_selected_candidate is not None and not self.lyrics_selected_candidate.lyrics_loaded:
             self._ensure_selected_lyrics_loaded()
@@ -1653,7 +1689,6 @@ class KrokHelperQtApp(QMainWindow):
                 if self.lyrics_selected_candidate is not None and self.lyrics_selected_candidate.key == failed_key:
                     self.lyrics_selected_candidate = candidate
                 break
-        self.lyrics_status_label.setText("歌词加载失败。")
         self._refresh_lyrics_preview()
         if self.lyrics_selected_candidate is not None and not self.lyrics_selected_candidate.lyrics_loaded and not self.lyrics_selected_candidate.load_error:
             self._ensure_selected_lyrics_loaded()
