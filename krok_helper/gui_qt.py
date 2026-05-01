@@ -833,6 +833,39 @@ class KrokHelperQtApp(QMainWindow):
                 font-family: "Consolas";
                 font-size: 10pt;
             }
+            QTableWidget {
+                background: #ffffff;
+                alternate-background-color: #f8fafc;
+                border: 1px solid #d5dce6;
+                gridline-color: #d5dce6;
+                selection-background-color: #d6d9df;
+                selection-color: #111827;
+            }
+            QTableWidget::item {
+                padding: 4px 6px;
+                border: 0;
+            }
+            QTableWidget::item:selected {
+                background: #d6d9df;
+                color: #111827;
+            }
+            QTableWidget::item:focus {
+                outline: none;
+                border: 0;
+            }
+            QTableWidget::item:selected:focus {
+                outline: none;
+                border: 0;
+            }
+            QHeaderView::section {
+                background: #eef2f7;
+                color: #111827;
+                border: 0;
+                border-right: 1px solid #d5dce6;
+                border-bottom: 1px solid #d5dce6;
+                padding: 6px 8px;
+                font-weight: 700;
+            }
             QPushButton {
                 background: #f8fafc;
                 border: 1px solid #d5dce6;
@@ -1136,20 +1169,25 @@ class KrokHelperQtApp(QMainWindow):
         result_title.setObjectName("PanelTitle")
         self.lyrics_results_summary_label = QLabel("还没有搜索结果。")
         self.lyrics_results_summary_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #475569;')
-        self.lyrics_results_table = QTableWidget(0, 6)
-        self.lyrics_results_table.setHorizontalHeaderLabels(["歌名", "歌手", "专辑", "时长", "来源", "总评"])
+        self.lyrics_results_table = QTableWidget(0, 5)
+        self.lyrics_results_table.setHorizontalHeaderLabels(["歌曲", "艺术家", "专辑", "时长", "来源"])
         self.lyrics_results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.lyrics_results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.lyrics_results_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lyrics_results_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.lyrics_results_table.setAlternatingRowColors(True)
+        self.lyrics_results_table.setWordWrap(False)
+        self.lyrics_results_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.lyrics_results_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.lyrics_results_table.verticalHeader().setVisible(False)
         self.lyrics_results_table.horizontalHeader().setStretchLastSection(False)
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.lyrics_results_table.setColumnWidth(3, 68)
+        self.lyrics_results_table.setColumnWidth(4, 92)
         self.lyrics_results_table.currentCellChanged.connect(self._handle_lyrics_result_selected)
         result_layout.addWidget(result_title)
         result_layout.addWidget(self.lyrics_results_summary_label)
@@ -1233,9 +1271,7 @@ class KrokHelperQtApp(QMainWindow):
             return
 
         self.lyrics_status_label.setText(f"已找到 {len(self.lyrics_search_results)} 条候选结果。")
-        self.lyrics_results_summary_label.setText(
-            "排序优先级：歌名 > 歌手 > 专辑 > 歌词片段；总评只用于辅助展示。"
-        )
+        self.lyrics_results_summary_label.setText("结果按 歌曲 > 艺术家 > 专辑 > 歌词片段 排序，表格固定单行显示。")
         self.lyrics_results_table.setRowCount(len(self.lyrics_search_results))
         for row, candidate in enumerate(self.lyrics_search_results):
             duration_text = format_media_duration(candidate.duration_seconds) if candidate.duration_seconds else "-"
@@ -1245,11 +1281,10 @@ class KrokHelperQtApp(QMainWindow):
                 QTableWidgetItem(candidate.album or "-"),
                 QTableWidgetItem(duration_text),
                 QTableWidgetItem(candidate.provider_name),
-                QTableWidgetItem(f"{candidate.display_score:.1f}"),
             ]
             for column, item in enumerate(items):
                 item.setData(Qt.ItemDataRole.UserRole, row)
-                if column == 5:
+                if column == 3:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.lyrics_results_table.setItem(row, column, item)
 
