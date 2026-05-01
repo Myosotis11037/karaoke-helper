@@ -9,6 +9,7 @@ from typing import Callable
 from PySide6.QtCore import QEvent, QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QCheckBox,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -30,6 +32,8 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QStackedWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -61,6 +65,15 @@ from krok_helper.config import (
 )
 from krok_helper.errors import ExportCancelled, ProcessingError
 from krok_helper.ffmpeg import find_tool, probe_media, terminate_process
+from krok_helper.lyrics import (
+    DEFAULT_LYRICS_PROVIDER_IDS,
+    LYRICS_PREVIEW_LINE,
+    LYRICS_PREVIEW_VERBATIM,
+    LyricsPreview,
+    LyricsSearchCandidate,
+    LyricsSearchService,
+    build_lyrics_preview,
+)
 from krok_helper.pipeline import (
     DEFAULT_OFF_NAME_TEMPLATE,
     DEFAULT_ON_NAME_TEMPLATE,
@@ -672,9 +685,13 @@ class KrokHelperQtApp(QMainWindow):
         super().__init__()
         self.settings = load_app_settings()
         self.hires_task: BackgroundTask | None = None
+        self.lyrics_search_task: BackgroundTask | None = None
         self.align_analysis_task: BackgroundTask | None = None
         self.align_auto_task: BackgroundTask | None = None
         self.align_export_task: BackgroundTask | None = None
+        self.lyrics_search_service = LyricsSearchService()
+        self.lyrics_search_results: list[LyricsSearchCandidate] = []
+        self.lyrics_selected_candidate: LyricsSearchCandidate | None = None
         self.align_preview_process = None
         self.align_preview_started_at = 0.0
         self.align_preview_start_seconds = 0.0
@@ -682,7 +699,7 @@ class KrokHelperQtApp(QMainWindow):
         self._align_export_process: subprocess.Popen | None = None
         self._align_export_expected_outputs: list[Path] = []
         self._align_export_completed_outputs: list[Path] = []
-        self.active_module = "align"
+        self.active_module = "lyrics"
 
         self.output_name_mode_value = OUTPUT_NAME_MODE_FIXED
         self.on_name_template_value = DEFAULT_ON_NAME_TEMPLATE
@@ -954,20 +971,28 @@ class KrokHelperQtApp(QMainWindow):
         sidebar_layout.addWidget(title)
 
         self.module_buttons: dict[str, QPushButton] = {}
+        self._build_module_button(sidebar_layout, "lyrics", "歌词检索")
         self._build_module_button(sidebar_layout, "align", "波形对齐")
         self._build_module_button(sidebar_layout, "hires", "Hi-Res 生成")
         sidebar_layout.addStretch(1)
 
         self.page_stack = QStackedWidget()
+        self.lyrics_page = self._build_lyrics_page()
         self.align_page = self._build_alignment_page()
         self.hires_page = self._build_hires_page()
+        self.module_pages = {
+            "lyrics": self.lyrics_page,
+            "align": self.align_page,
+            "hires": self.hires_page,
+        }
+        self.page_stack.addWidget(self.lyrics_page)
         self.page_stack.addWidget(self.align_page)
         self.page_stack.addWidget(self.hires_page)
 
         shell.addWidget(sidebar)
         shell.addWidget(self.page_stack, 1)
         self.setCentralWidget(central)
-        self._show_module("align")
+        self._show_module("lyrics")
 
     def _build_module_button(self, layout: QVBoxLayout, module_id: str, label: str) -> None:
         button = QPushButton(label)
@@ -979,7 +1004,7 @@ class KrokHelperQtApp(QMainWindow):
 
     def _show_module(self, module_id: str) -> None:
         self.active_module = module_id
-        self.page_stack.setCurrentWidget(self.align_page if module_id == "align" else self.hires_page)
+        self.page_stack.setCurrentWidget(self.module_pages[module_id])
         for current_id, button in self.module_buttons.items():
             if current_id == module_id:
                 button.setStyleSheet(
@@ -1056,6 +1081,247 @@ class KrokHelperQtApp(QMainWindow):
             self.align_drag_offset_radio.setChecked(True)
         else:
             self.align_drag_pan_radio.setChecked(True)
+
+    def _build_lyrics_page(self) -> QWidget:
+        page = QWidget()
+        shell = QVBoxLayout(page)
+        shell.setContentsMargins(20, 20, 20, 20)
+        shell.setSpacing(14)
+
+        header = QVBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(8)
+        title = QLabel("轻量歌词检索")
+        title.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 20pt; font-weight: 700;')
+        desc = QLabel(
+            "输入歌名、歌手、专辑或歌词片段后搜索歌曲；结果会按歌名 > 歌手 > 专辑 > 歌词片段的匹配优先级排序。"
+        )
+        desc.setWordWrap(True)
+        header.addWidget(title)
+        header.addWidget(desc)
+        shell.addLayout(header)
+
+        search_panel = QFrame()
+        search_panel.setObjectName("WhitePanel")
+        search_layout = QGridLayout(search_panel)
+        search_layout.setContentsMargins(14, 14, 14, 14)
+        search_layout.setHorizontalSpacing(10)
+        search_layout.setVerticalSpacing(8)
+
+        self.lyrics_keyword_edit = QLineEdit()
+        self.lyrics_keyword_edit.setPlaceholderText("例如：青花瓷 / 周杰伦 / 七里香 / 天青色等烟雨")
+        self.lyrics_keyword_edit.returnPressed.connect(self._start_lyrics_search)
+        self.lyrics_search_button = QPushButton("搜索歌曲")
+        self.lyrics_search_button.clicked.connect(self._start_lyrics_search)
+        self.lyrics_status_label = QLabel("当前轻量版接入 LRCLIB，后续可以继续扩展更多歌词源。")
+        self.lyrics_status_label.setWordWrap(True)
+        self.lyrics_status_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #475569;')
+        search_layout.addWidget(QLabel("搜索关键词"), 0, 0)
+        search_layout.addWidget(self.lyrics_keyword_edit, 0, 1)
+        search_layout.addWidget(self.lyrics_search_button, 0, 2)
+        search_layout.addWidget(self.lyrics_status_label, 1, 1, 1, 2)
+        search_layout.setColumnStretch(1, 1)
+        shell.addWidget(search_panel)
+
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(14)
+
+        result_panel = QFrame()
+        result_panel.setObjectName("WhitePanel")
+        result_layout = QVBoxLayout(result_panel)
+        result_layout.setContentsMargins(14, 14, 14, 14)
+        result_layout.setSpacing(10)
+        result_title = QLabel("匹配结果")
+        result_title.setObjectName("PanelTitle")
+        self.lyrics_results_summary_label = QLabel("还没有搜索结果。")
+        self.lyrics_results_summary_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #475569;')
+        self.lyrics_results_table = QTableWidget(0, 6)
+        self.lyrics_results_table.setHorizontalHeaderLabels(["歌名", "歌手", "专辑", "时长", "来源", "总评"])
+        self.lyrics_results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.lyrics_results_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.lyrics_results_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.lyrics_results_table.setAlternatingRowColors(True)
+        self.lyrics_results_table.verticalHeader().setVisible(False)
+        self.lyrics_results_table.horizontalHeader().setStretchLastSection(False)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.lyrics_results_table.currentCellChanged.connect(self._handle_lyrics_result_selected)
+        result_layout.addWidget(result_title)
+        result_layout.addWidget(self.lyrics_results_summary_label)
+        result_layout.addWidget(self.lyrics_results_table, 1)
+        content.addWidget(result_panel, 7)
+
+        preview_panel = QFrame()
+        preview_panel.setObjectName("WhitePanel")
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(14, 14, 14, 14)
+        preview_layout.setSpacing(10)
+        preview_header = QHBoxLayout()
+        preview_header.setContentsMargins(0, 0, 0, 0)
+        preview_title = QLabel("歌词预览")
+        preview_title.setObjectName("PanelTitle")
+        preview_header.addWidget(preview_title)
+        preview_header.addStretch(1)
+        preview_header.addWidget(QLabel("显示格式"))
+        self.lyrics_preview_mode_combo = QComboBox()
+        self.lyrics_preview_mode_combo.addItem("按行 LRC", LYRICS_PREVIEW_LINE)
+        self.lyrics_preview_mode_combo.addItem("按字 LRC", LYRICS_PREVIEW_VERBATIM)
+        self.lyrics_preview_mode_combo.currentIndexChanged.connect(lambda _: self._refresh_lyrics_preview())
+        preview_header.addWidget(self.lyrics_preview_mode_combo)
+
+        self.lyrics_preview_title_label = QLabel("未选择歌曲")
+        self.lyrics_preview_title_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 12pt; font-weight: 700;')
+        self.lyrics_preview_title_label.setWordWrap(True)
+        self.lyrics_preview_meta_label = QLabel("来源: -")
+        self.lyrics_preview_meta_label.setWordWrap(True)
+        self.lyrics_match_summary_label = QLabel("匹配字段: -")
+        self.lyrics_match_summary_label.setWordWrap(True)
+        self.lyrics_match_summary_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #475569;')
+        self.lyrics_preview_hint_label = QLabel("搜索后选择一首歌，即可查看逐行或按字的 LRC 预览。")
+        self.lyrics_preview_hint_label.setWordWrap(True)
+        self.lyrics_preview_hint_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 9pt; color: #475569;')
+        self.lyrics_preview_edit = QPlainTextEdit()
+        self.lyrics_preview_edit.setReadOnly(True)
+        self.lyrics_preview_edit.setObjectName("LogText")
+        self.lyrics_preview_edit.setPlaceholderText("歌词会显示在这里。")
+
+        preview_layout.addLayout(preview_header)
+        preview_layout.addWidget(self.lyrics_preview_title_label)
+        preview_layout.addWidget(self.lyrics_preview_meta_label)
+        preview_layout.addWidget(self.lyrics_match_summary_label)
+        preview_layout.addWidget(self.lyrics_preview_hint_label)
+        preview_layout.addWidget(self.lyrics_preview_edit, 1)
+        content.addWidget(preview_panel, 6)
+
+        shell.addLayout(content, 1)
+        self._clear_lyrics_results()
+        return page
+
+    def _start_lyrics_search(self) -> None:
+        if self.lyrics_search_task is not None and self.lyrics_search_task.isRunning():
+            return
+        keyword = self.lyrics_keyword_edit.text().strip()
+        if not keyword:
+            QMessageBox.information(self, APP_TITLE, "请输入搜索关键词。")
+            return
+
+        self.lyrics_search_button.setEnabled(False)
+        self.lyrics_status_label.setText("正在搜索歌词候选歌曲…")
+        self._clear_lyrics_results()
+
+        def runner(logger: Callable[[str], None]) -> list[LyricsSearchCandidate]:
+            _ = logger
+            return self.lyrics_search_service.search(keyword, provider_ids=DEFAULT_LYRICS_PROVIDER_IDS)
+
+        self.lyrics_search_task = BackgroundTask(runner)
+        self.lyrics_search_task.task_succeeded.connect(self._finish_lyrics_search_success)
+        self.lyrics_search_task.task_failed.connect(self._finish_lyrics_search_failure)
+        self.lyrics_search_task.start()
+
+    def _finish_lyrics_search_success(self, results: object) -> None:
+        self.lyrics_search_task = None
+        self.lyrics_search_button.setEnabled(True)
+        self.lyrics_search_results = list(results) if isinstance(results, list) else []
+        if not self.lyrics_search_results:
+            self.lyrics_status_label.setText("没有找到匹配的歌词结果。")
+            self._clear_lyrics_results()
+            return
+
+        self.lyrics_status_label.setText(f"已找到 {len(self.lyrics_search_results)} 条候选结果。")
+        self.lyrics_results_summary_label.setText(
+            "排序优先级：歌名 > 歌手 > 专辑 > 歌词片段；总评只用于辅助展示。"
+        )
+        self.lyrics_results_table.setRowCount(len(self.lyrics_search_results))
+        for row, candidate in enumerate(self.lyrics_search_results):
+            duration_text = format_media_duration(candidate.duration_seconds) if candidate.duration_seconds else "-"
+            items = [
+                QTableWidgetItem(candidate.title or "-"),
+                QTableWidgetItem(candidate.artist or "-"),
+                QTableWidgetItem(candidate.album or "-"),
+                QTableWidgetItem(duration_text),
+                QTableWidgetItem(candidate.provider_name),
+                QTableWidgetItem(f"{candidate.display_score:.1f}"),
+            ]
+            for column, item in enumerate(items):
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                if column == 5:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.lyrics_results_table.setItem(row, column, item)
+
+        self.lyrics_results_table.selectRow(0)
+        self._handle_lyrics_result_selected(0, 0, -1, -1)
+
+    def _finish_lyrics_search_failure(self, message: str) -> None:
+        self.lyrics_search_task = None
+        self.lyrics_search_button.setEnabled(True)
+        self._clear_lyrics_results()
+        self.lyrics_status_label.setText("歌词搜索失败。")
+        QMessageBox.critical(self, APP_TITLE, message or "歌词搜索失败。")
+
+    def _handle_lyrics_result_selected(
+        self,
+        current_row: int,
+        current_column: int,
+        previous_row: int,
+        previous_column: int,
+    ) -> None:
+        _ = current_column, previous_row, previous_column
+        if current_row < 0 or current_row >= len(self.lyrics_search_results):
+            self.lyrics_selected_candidate = None
+            self._refresh_lyrics_preview()
+            return
+        self.lyrics_selected_candidate = self.lyrics_search_results[current_row]
+        self._refresh_lyrics_preview()
+
+    def _refresh_lyrics_preview(self) -> None:
+        candidate = self.lyrics_selected_candidate
+        if candidate is None:
+            self.lyrics_preview_title_label.setText("未选择歌曲")
+            self.lyrics_preview_meta_label.setText("来源: -")
+            self.lyrics_match_summary_label.setText("匹配字段: -")
+            self.lyrics_preview_hint_label.setText("搜索后选择一首歌，即可查看逐行或按字的 LRC 预览。")
+            self.lyrics_preview_edit.clear()
+            return
+
+        preview_mode = self.lyrics_preview_mode_combo.currentData()
+        if not isinstance(preview_mode, str):
+            preview_mode = LYRICS_PREVIEW_LINE
+        preview = build_lyrics_preview(candidate, preview_mode)
+        self.lyrics_preview_title_label.setText(f"{candidate.title or '未命名'}")
+        self.lyrics_preview_meta_label.setText(
+            f"歌手: {candidate.artist or '-'}    专辑: {candidate.album or '-'}    来源: {candidate.provider_name}"
+        )
+        self.lyrics_match_summary_label.setText(
+            "匹配字段: "
+            f"{candidate.match_source}；歌名 {candidate.title_score:.0f} / "
+            f"歌手 {candidate.artist_score:.0f} / 专辑 {candidate.album_score:.0f} / "
+            f"歌词 {candidate.lyrics_score:.0f}"
+        )
+        self.lyrics_preview_hint_label.setText(self._build_lyrics_preview_hint(candidate, preview))
+        self.lyrics_preview_edit.setPlainText(preview.text or "当前结果没有可显示的歌词。")
+
+    def _build_lyrics_preview_hint(self, candidate: LyricsSearchCandidate, preview: LyricsPreview) -> str:
+        if preview.used_synced_lyrics and preview.used_estimated_char_timing:
+            return (
+                f"{candidate.provider_name} 提供了逐行同步歌词；当前“按字 LRC”是基于相邻行时间做的轻量估算，"
+                "方便先预览卡拉 OK 节奏。"
+            )
+        if preview.used_synced_lyrics:
+            return f"{candidate.provider_name} 提供了同步歌词，当前预览为逐行 LRC。"
+        return f"{candidate.provider_name} 当前只有纯文本歌词，暂时无法提供真实时间轴。"
+
+    def _clear_lyrics_results(self) -> None:
+        self.lyrics_search_results = []
+        self.lyrics_selected_candidate = None
+        self.lyrics_results_table.clearContents()
+        self.lyrics_results_table.setRowCount(0)
+        self.lyrics_results_summary_label.setText("还没有搜索结果。")
+        self._refresh_lyrics_preview()
 
     def _build_hires_page(self) -> QWidget:
         page = QWidget()
