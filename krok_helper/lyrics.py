@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import gzip
 import hashlib
 import json
@@ -23,7 +24,8 @@ from krok_helper.config import APP_NAME, APP_VERSION
 LYRICS_PREVIEW_LINE = "line"
 LYRICS_PREVIEW_VERBATIM = "verbatim"
 DEFAULT_LYRICS_PROVIDER_IDS = ("qm", "kg", "ne", "lrclib")
-DEFAULT_LYRICS_SEARCH_LIMIT = 40
+DEFAULT_LYRICS_SEARCH_LIMIT = 25
+PROVIDER_PAGE_SIZE = 25
 
 _TIMESTAMP_PATTERN = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{2,3}))?\]")
 _TOKEN_SPLIT_PATTERN = re.compile(r"[\s\-_/\\|,.;:!?()\[\]{}'\"`~]+")
@@ -106,12 +108,20 @@ class LyricsPreview:
     used_estimated_char_timing: bool
 
 
+@dataclass(slots=True, frozen=True)
+class LyricsSearchBatch:
+    results: list[LyricsSearchCandidate]
+    overflow_results: list[LyricsSearchCandidate]
+    next_provider_pages: dict[str, int]
+    has_more: bool
+
+
 class LyricsProvider(Protocol):
     provider_id: str
     provider_name: str
     source_priority: int
 
-    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT) -> list[LyricsSearchCandidate]:
+    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT, page: int = 1) -> list[LyricsSearchCandidate]:
         ...
 
     def fetch_lyrics(self, candidate: LyricsSearchCandidate) -> LyricsSearchCandidate:
@@ -123,7 +133,7 @@ class LrclibFallbackProvider:
     provider_name = _PROVIDER_DISPLAY_NAMES["lrclib"]
     source_priority = _PROVIDER_PRIORITIES["lrclib"]
 
-    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT) -> list[LyricsSearchCandidate]:
+    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT, page: int = 1) -> list[LyricsSearchCandidate]:
         params = urlencode({"q": keyword})
         request = Request(
             f"https://lrclib.net/api/search?{params}",
@@ -140,8 +150,11 @@ class LrclibFallbackProvider:
         if not isinstance(payload, list):
             raise LyricsSearchError("LRCLIB 返回数据格式异常。")
 
+        page_size = max(1, limit)
+        start_index = max(0, (page - 1) * page_size)
+        end_index = start_index + page_size
         items: list[LyricsSearchCandidate] = []
-        for entry in payload[:limit]:
+        for entry in payload[start_index:end_index]:
             if not isinstance(entry, dict):
                 continue
             plain_lyrics = str(entry.get("plainLyrics") or "").strip()
@@ -160,7 +173,7 @@ class LrclibFallbackProvider:
                     verbatim_lyrics="",
                     plain_lyrics=plain_lyrics or _strip_lrc_timestamps(line_lyrics),
                     source_priority=self.source_priority,
-                    provider_position=len(items) + 1,
+                    provider_position=start_index + len(items) + 1,
                     lyrics_loaded=bool(plain_lyrics or line_lyrics),
                 )
             )
@@ -186,11 +199,12 @@ class NeteaseLyricsProvider:
     provider_name = _PROVIDER_DISPLAY_NAMES["ne"]
     source_priority = _PROVIDER_PRIORITIES["ne"]
 
-    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT) -> list[LyricsSearchCandidate]:
-        page_size = 20
+    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT, page: int = 1) -> list[LyricsSearchCandidate]:
+        page_size = PROVIDER_PAGE_SIZE
         items: list[LyricsSearchCandidate] = []
-        for page in range(1, _page_count(limit, page_size) + 1):
-            offset = (page - 1) * page_size
+        request_page = max(1, page)
+        for current_page in range(request_page, request_page + _page_count(limit, page_size)):
+            offset = (current_page - 1) * page_size
             url = "https://music.163.com/api/cloudsearch/pc?" + urlencode(
                 {
                     "s": keyword,
@@ -233,7 +247,7 @@ class NeteaseLyricsProvider:
                             "id": str(song.get("id") or ""),
                         },
                         source_priority=self.source_priority,
-                        provider_position=len(items) + 1,
+                        provider_position=offset + len(items) + 1,
                     )
                 )
                 if len(items) >= limit:
@@ -296,10 +310,11 @@ class QqMusicLyricsProvider:
     provider_name = _PROVIDER_DISPLAY_NAMES["qm"]
     source_priority = _PROVIDER_PRIORITIES["qm"]
 
-    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT) -> list[LyricsSearchCandidate]:
-        page_size = 20
+    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT, page: int = 1) -> list[LyricsSearchCandidate]:
+        page_size = PROVIDER_PAGE_SIZE
         items: list[LyricsSearchCandidate] = []
-        for page in range(1, _page_count(limit, page_size) + 1):
+        request_page = max(1, page)
+        for current_page in range(request_page, request_page + _page_count(limit, page_size)):
             payload = {
                 "comm": {
                     "ct": 11,
@@ -321,7 +336,7 @@ class QqMusicLyricsProvider:
                         "query": keyword,
                         "search_type": 0,
                         "num_per_page": page_size,
-                        "page_num": page,
+                        "page_num": current_page,
                         "highlight": 0,
                         "nqc_flag": 0,
                         "page_id": 1,
@@ -368,7 +383,7 @@ class QqMusicLyricsProvider:
                             "mid": str(song.get("mid") or ""),
                         },
                         source_priority=self.source_priority,
-                        provider_position=len(items) + 1,
+                        provider_position=((current_page - 1) * page_size) + len(items) + 1,
                     )
                 )
                 if len(items) >= limit:
@@ -430,10 +445,11 @@ class KugouLyricsProvider:
     provider_name = _PROVIDER_DISPLAY_NAMES["kg"]
     source_priority = _PROVIDER_PRIORITIES["kg"]
 
-    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT) -> list[LyricsSearchCandidate]:
-        page_size = 20
+    def search(self, keyword: str, *, limit: int = DEFAULT_LYRICS_SEARCH_LIMIT, page: int = 1) -> list[LyricsSearchCandidate]:
+        page_size = PROVIDER_PAGE_SIZE
         items: list[LyricsSearchCandidate] = []
-        for page in range(1, _page_count(limit, page_size) + 1):
+        request_page = max(1, page)
+        for current_page in range(request_page, request_page + _page_count(limit, page_size)):
             url = "http://mobilecdnbj.kugou.com/api/v3/search/song?" + urlencode(
                 {
                     "showtype": "14",
@@ -446,7 +462,7 @@ class KugouLyricsProvider:
                     "correct": "1",
                     "api_ver": "1",
                     "version": "9108",
-                    "page": str(page),
+                    "page": str(current_page),
                 }
             )
             request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -476,7 +492,7 @@ class KugouLyricsProvider:
                             "duration_ms": int(_coerce_float(song.get("duration")) * 1000) if song.get("duration") else 0,
                         },
                         source_priority=self.source_priority,
-                        provider_position=len(items) + 1,
+                        provider_position=((current_page - 1) * page_size) + len(items) + 1,
                     )
                 )
                 if len(items) >= limit:
@@ -595,9 +611,19 @@ class LyricsSearchService:
         provider_ids: tuple[str, ...] = DEFAULT_LYRICS_PROVIDER_IDS,
         limit: int = DEFAULT_LYRICS_SEARCH_LIMIT,
     ) -> list[LyricsSearchCandidate]:
+        return self.search_batch(keyword, provider_ids=provider_ids, limit=limit).results
+
+    def search_batch(
+        self,
+        keyword: str,
+        *,
+        provider_ids: tuple[str, ...] = DEFAULT_LYRICS_PROVIDER_IDS,
+        limit: int = DEFAULT_LYRICS_SEARCH_LIMIT,
+        provider_pages: dict[str, int] | None = None,
+    ) -> LyricsSearchBatch:
         normalized_keyword = " ".join(keyword.split())
         if not normalized_keyword:
-            return []
+            return LyricsSearchBatch(results=[], overflow_results=[], next_provider_pages={}, has_more=False)
 
         allowed_providers = [provider for provider in self.providers if provider.provider_id in provider_ids]
         if not allowed_providers:
@@ -605,15 +631,30 @@ class LyricsSearchService:
 
         ranked: dict[str, LyricsSearchCandidate] = {}
         errors: list[str] = []
-        for provider in allowed_providers:
-            for query_variant_index, query_variant in enumerate(_build_query_variants(normalized_keyword)):
+        next_provider_pages: dict[str, int] = {}
+        request_pages = {provider.provider_id: max(1, (provider_pages or {}).get(provider.provider_id, 1)) for provider in allowed_providers}
+
+        def fetch_provider_page(provider: LyricsProvider) -> tuple[str, int, list[LyricsSearchCandidate]]:
+            page = request_pages[provider.provider_id]
+            return provider.provider_id, page, provider.search(normalized_keyword, limit=PROVIDER_PAGE_SIZE, page=page)
+
+        with ThreadPoolExecutor(max_workers=max(1, len(allowed_providers))) as executor:
+            future_map = {executor.submit(fetch_provider_page, provider): provider for provider in allowed_providers}
+            for future in as_completed(future_map):
+                provider = future_map[future]
                 try:
-                    results = provider.search(query_variant, limit=limit)
+                    provider_id, page, results = future.result()
                 except LyricsSearchError as exc:
                     errors.append(str(exc))
                     continue
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{provider.provider_name} 搜索失败: {exc}")
+                    continue
+
+                if len(results) >= PROVIDER_PAGE_SIZE:
+                    next_provider_pages[provider_id] = page + 1
                 for candidate in results:
-                    candidate.query_variant_index = query_variant_index
+                    candidate.query_variant_index = 0
                     _rank_candidate(candidate, normalized_keyword)
                     existing = ranked.get(candidate.key)
                     if existing is None or _sort_key(candidate) > _sort_key(existing):
@@ -623,7 +664,14 @@ class LyricsSearchService:
             raise LyricsSearchError("\n".join(list(dict.fromkeys(errors))))
 
         ordered = sorted(ranked.values(), key=_sort_key, reverse=True)
-        return ordered[:limit]
+        visible_results = ordered[:limit]
+        overflow_results = ordered[limit:]
+        return LyricsSearchBatch(
+            results=visible_results,
+            overflow_results=overflow_results,
+            next_provider_pages=next_provider_pages,
+            has_more=bool(next_provider_pages or overflow_results),
+        )
 
     def fetch_lyrics(self, candidate: LyricsSearchCandidate) -> LyricsSearchCandidate:
         provider = self.provider_map.get(candidate.provider_id)

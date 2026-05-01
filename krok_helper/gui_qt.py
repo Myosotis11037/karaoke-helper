@@ -66,10 +66,12 @@ from krok_helper.config import (
 from krok_helper.errors import ExportCancelled, ProcessingError
 from krok_helper.ffmpeg import find_tool, probe_media, terminate_process
 from krok_helper.lyrics import (
+    DEFAULT_LYRICS_SEARCH_LIMIT,
     DEFAULT_LYRICS_PROVIDER_IDS,
     LYRICS_PREVIEW_LINE,
     LYRICS_PREVIEW_VERBATIM,
     LyricsPreview,
+    LyricsSearchBatch,
     LyricsSearchCandidate,
     LyricsSearchService,
     build_lyrics_preview,
@@ -710,7 +712,13 @@ class KrokHelperQtApp(QMainWindow):
         self.align_export_task: BackgroundTask | None = None
         self.lyrics_search_service = LyricsSearchService()
         self.lyrics_search_results: list[LyricsSearchCandidate] = []
+        self.lyrics_pending_results: list[LyricsSearchCandidate] = []
         self.lyrics_selected_candidate: LyricsSearchCandidate | None = None
+        self.lyrics_search_keyword = ""
+        self.lyrics_search_provider_ids: tuple[str, ...] = DEFAULT_LYRICS_PROVIDER_IDS
+        self.lyrics_next_provider_pages: dict[str, int] = {}
+        self.lyrics_has_more_results = False
+        self._lyrics_loading_more = False
         self._lyrics_loading_key = ""
         self.align_preview_process = None
         self.align_preview_started_at = 0.0
@@ -1227,6 +1235,7 @@ class KrokHelperQtApp(QMainWindow):
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.lyrics_results_table.installEventFilter(self)
         self.lyrics_results_table.currentCellChanged.connect(self._handle_lyrics_result_selected)
+        self.lyrics_results_table.verticalScrollBar().valueChanged.connect(self._maybe_load_more_lyrics_results)
         result_layout.addWidget(result_title)
         result_layout.addWidget(self.lyrics_results_summary_label)
         result_layout.addWidget(self.lyrics_results_table, 1)
@@ -1284,24 +1293,44 @@ class KrokHelperQtApp(QMainWindow):
         self._clear_lyrics_results()
         return page
 
-    def _start_lyrics_search(self) -> None:
+    def _start_lyrics_search(self, *, load_more: bool = False) -> None:
         if self.lyrics_search_task is not None and self.lyrics_search_task.isRunning():
             return
-        keyword = self.lyrics_keyword_edit.text().strip()
+        if load_more and not self.lyrics_has_more_results:
+            return
+        keyword = self.lyrics_search_keyword if load_more else self.lyrics_keyword_edit.text().strip()
         if not keyword:
             QMessageBox.information(self, APP_TITLE, "请输入搜索关键词。")
             return
 
         self.lyrics_search_button.setEnabled(False)
-        self.lyrics_status_label.setText("正在搜索歌词候选歌曲…")
-        self._clear_lyrics_results()
-        provider_ids = self.lyrics_source_combo.currentData()
+        provider_ids = self.lyrics_search_provider_ids if load_more else self.lyrics_source_combo.currentData()
         if not isinstance(provider_ids, tuple):
             provider_ids = DEFAULT_LYRICS_PROVIDER_IDS
+        if load_more:
+            self._lyrics_loading_more = True
+            self.lyrics_status_label.setText(f"已加载 {len(self.lyrics_search_results)} 条结果，正在加载更多…")
+        else:
+            self._lyrics_loading_more = False
+            self.lyrics_status_label.setText("正在搜索歌词候选歌曲…")
+            self.lyrics_search_keyword = keyword
+            self.lyrics_search_provider_ids = provider_ids
+            self.lyrics_next_provider_pages = {}
+            self.lyrics_has_more_results = False
+            self.lyrics_pending_results = []
+            self._clear_lyrics_results()
 
-        def runner(logger: Callable[[str], None]) -> list[LyricsSearchCandidate]:
+        def runner(logger: Callable[[str], None]) -> tuple[bool, LyricsSearchBatch]:
             _ = logger
-            return self.lyrics_search_service.search(keyword, provider_ids=provider_ids)
+            return (
+                load_more,
+                self.lyrics_search_service.search_batch(
+                    keyword,
+                    provider_ids=provider_ids,
+                    limit=DEFAULT_LYRICS_SEARCH_LIMIT,
+                    provider_pages=self.lyrics_next_provider_pages if load_more else None,
+                ),
+            )
 
         self.lyrics_search_task = BackgroundTask(runner)
         self.lyrics_search_task.task_succeeded.connect(self._finish_lyrics_search_success)
@@ -1311,44 +1340,54 @@ class KrokHelperQtApp(QMainWindow):
     def _finish_lyrics_search_success(self, results: object) -> None:
         self.lyrics_search_task = None
         self.lyrics_search_button.setEnabled(True)
-        self.lyrics_search_results = list(results) if isinstance(results, list) else []
+        load_more = False
+        payload = results
+        if isinstance(results, tuple) and len(results) == 2 and isinstance(results[0], bool):
+            load_more = results[0]
+            payload = results[1]
+
+        batch = payload if isinstance(payload, LyricsSearchBatch) else None
+        batch_results = list(batch.results) if batch is not None else (list(results) if isinstance(results, list) else [])
+        if batch is not None:
+            self.lyrics_pending_results.extend(batch.overflow_results)
+        self.lyrics_next_provider_pages = dict(batch.next_provider_pages) if batch is not None else {}
+        self.lyrics_has_more_results = bool(batch.has_more or self.lyrics_pending_results) if batch is not None else False
+
+        if load_more:
+            existing_keys = {candidate.key for candidate in self.lyrics_search_results}
+            for candidate in batch_results:
+                if candidate.key not in existing_keys:
+                    self.lyrics_search_results.append(candidate)
+                    existing_keys.add(candidate.key)
+        else:
+            self.lyrics_search_results = batch_results
+
         if not self.lyrics_search_results:
             self.lyrics_status_label.setText("没有找到匹配的歌词结果。")
             self._clear_lyrics_results()
             return
 
+        selected_key = self.lyrics_selected_candidate.key if self.lyrics_selected_candidate is not None else ""
+        self._render_lyrics_results_table(selected_key=selected_key if load_more else "")
         selected_source = self.lyrics_source_combo.currentText()
         if selected_source == "聚合":
             self.lyrics_status_label.setText(
-                f"已找到 {len(self.lyrics_search_results)} 条候选结果，来源优先级：QQ > 酷狗 > 网易云 > LRCLIB。"
+                f"已加载 {len(self.lyrics_search_results)} 条候选结果，来源优先级：QQ > 酷狗 > 网易云 > LRCLIB。"
             )
         else:
-            self.lyrics_status_label.setText(f"已找到 {len(self.lyrics_search_results)} 条候选结果，当前来源：{selected_source}。")
-        self.lyrics_results_summary_label.setText("结果优先保留各来源原始搜索顺位，再按歌曲、艺术家、专辑匹配度修正；同一首歌会保留不同来源。")
-        self.lyrics_results_table.setRowCount(len(self.lyrics_search_results))
-        self._resize_lyrics_results_columns()
-        for row, candidate in enumerate(self.lyrics_search_results):
-            duration_text = format_media_duration(candidate.duration_seconds) if candidate.duration_seconds else "-"
-            items = [
-                QTableWidgetItem(candidate.title or "-"),
-                QTableWidgetItem(candidate.artist or "-"),
-                QTableWidgetItem(candidate.album or "-"),
-                QTableWidgetItem(duration_text),
-                QTableWidgetItem(candidate.provider_name),
-            ]
-            for column, item in enumerate(items):
-                item.setData(Qt.ItemDataRole.UserRole, row)
-                if column == 3:
-                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.lyrics_results_table.setItem(row, column, item)
-
-        self.lyrics_results_table.selectRow(0)
-        self._handle_lyrics_result_selected(0, 0, -1, -1)
+            self.lyrics_status_label.setText(f"已加载 {len(self.lyrics_search_results)} 条候选结果，当前来源：{selected_source}。")
+        self.lyrics_results_summary_label.setText(
+            "结果优先保留各来源原始搜索顺位，再按歌曲、艺术家、专辑匹配度修正；同一首歌会保留不同来源。"
+            + (" 向下滚动可继续加载更多结果。" if self.lyrics_has_more_results else "")
+        )
+        self._lyrics_loading_more = False
 
     def _finish_lyrics_search_failure(self, message: str) -> None:
         self.lyrics_search_task = None
         self.lyrics_search_button.setEnabled(True)
-        self._clear_lyrics_results()
+        self._lyrics_loading_more = False
+        if not self.lyrics_search_results:
+            self._clear_lyrics_results()
         self.lyrics_status_label.setText("歌词搜索失败。")
         QMessageBox.critical(self, APP_TITLE, message or "歌词搜索失败。")
 
@@ -1374,6 +1413,76 @@ class KrokHelperQtApp(QMainWindow):
         self.lyrics_results_table.setColumnWidth(2, album_width)
         self.lyrics_results_table.setColumnWidth(3, duration_width)
         self.lyrics_results_table.setColumnWidth(4, source_width)
+
+    def _render_lyrics_results_table(self, *, selected_key: str = "") -> None:
+        self.lyrics_results_table.setRowCount(len(self.lyrics_search_results))
+        self._resize_lyrics_results_columns()
+        selected_row = -1
+        for row, candidate in enumerate(self.lyrics_search_results):
+            duration_text = format_media_duration(candidate.duration_seconds) if candidate.duration_seconds else "-"
+            items = [
+                QTableWidgetItem(candidate.title or "-"),
+                QTableWidgetItem(candidate.artist or "-"),
+                QTableWidgetItem(candidate.album or "-"),
+                QTableWidgetItem(duration_text),
+                QTableWidgetItem(candidate.provider_name),
+            ]
+            for column, item in enumerate(items):
+                item.setData(Qt.ItemDataRole.UserRole, row)
+                if column == 3:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.lyrics_results_table.setItem(row, column, item)
+            if selected_key and candidate.key == selected_key:
+                selected_row = row
+
+        if selected_row < 0 and self.lyrics_search_results:
+            selected_row = 0
+        if selected_row >= 0:
+            self.lyrics_results_table.selectRow(selected_row)
+            self._handle_lyrics_result_selected(selected_row, 0, -1, -1)
+
+    def _maybe_load_more_lyrics_results(self) -> None:
+        if not self.lyrics_has_more_results or self._lyrics_loading_more:
+            return
+        if self.lyrics_search_task is not None and self.lyrics_search_task.isRunning():
+            return
+        scrollbar = self.lyrics_results_table.verticalScrollBar()
+        if scrollbar.maximum() <= 0:
+            return
+        if scrollbar.value() < scrollbar.maximum() - 12:
+            return
+        if not self.lyrics_search_keyword:
+            return
+        if self.lyrics_pending_results:
+            self._append_pending_lyrics_results()
+            return
+        self._start_lyrics_search(load_more=True)
+
+    def _append_pending_lyrics_results(self) -> None:
+        if not self.lyrics_pending_results:
+            self.lyrics_has_more_results = bool(self.lyrics_next_provider_pages)
+            return
+        selected_key = self.lyrics_selected_candidate.key if self.lyrics_selected_candidate is not None else ""
+        chunk = self.lyrics_pending_results[:DEFAULT_LYRICS_SEARCH_LIMIT]
+        self.lyrics_pending_results = self.lyrics_pending_results[DEFAULT_LYRICS_SEARCH_LIMIT:]
+        existing_keys = {candidate.key for candidate in self.lyrics_search_results}
+        for candidate in chunk:
+            if candidate.key not in existing_keys:
+                self.lyrics_search_results.append(candidate)
+                existing_keys.add(candidate.key)
+        self.lyrics_has_more_results = bool(self.lyrics_pending_results or self.lyrics_next_provider_pages)
+        self._render_lyrics_results_table(selected_key=selected_key)
+        selected_source = self.lyrics_source_combo.currentText()
+        if selected_source == "聚合":
+            self.lyrics_status_label.setText(
+                f"已加载 {len(self.lyrics_search_results)} 条候选结果，来源优先级：QQ > 酷狗 > 网易云 > LRCLIB。"
+            )
+        else:
+            self.lyrics_status_label.setText(f"已加载 {len(self.lyrics_search_results)} 条候选结果，当前来源：{selected_source}。")
+        self.lyrics_results_summary_label.setText(
+            "结果优先保留各来源原始搜索顺位，再按歌曲、艺术家、专辑匹配度修正；同一首歌会保留不同来源。"
+            + (" 向下滚动可继续加载更多结果。" if self.lyrics_has_more_results else "")
+        )
 
     def _handle_lyrics_result_selected(
         self,
@@ -1505,7 +1614,11 @@ class KrokHelperQtApp(QMainWindow):
 
     def _clear_lyrics_results(self) -> None:
         self.lyrics_search_results = []
+        self.lyrics_pending_results = []
         self.lyrics_selected_candidate = None
+        self.lyrics_next_provider_pages = {}
+        self.lyrics_has_more_results = False
+        self._lyrics_loading_more = False
         self._lyrics_loading_key = ""
         self.lyrics_results_table.clearContents()
         self.lyrics_results_table.setRowCount(0)
