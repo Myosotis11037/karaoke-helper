@@ -1151,7 +1151,7 @@ class KrokHelperQtApp(QMainWindow):
         header = QVBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
-        title = QLabel("轻量歌词检索")
+        title = QLabel("歌词检索")
         title.setStyleSheet('font-size: 20pt; font-weight: 700;')
         desc = QLabel(
             "输入歌名、歌手、专辑或歌词片段后搜索歌曲；结果会优先保留各来源原始搜索顺位，再用歌名、歌手、专辑等匹配度修正。"
@@ -1220,17 +1220,17 @@ class KrokHelperQtApp(QMainWindow):
         self.lyrics_results_table.setFont(build_lyrics_ui_font(point_size=10.5))
         self.lyrics_results_table.verticalHeader().setVisible(False)
         self.lyrics_results_table.horizontalHeader().setStretchLastSection(False)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.lyrics_results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.lyrics_results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.lyrics_results_table.setColumnWidth(3, 68)
-        self.lyrics_results_table.setColumnWidth(4, 92)
+        self.lyrics_results_table.installEventFilter(self)
         self.lyrics_results_table.currentCellChanged.connect(self._handle_lyrics_result_selected)
         result_layout.addWidget(result_title)
         result_layout.addWidget(self.lyrics_results_summary_label)
         result_layout.addWidget(self.lyrics_results_table, 1)
+        QTimer.singleShot(0, self._resize_lyrics_results_columns)
         content.addWidget(result_panel, 7)
 
         preview_panel = QFrame()
@@ -1326,6 +1326,7 @@ class KrokHelperQtApp(QMainWindow):
             self.lyrics_status_label.setText(f"已找到 {len(self.lyrics_search_results)} 条候选结果，当前来源：{selected_source}。")
         self.lyrics_results_summary_label.setText("结果优先保留各来源原始搜索顺位，再按歌曲、艺术家、专辑匹配度修正；同一首歌会保留不同来源。")
         self.lyrics_results_table.setRowCount(len(self.lyrics_search_results))
+        self._resize_lyrics_results_columns()
         for row, candidate in enumerate(self.lyrics_search_results):
             duration_text = format_media_duration(candidate.duration_seconds) if candidate.duration_seconds else "-"
             items = [
@@ -1350,6 +1351,29 @@ class KrokHelperQtApp(QMainWindow):
         self._clear_lyrics_results()
         self.lyrics_status_label.setText("歌词搜索失败。")
         QMessageBox.critical(self, APP_TITLE, message or "歌词搜索失败。")
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if watched is self.lyrics_results_table and event.type() in {QEvent.Type.Resize, QEvent.Type.Show}:
+            QTimer.singleShot(0, self._resize_lyrics_results_columns)
+        return super().eventFilter(watched, event)
+
+    def _resize_lyrics_results_columns(self) -> None:
+        viewport_width = self.lyrics_results_table.viewport().width()
+        if viewport_width <= 0:
+            return
+
+        duration_width = 92
+        source_width = 96
+        remaining = max(120, viewport_width - duration_width - source_width)
+        song_width = int(remaining * 0.36)
+        artist_width = int(remaining * 0.27)
+        album_width = max(0, remaining - song_width - artist_width)
+
+        self.lyrics_results_table.setColumnWidth(0, song_width)
+        self.lyrics_results_table.setColumnWidth(1, artist_width)
+        self.lyrics_results_table.setColumnWidth(2, album_width)
+        self.lyrics_results_table.setColumnWidth(3, duration_width)
+        self.lyrics_results_table.setColumnWidth(4, source_width)
 
     def _handle_lyrics_result_selected(
         self,
