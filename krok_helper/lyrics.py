@@ -1016,7 +1016,7 @@ def _strip_leading_intro_lines(text: str, *, title: str = "", artist: str = "", 
     max_probe_lines = min(5, len(raw_lines))
     for index in range(max_probe_lines):
         content = _LRC_TIMESTAMP_TOKEN_PATTERN.sub("", raw_lines[index]).strip()
-        if _looks_like_intro_credit_line(content, title=title, artist=artist, album=album):
+        if _looks_like_intro_credit_line_v2(content, title=title, artist=artist, album=album):
             drop_count += 1
             continue
         break
@@ -1057,6 +1057,60 @@ def _looks_like_intro_credit_line(text: str, *, title: str = "", artist: str = "
 
 def _compact_compare_text(text: str) -> str:
     return re.sub(r"[^0-9a-z\u3040-\u30ff\u3400-\u9fff]+", "", _normalize_text(text))
+
+
+def _looks_like_intro_credit_line_v2(text: str, *, title: str = "", artist: str = "", album: str = "") -> bool:
+    content = text.strip()
+    if not content:
+        return False
+    if _INTRO_CREDIT_LINE_PATTERN.match(content):
+        return True
+
+    separator_index = min((index for index in (content.find(":"), content.find("：")) if index >= 0), default=-1)
+    if 0 < separator_index <= 8 and len(content) <= 48:
+        return True
+
+    compact_content = _compact_compare_text(content)
+    compact_title = _compact_compare_text(title)
+    compact_artist = _compact_compare_text(artist)
+    compact_album = _compact_compare_text(album)
+    compact_title_base = _compact_compare_text(_strip_parenthetical_segments(title))
+    compact_artist_base = _compact_compare_text(_strip_parenthetical_segments(artist))
+    compact_album_base = _compact_compare_text(_strip_parenthetical_segments(album))
+
+    if compact_title and compact_artist and compact_title in compact_content and compact_artist in compact_content:
+        remainder = compact_content.replace(compact_title, "", 1).replace(compact_artist, "", 1)
+        if len(remainder) <= 8:
+            return True
+    if compact_title and compact_album and compact_title in compact_content and compact_album in compact_content:
+        remainder = compact_content.replace(compact_title, "", 1).replace(compact_album, "", 1)
+        if len(remainder) <= 8:
+            return True
+    if compact_title_base and compact_artist_base and compact_title_base in compact_content and compact_artist_base in compact_content:
+        remainder = compact_content.replace(compact_title_base, "", 1).replace(compact_artist_base, "", 1)
+        if len(remainder) <= 14:
+            return True
+    if compact_title_base and compact_album_base and compact_title_base in compact_content and compact_album_base in compact_content:
+        remainder = compact_content.replace(compact_title_base, "", 1).replace(compact_album_base, "", 1)
+        if len(remainder) <= 14:
+            return True
+
+    normalized_content = _normalize_text(content)
+    normalized_title = _normalize_text(title)
+    normalized_title_base = _normalize_text(_strip_parenthetical_segments(title))
+    if normalized_title and normalized_content.startswith(normalized_title) and len(content) <= 96:
+        tail = normalized_content[len(normalized_title):].strip()
+        if tail.startswith(("-", "–", "—", "/", "／")) or any(separator in content for separator in (" - ", " / ", "/", "／")):
+            return True
+    if normalized_title_base and normalized_content.startswith(normalized_title_base) and len(content) <= 96:
+        tail = normalized_content[len(normalized_title_base):].strip()
+        if tail.startswith(("-", "–", "—", "/", "／")) or any(separator in content for separator in (" - ", " / ", "/", "／")):
+            return True
+    return False
+
+
+def _strip_parenthetical_segments(text: str) -> str:
+    return re.sub(r"[\(\[\{（【「『].*?[\)\]\}）】」』]", "", text or "").strip()
 
 
 def _page_count(limit: int, page_size: int) -> int:
