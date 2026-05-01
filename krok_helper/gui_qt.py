@@ -86,7 +86,7 @@ from krok_helper.pipeline import (
     run_pipeline,
     validate_output_name_template,
 )
-from krok_helper.settings import AppSettings, load_app_settings, save_app_settings
+from krok_helper.settings import load_app_settings, save_app_settings
 from krok_helper.windows import set_explicit_app_user_model_id
 
 
@@ -1086,7 +1086,7 @@ class KrokHelperQtApp(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(180)
+        sidebar.setFixedWidth(200)
         sidebar_layout = QVBoxLayout(sidebar)
         sidebar_layout.setContentsMargins(0, 0, 0, 0)
         sidebar_layout.setSpacing(0)
@@ -2090,10 +2090,13 @@ class KrokHelperQtApp(QMainWindow):
         self.align_extra_wav_check = QCheckBox("额外导出一份原唱音源的wav文件")
         self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
         self.align_auto_trim_check = QCheckBox("导出视频时自动裁到音频末尾")
+        self.align_use_video_audio_check = QCheckBox("导出视频时选择保留裁剪后的源视频音轨")
         self.align_auto_trim_check.toggled.connect(lambda _checked: self._refresh_align_trim_status(self.waveform_view.trim_end_seconds))
+        self.align_use_video_audio_check.toggled.connect(self._persist_alignment_preferences)
         option_row.addWidget(self.align_extra_wav_check)
         option_row.addWidget(self.align_force_1080p60_check)
         option_row.addWidget(self.align_auto_trim_check)
+        option_row.addWidget(self.align_use_video_audio_check)
         option_row.addStretch(1)
         control_layout.addWidget(option_row_widget, 4, 0, 1, 2)
         control_layout.setRowMinimumHeight(4, 24)
@@ -2208,6 +2211,7 @@ class KrokHelperQtApp(QMainWindow):
         self.set_output_name_templates(self.settings.on_name_template, self.settings.off_name_template)
         self.align_video_name_template_value = self.settings.align_video_name_template or DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
         self.align_audio_name_template_value = self.settings.align_audio_name_template or DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
+        self.align_use_video_audio_check.setChecked(bool(self.settings.align_export_use_video_audio))
         self._restore_lyrics_preferences()
         self._loading_settings_into_ui = False
 
@@ -2249,6 +2253,12 @@ class KrokHelperQtApp(QMainWindow):
         self.settings.lyrics_source_ids = tuple(source_ids)
         self.settings.lyrics_preview_mode = preview_mode
         self.settings.lyrics_strip_intro_lines = self.lyrics_strip_intro_checkbox.isChecked()
+        save_app_settings(self.settings)
+
+    def _persist_alignment_preferences(self, *_args) -> None:
+        if self._loading_settings_into_ui:
+            return
+        self.settings.align_export_use_video_audio = self.align_use_video_audio_check.isChecked()
         save_app_settings(self.settings)
 
     def _sync_ffmpeg_labels(self) -> None:
@@ -2555,17 +2565,14 @@ class KrokHelperQtApp(QMainWindow):
         self.align_audio_name_template_value = align_audio_template
         self.ffmpeg_dir_text = str(ffmpeg_dir) if ffmpeg_dir else ""
         self._sync_ffmpeg_labels()
-
-        return save_app_settings(
-            AppSettings(
-                output_name_mode=self.output_name_mode_value,
-                on_name_template=self.on_name_template_value,
-                off_name_template=self.off_name_template_value,
-                align_video_name_template=self.align_video_name_template_value,
-                align_audio_name_template=self.align_audio_name_template_value,
-                ffmpeg_dir=self.ffmpeg_dir_text,
-            )
-        )
+        self.settings.output_name_mode = self.output_name_mode_value
+        self.settings.on_name_template = self.on_name_template_value
+        self.settings.off_name_template = self.off_name_template_value
+        self.settings.align_video_name_template = self.align_video_name_template_value
+        self.settings.align_audio_name_template = self.align_audio_name_template_value
+        self.settings.ffmpeg_dir = self.ffmpeg_dir_text
+        self.settings.align_export_use_video_audio = self.align_use_video_audio_check.isChecked()
+        return save_app_settings(self.settings)
 
     def _resolve_output_name_mode(self) -> str:
         if self.output_name_mode_value not in {OUTPUT_NAME_MODE_FIXED, OUTPUT_NAME_MODE_TEMPLATE}:
@@ -2929,6 +2936,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_trim_clear_button.setEnabled(has_waveforms and is_video_target)
         self.align_force_1080p60_check.setEnabled(has_waveforms and is_video_target)
         self.align_auto_trim_check.setEnabled(has_waveforms and is_video_target)
+        self.align_use_video_audio_check.setEnabled(has_waveforms and is_video_target)
         if has_waveforms and is_video_target:
             self.align_lead_row_widget.setEnabled(True)
             self.align_encode_row_widget.setEnabled(True)
@@ -3228,6 +3236,7 @@ class KrokHelperQtApp(QMainWindow):
         else:
             lead_fill_color = LEAD_FILL_BLACK
         force_1080p60 = self.align_force_1080p60_check.isChecked()
+        use_source_video_audio = self.align_use_video_audio_check.isChecked() if is_video_target else False
         video_trim_duration = self._compute_video_trim_duration() if is_video_target else None
         extra_wav_output: Path | None = None
         if self.align_extra_wav_check.isChecked():
@@ -3270,6 +3279,7 @@ class KrokHelperQtApp(QMainWindow):
                         lead_fill_color=lead_fill_color,
                         force_1080p60=force_1080p60,
                         output_duration_seconds=video_trim_duration,
+                        use_source_video_audio=use_source_video_audio,
                     )
                 )
                 self._align_export_completed_outputs.append(outputs[-1])

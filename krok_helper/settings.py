@@ -25,6 +25,7 @@ class AppSettings:
     align_video_name_template: str = DEFAULT_ALIGNED_VIDEO_NAME_TEMPLATE
     align_audio_name_template: str = DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE
     ffmpeg_dir: str = ""
+    align_export_use_video_audio: bool = False
     lyrics_source_ids: list[str] | tuple[str, ...] = DEFAULT_LYRICS_PROVIDER_IDS
     lyrics_preview_mode: str = LYRICS_PREVIEW_LINE
     lyrics_strip_intro_lines: bool = True
@@ -66,6 +67,7 @@ def load_app_settings() -> AppSettings:
             payload.get("align_audio_name_template", DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE)
         ),
         ffmpeg_dir=str(payload.get("ffmpeg_dir", "")),
+        align_export_use_video_audio=bool(payload.get("align_export_use_video_audio", False)),
         lyrics_source_ids=tuple(
             str(item)
             for item in payload.get("lyrics_source_ids", DEFAULT_LYRICS_PROVIDER_IDS)

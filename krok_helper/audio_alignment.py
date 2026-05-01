@@ -635,6 +635,7 @@ def export_aligned_video_v2(
     lead_fill_color: str = LEAD_FILL_BLACK,
     force_1080p60: bool = False,
     output_duration_seconds: float | None = None,
+    use_source_video_audio: bool = False,
 ) -> Path:
     _raise_if_export_cancelled(should_cancel)
     if encode_mode not in {ENCODE_MODE_SOFTWARE, ENCODE_MODE_HARDWARE}:
@@ -650,13 +651,18 @@ def export_aligned_video_v2(
         raise ProcessingError(f"Subtitle video has no video stream: {video_path.name}")
     if audio_info.audio_streams == 0:
         raise ProcessingError(f"Source audio has no audio stream: {audio_path.name}")
+    if use_source_video_audio and video_info.audio_streams == 0:
+        raise ProcessingError(f"Source video has no audio stream to keep: {video_path.name}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _raise_if_export_cancelled(should_cancel)
 
     logger(f"Export aligned video: {output_path.name}")
     logger(f"Subtitle video offset: {format_offset(offset_seconds)}")
-    logger(f"Replace audio track with: {audio_path.name}")
+    if use_source_video_audio:
+        logger("Keep audio track from trimmed subtitle video")
+    else:
+        logger(f"Replace audio track with: {audio_path.name}")
     if offset_seconds > 0:
         logger(f"Lead-in fill mode: {_lead_fill_label(lead_fill_color)}")
     if force_1080p60:
@@ -674,7 +680,9 @@ def export_aligned_video_v2(
     video_codec = str(video_stream.get("codec_name") or "h264")
     frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
     audio_streams = _audio_streams(audio_payload)
-    audio_codec = str(audio_streams[0].get("codec_name") or "aac") if audio_streams else "none"
+    source_video_audio_streams = _audio_streams(source_payload)
+    output_audio_streams = source_video_audio_streams if use_source_video_audio else audio_streams
+    audio_codec = str(output_audio_streams[0].get("codec_name") or "aac") if output_audio_streams else "none"
     encode_label = "硬编快速" if encode_mode == ENCODE_MODE_HARDWARE else "软编省空间"
     logger(
         "重编码策略: 使用滤镜处理时间轴，"
@@ -693,6 +701,7 @@ def export_aligned_video_v2(
         lead_fill_color=lead_fill_color,
         force_1080p60=force_1080p60,
         output_duration_seconds=output_duration_seconds,
+        use_source_video_audio=use_source_video_audio,
     )
     try:
         run_command(
@@ -716,6 +725,7 @@ def export_aligned_video_v2(
                 lead_fill_color=lead_fill_color,
                 force_1080p60=force_1080p60,
                 output_duration_seconds=output_duration_seconds,
+                use_source_video_audio=use_source_video_audio,
             )
             try:
                 run_command(
@@ -858,6 +868,7 @@ def build_aligned_video_command(
     lead_fill_color: str = LEAD_FILL_BLACK,
     force_1080p60: bool = False,
     output_duration_seconds: float | None = None,
+    use_source_video_audio: bool = False,
 ) -> list[str]:
     command = [
         ffmpeg_path,
@@ -870,7 +881,8 @@ def build_aligned_video_command(
         command.extend(["-ss", f"{abs(offset_seconds):.6f}"])
 
     video_stream = _first_video_stream(source_payload) if source_payload is not None else {}
-    audio_streams = _audio_streams(audio_payload) if audio_payload is not None else []
+    audio_source_payload = source_payload if use_source_video_audio else audio_payload
+    audio_streams = _audio_streams(audio_source_payload) if audio_source_payload is not None else []
     first_audio_stream = audio_streams[0] if audio_streams else {}
     frame_rate = _parse_fraction(video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate"))
     target_frame_rate = FORCED_OUTPUT_FPS if force_1080p60 else frame_rate
@@ -902,7 +914,8 @@ def build_aligned_video_command(
     else:
         command.extend(["-i", str(video_path)])
         video_filter = "[0:v:0]setpts=PTS-STARTPTS"
-    command.extend(["-i", str(audio_path)])
+    if not use_source_video_audio:
+        command.extend(["-i", str(audio_path)])
 
     if force_1080p60:
         video_filter += (
@@ -912,8 +925,16 @@ def build_aligned_video_command(
     video_filter += f",fps=fps={target_frame_rate}[v]"
     filters = [video_filter]
     maps = ["-map", "[v]"]
-    audio_input_index = subtitle_input_index + 1
-    audio_filter = f"[{audio_input_index}:a:0]asetpts=PTS-STARTPTS[a]"
+    if use_source_video_audio:
+        audio_input_index = 0
+        audio_filter = f"[{audio_input_index}:a:0]asetpts=PTS-STARTPTS"
+        if offset_seconds > 0:
+            delay_ms = max(0, int(round(offset_seconds * 1000)))
+            audio_filter += f",adelay={delay_ms}:all=1"
+        audio_filter += "[a]"
+    else:
+        audio_input_index = subtitle_input_index + 1
+        audio_filter = f"[{audio_input_index}:a:0]asetpts=PTS-STARTPTS[a]"
     filters.append(audio_filter)
     maps.extend(["-map", "[a]"])
 
@@ -959,6 +980,7 @@ def export_aligned_video(
     lead_fill_color: str = LEAD_FILL_BLACK,
     force_1080p60: bool = False,
     output_duration_seconds: float | None = None,
+    use_source_video_audio: bool = False,
 ) -> Path:
     return export_aligned_video_v2(
         video_path=video_path,
@@ -973,4 +995,5 @@ def export_aligned_video(
         lead_fill_color=lead_fill_color,
         force_1080p60=force_1080p60,
         output_duration_seconds=output_duration_seconds,
+        use_source_video_audio=use_source_video_audio,
     )
