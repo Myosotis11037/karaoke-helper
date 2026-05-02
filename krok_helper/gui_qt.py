@@ -2297,6 +2297,11 @@ class KrokHelperQtApp(QMainWindow):
                 self.file_name_label.setStyleSheet("color: #111827; font-weight: 700;")
                 self.file_name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                 file_info_row.addWidget(self.file_name_label, 1)
+                self.file_state_badge = QLabel("已选择")
+                self.file_state_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.file_state_badge.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                self.file_state_badge.hide()
+                file_info_row.addWidget(self.file_state_badge, 0, Qt.AlignmentFlag.AlignVCenter)
 
                 self.detail_label = AlignmentInfoLabel(owner, self._empty_detail_text, self)
                 self.detail_label.setStyleSheet("color: #667085;")
@@ -2341,6 +2346,9 @@ class KrokHelperQtApp(QMainWindow):
                         "icon_background": "#EEF5FF",
                         "action_background": "#F5F9FF",
                         "hover_background": "#FAFCFF",
+                        "selected_background": "#F7FBFF",
+                        "selected_icon_background": "#DCEBFF",
+                        "selected_action_background": "#EEF5FF",
                     }
                 return {
                     "accent": "#FF5D72",
@@ -2348,6 +2356,9 @@ class KrokHelperQtApp(QMainWindow):
                     "icon_background": "#FFF0F3",
                     "action_background": "#FFF7F8",
                     "hover_background": "#FFFBFB",
+                    "selected_background": "#FFF8FA",
+                    "selected_icon_background": "#FFE3E9",
+                    "selected_action_background": "#FFF1F4",
                 }
 
             def accepts(self, path: Path) -> bool:
@@ -2448,13 +2459,13 @@ class KrokHelperQtApp(QMainWindow):
                     action_border = "#ffc7d0"
                     action_text = "文件类型不支持，请重新选择"
                 elif is_selected:
-                    background = "#ffffff"
-                    border = palette["accent_border"]
+                    background = palette["selected_background"]
+                    border = palette["accent"]
                     accent = palette["accent"]
-                    border_width = 1
-                    action_background = palette["action_background"]
+                    border_width = 2
+                    action_background = palette["selected_action_background"]
                     action_border = palette["accent_border"]
-                    action_text = self._default_action_text
+                    action_text = "点击更换文件，或拖入新文件覆盖"
                 elif self._hovered:
                     background = palette["hover_background"]
                     border = palette["accent_border"]
@@ -2475,19 +2486,37 @@ class KrokHelperQtApp(QMainWindow):
                 self.hint_label.setVisible(True)
                 self.file_name_label.setVisible(True)
                 self.detail_label.setVisible(True)
+                self.file_state_badge.setVisible(is_selected)
                 self.detail_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
                 self.action_label.setText(action_text)
+                self.action_icon.setIcon(
+                    (FIF.UPDATE if is_selected and self._drag_state == "idle" else FIF.UP).icon()
+                )
                 self.title_label.setStyleSheet("color: #182230; font-size: 16pt; font-weight: 700;")
                 self.hint_label.setStyleSheet("color: #667085; font-size: 11pt;")
-                self.file_name_label.setStyleSheet("color: #344054; font-size: 12pt; font-weight: 700;")
+                self.file_name_label.setStyleSheet(
+                    f"color: {'#182230' if is_selected else '#344054'}; font-size: 12pt; font-weight: 800;"
+                )
+                self.file_state_badge.setStyleSheet(
+                    f"""
+                    QLabel {{
+                        background: {palette["accent"]};
+                        color: white;
+                        border-radius: 10px;
+                        padding: 3px 10px;
+                        font-size: 9.5pt;
+                        font-weight: 700;
+                    }}
+                    """
+                )
                 self.detail_label.setStyleSheet(
                     'color: #98A2B3; font-family: "Microsoft YaHei UI"; font-size: 11pt; font-weight: 700;'
                 )
                 self.icon_button.setStyleSheet(
                     f"""
                     ToolButton {{
-                        background: {palette["icon_background"]};
-                        border: none;
+                        background: {palette["selected_icon_background"] if is_selected else palette["icon_background"]};
+                        border: 1px solid {palette["accent_border"] if is_selected else 'transparent'};
                         border-radius: 24px;
                         padding: 0;
                         color: {accent};
@@ -3165,7 +3194,7 @@ class KrokHelperQtApp(QMainWindow):
             lead_layout,
             icon_text="",
             icon_background="#ff4d5e",
-            icon=FIF.SKIP_BACK,
+            icon=FIF.PAGE_LEFT,
             title="片头处理",
             hint="决定字幕视频开头如何补偿",
         )
@@ -3264,7 +3293,7 @@ class KrokHelperQtApp(QMainWindow):
             tail_layout,
             icon_text="",
             icon_background="#ff4d5e",
-            icon=FIF.SKIP_FORWARD,
+            icon=FIF.PAGE_RIGHT,
             title="片尾处理",
             hint="设置字幕视频尾裁",
         )
