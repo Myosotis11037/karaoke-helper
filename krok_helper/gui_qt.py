@@ -69,8 +69,10 @@ from krok_helper.audio_alignment import (
     LEAD_FILL_BLACK,
     LEAD_FILL_FREEZE,
     LEAD_FILL_WHITE,
+    AlignmentPreviewProcess,
     AutoAlignResult,
     WaveformData,
+    build_alignment_preview_command,
     export_aligned_audio,
     export_aligned_video,
     estimate_waveform_alignment,
@@ -87,7 +89,7 @@ from krok_helper.config import (
     WINDOW_WIDTH,
 )
 from krok_helper.errors import ExportCancelled, ProcessingError
-from krok_helper.ffmpeg import find_tool, probe_media, terminate_process
+from krok_helper.ffmpeg import _build_subprocess_kwargs, find_tool, probe_media, terminate_process
 from krok_helper.lyrics import (
     DEFAULT_LYRICS_SEARCH_LIMIT,
     DEFAULT_LYRICS_PROVIDER_IDS,
@@ -2211,6 +2213,17 @@ class KrokHelperQtApp(QMainWindow):
     def _build_alignment_page(self) -> QWidget:
         from PyQt6.QtCore import QSize
 
+        class AlignmentInfoLabel(BodyLabel):
+            def __init__(self, owner: "KrokHelperQtApp", text: str = "", parent: QWidget | None = None) -> None:
+                super().__init__(parent)
+                self._owner = owner
+                QLabel.setText(self, text)
+
+            def setText(self, text: str) -> None:  # noqa: N802
+                super().setText(text)
+                if hasattr(self._owner, "align_video_export_duration_label"):
+                    self._owner._refresh_alignment_export_panels()
+
         class AlignmentDropCard(CardWidget):
             pathChanged = Signal(Path)
             browseRequested = Signal()
@@ -2218,6 +2231,7 @@ class KrokHelperQtApp(QMainWindow):
             def __init__(
                 self,
                 *,
+                owner: "KrokHelperQtApp",
                 title: str,
                 hint: str,
                 extensions: set[str],
@@ -2225,12 +2239,13 @@ class KrokHelperQtApp(QMainWindow):
                 parent: QWidget | None = None,
             ) -> None:
                 super().__init__(parent, radius=12, padding=(18, 18, 18, 18), spacing=12)
+                self._owner = owner
                 self.extensions = {ext.lower() for ext in extensions}
                 self.path: Path | None = None
                 self._hovered = False
                 self._drag_state = "idle"
                 self._default_action_text = "点击选择文件，或直接拖拽进入区域"
-                self._empty_detail_text = "支持拖拽导入，载入后会显示时长信息"
+                self._empty_detail_text = "时长未知"
 
                 self.setObjectName("AlignmentDropCard")
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -2250,9 +2265,7 @@ class KrokHelperQtApp(QMainWindow):
                 self.icon_button.setIconSize(QSize(32, 32))
                 self.icon_button.setFixedSize(48, 48)
                 self.icon_button.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                self.icon_button.setStyleSheet(
-                    "ToolButton { background: transparent; border: 0; padding: 0; }"
-                )
+                self.icon_button.setStyleSheet("ToolButton { background: transparent; border: 0; padding: 0; }")
 
                 text_layout = QVBoxLayout()
                 text_layout.setContentsMargins(0, 0, 0, 0)
@@ -2272,20 +2285,25 @@ class KrokHelperQtApp(QMainWindow):
                 header.addLayout(text_layout, 1)
                 layout.addLayout(header)
 
-                self.file_name_label = BodyLabel("未选择文件")
-                self.file_name_label.setStyleSheet("color: #111827; font-weight: 600;")
-                self.file_name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                layout.addWidget(self.file_name_label)
+                file_info_row = QHBoxLayout()
+                file_info_row.setContentsMargins(0, 0, 0, 0)
+                file_info_row.setSpacing(10)
 
-                self.detail_label = BodyLabel(self._empty_detail_text)
+                self.file_name_label = BodyLabel("未选择文件")
+                self.file_name_label.setStyleSheet("color: #111827; font-weight: 700;")
+                self.file_name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+                file_info_row.addWidget(self.file_name_label, 1)
+
+                self.detail_label = AlignmentInfoLabel(owner, self._empty_detail_text, self)
                 self.detail_label.setStyleSheet("color: #667085;")
-                self.detail_label.setWordWrap(True)
+                self.detail_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.detail_label.setWordWrap(False)
                 self.detail_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                layout.addWidget(self.detail_label)
+                file_info_row.addWidget(self.detail_label, 0, Qt.AlignmentFlag.AlignRight)
+                layout.addLayout(file_info_row)
 
                 self.action_frame = QFrame(self)
                 self.action_frame.setObjectName("AlignmentDropAction")
-                self.action_frame.setCursor(Qt.CursorShape.PointingHandCursor)
                 action_layout = QHBoxLayout(self.action_frame)
                 action_layout.setContentsMargins(14, 12, 14, 12)
                 action_layout.setSpacing(8)
@@ -2295,19 +2313,17 @@ class KrokHelperQtApp(QMainWindow):
                 self.action_icon.setIconSize(QSize(18, 18))
                 self.action_icon.setFixedSize(24, 24)
                 self.action_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-                self.action_icon.setStyleSheet(
-                    "ToolButton { background: transparent; border: 0; padding: 0; }"
-                )
-                action_layout.addStretch(1)
-                action_layout.addWidget(self.action_icon)
+                self.action_icon.setStyleSheet("ToolButton { background: transparent; border: 0; padding: 0; }")
 
                 self.action_label = BodyLabel(self._default_action_text)
                 self.action_label.setCursor(Qt.CursorShape.PointingHandCursor)
                 self.action_label.setStyleSheet("font-weight: 700;")
                 self.action_label.mousePressEvent = lambda _event: self.browseRequested.emit()
+
+                action_layout.addStretch(1)
+                action_layout.addWidget(self.action_icon)
                 action_layout.addWidget(self.action_label)
                 action_layout.addStretch(1)
-
                 layout.addWidget(self.action_frame)
                 self._refresh_style()
 
@@ -2385,9 +2401,9 @@ class KrokHelperQtApp(QMainWindow):
 
             def _refresh_style(self) -> None:
                 if self._drag_state == "accept":
-                    background = "#f0fdf4"
-                    border = "#22c55e"
-                    accent = "#16a34a"
+                    background = "#fefefe"
+                    border = "#ff4d5e"
+                    accent = "#ff4d5e"
                     border_width = 2
                     action_text = "松开鼠标即可导入这个文件"
                 elif self._drag_state == "reject":
@@ -2398,9 +2414,9 @@ class KrokHelperQtApp(QMainWindow):
                     action_text = "文件类型不支持，请重新选择"
                 elif self.path is not None:
                     background = "#ffffff"
-                    border = "#e7eaee"
+                    border = "#ff4d5e"
                     accent = "#ff4d5e"
-                    border_width = 1
+                    border_width = 2
                     action_text = self._default_action_text
                 elif self._hovered:
                     background = "#fffaf9"
@@ -2415,6 +2431,10 @@ class KrokHelperQtApp(QMainWindow):
                     border_width = 1
                     action_text = self._default_action_text
 
+                is_selected = self.path is not None
+                self.hint_label.setVisible(not is_selected)
+                self.file_name_label.setVisible(is_selected)
+                self.detail_label.setVisible(is_selected)
                 self.action_label.setText(action_text)
                 self.setStyleSheet(
                     f"""
@@ -2435,7 +2455,7 @@ class KrokHelperQtApp(QMainWindow):
                 )
 
         class AlignmentExportProxyButton(PrimaryPushButton):
-            def __init__(self, owner: "KrokHelperWindow") -> None:
+            def __init__(self, owner: "KrokHelperQtApp") -> None:
                 super().__init__(owner)
                 self._owner = owner
                 self.hide()
@@ -2458,6 +2478,24 @@ class KrokHelperQtApp(QMainWindow):
         self.waveform_view.playheadChanged.connect(self._handle_playhead_changed)
         self.waveform_view.offsetChanged.connect(self._handle_waveform_offset_changed)
         self.waveform_view.trimChanged.connect(self._refresh_align_trim_status)
+        self._last_fill_mode = None
+        self._pending_offset_finalized_seconds = 0.0
+        self._offset_finalize_timer = QTimer(self)
+        self._offset_finalize_timer.setSingleShot(True)
+        self._offset_finalize_timer.setInterval(50)
+        self._offset_finalize_timer.timeout.connect(
+            lambda: self._on_offset_finalized(self._pending_offset_finalized_seconds)
+        )
+        self.waveform_view.offsetChanged.connect(
+            lambda seconds: (
+                setattr(self, "_pending_offset_finalized_seconds", float(seconds)),
+                self._offset_finalize_timer.start(),
+            )
+        )
+        self._align_volume_refresh_timer = QTimer(self)
+        self._align_volume_refresh_timer.setSingleShot(True)
+        self._align_volume_refresh_timer.setInterval(120)
+        self._align_volume_refresh_timer.timeout.connect(self._apply_alignment_preview_volume)
         self.waveform_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.waveform_view.setMinimumHeight(180)
         self.waveform_view.setFixedHeight(200)
@@ -2493,6 +2531,7 @@ class KrokHelperQtApp(QMainWindow):
         top_row.setSpacing(14)
 
         self.align_video_zone = AlignmentDropCard(
+            owner=self,
             title="选择字幕视频",
             hint="支持 mkv / mp4 / mov / avi\n程序会读取视频中的参考音轨，并自动推断输出目录。",
             extensions=VIDEO_EXTENSIONS,
@@ -2503,6 +2542,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_video_info_label = self.align_video_zone.detail_label
 
         self.align_audio_zone = AlignmentDropCard(
+            owner=self,
             title="选择原唱音频",
             hint="支持 flac / wav / mp3 / m4a / aac / ape / alac / mkv / mp4\n可单独导出为 Hi-Res 音频，也可和伴奏一起生成。",
             extensions=ALIGN_AUDIO_EXTENSIONS,
@@ -2518,7 +2558,6 @@ class KrokHelperQtApp(QMainWindow):
         side_action_card = CardWidget(radius=12, padding=(16, 18, 16, 18), spacing=12)
         side_action_card.setFixedWidth(210)
         side_action_layout = side_action_card.createVBoxLayout()
-        side_action_layout.setSpacing(12)
 
         clear_button = QPushButton("清空已选文件")
         clear_button.setIcon(FIF.DELETE.icon())
@@ -2554,9 +2593,11 @@ class KrokHelperQtApp(QMainWindow):
 
         left_panel = self._build_left_panel()
         left_panel.setFixedWidth(264)
+        left_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(left_panel, 0)
 
         center_panel = QWidget()
+        center_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         center_layout = QVBoxLayout(center_panel)
         center_layout.setContentsMargins(0, 0, 0, 0)
         center_layout.setSpacing(14)
@@ -2566,13 +2607,11 @@ class KrokHelperQtApp(QMainWindow):
         waveform_layout.addWidget(self.waveform_view)
         center_layout.addWidget(waveform_card)
         center_layout.addWidget(self._build_adjustment_panels())
-
         main_layout.addWidget(center_panel, 1)
         shell.addWidget(main_row)
 
         log_panel = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
         log_layout = log_panel.createGridLayout()
-        log_layout.setVerticalSpacing(10)
         log_title = QLabel("对齐日志")
         log_title.setObjectName("PanelTitle")
         clear_log_button = QPushButton("清空日志")
@@ -2604,6 +2643,8 @@ class KrokHelperQtApp(QMainWindow):
         layout.setSpacing(12)
 
         target_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        target_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        target_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         target_layout = target_card.createVBoxLayout()
         target_layout.addWidget(StrongBodyLabel("对齐目标"))
 
@@ -2616,23 +2657,26 @@ class KrokHelperQtApp(QMainWindow):
         self.align_target_group.addButton(self.align_target_audio_radio)
         self.align_target_video_radio.toggled.connect(self._on_alignment_target_changed)
         self.align_target_audio_radio.toggled.connect(self._on_alignment_target_changed)
-
         self.rb_adjust_subtitle = self.align_target_video_radio
         self.rb_adjust_original = self.align_target_audio_radio
+        target_title = target_layout.itemAt(0).widget()
+        if target_title is not None:
+            target_title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
 
         subtitle_hint = BodyLabel("将对齐原唱音频音轨")
         subtitle_hint.setStyleSheet("color: #667085;")
         original_hint = BodyLabel("将对齐字幕视频音轨")
         original_hint.setStyleSheet("color: #667085;")
-
         target_layout.addWidget(self.align_target_video_radio)
         target_layout.addWidget(subtitle_hint)
         target_layout.addSpacing(4)
         target_layout.addWidget(self.align_target_audio_radio)
         target_layout.addWidget(original_hint)
-        layout.addWidget(target_card)
+        layout.addWidget(target_card, 1)
 
         offset_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=12)
+        offset_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        offset_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         offset_layout = offset_card.createVBoxLayout()
         offset_layout.addWidget(StrongBodyLabel("时间偏移"))
 
@@ -2642,6 +2686,9 @@ class KrokHelperQtApp(QMainWindow):
             'color: #ff2947; font-family: "Microsoft YaHei UI"; font-size: 15pt; font-weight: 700;'
         )
         self.label_offset = self.align_offset_label
+        offset_title = offset_layout.itemAt(0).widget()
+        if offset_title is not None:
+            offset_title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
         offset_layout.addWidget(self.align_offset_label)
 
         control_row = QHBoxLayout()
@@ -2664,52 +2711,23 @@ class KrokHelperQtApp(QMainWindow):
             column.addWidget(caption)
             control_row.addLayout(column)
 
-        add_seek_column(FIF.CARE_LEFT_SOLID.icon(), "-1.0s", lambda: self.waveform_view.nudge_offset(-1.0))
-        add_seek_column(FIF.LEFT_ARROW.icon(), "-0.1s", lambda: self.waveform_view.nudge_offset(-self._align_nudge_step))
+        add_seek_column(FIF.CARE_LEFT_SOLID.icon(), "-0.1s", lambda: self.waveform_view.nudge_offset(-0.1))
+        add_seek_column(FIF.LEFT_ARROW.icon(), "-0.01s", lambda: self.waveform_view.nudge_offset(-0.01))
         add_seek_column(FIF.ROTATE.icon(), "归零", lambda: self.waveform_view.set_offset(0.0))
-        add_seek_column(FIF.CHEVRON_RIGHT.icon(), "+0.1s", lambda: self.waveform_view.nudge_offset(self._align_nudge_step))
-        add_seek_column(FIF.CARE_RIGHT_SOLID.icon(), "+1.0s", lambda: self.waveform_view.nudge_offset(1.0))
+        add_seek_column(FIF.CHEVRON_RIGHT.icon(), "+0.01s", lambda: self.waveform_view.nudge_offset(0.01))
+        add_seek_column(FIF.CARE_RIGHT_SOLID.icon(), "+0.1s", lambda: self.waveform_view.nudge_offset(0.1))
         offset_layout.addLayout(control_row)
-
-        step_title = BodyLabel("微调步进")
-        step_title.setStyleSheet("color: #111827; font-weight: 600;")
-        offset_layout.addWidget(step_title)
-
-        step_row = QHBoxLayout()
-        step_row.setContentsMargins(0, 0, 0, 0)
-        step_row.setSpacing(8)
-        self.align_step_small_button = QPushButton("0.01s")
-        self.align_step_large_button = QPushButton("0.1s")
-        for button in (self.align_step_small_button, self.align_step_large_button):
-            button.setCheckable(True)
-            button.setMinimumHeight(34)
-            step_row.addWidget(button)
-        self.align_step_small_button.clicked.connect(lambda: self._set_alignment_nudge_step(0.01))
-        self.align_step_large_button.clicked.connect(lambda: self._set_alignment_nudge_step(0.1))
-        offset_layout.addLayout(step_row)
-        self._set_alignment_nudge_step(0.01)
-        layout.addWidget(offset_card)
+        layout.addWidget(offset_card, 1)
 
         helper_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        helper_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        helper_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         helper_layout = helper_card.createVBoxLayout()
         helper_layout.addWidget(StrongBodyLabel("快捷键提示"))
 
-        drag_title = BodyLabel("拖动模式")
-        drag_title.setStyleSheet("font-weight: 600;")
-        helper_layout.addWidget(drag_title)
-
-        self.align_drag_offset_radio = QRadioButton("移动字幕视频")
-        self.align_drag_pan_radio = QRadioButton("平移视图")
-        self.align_drag_offset_radio.setChecked(True)
-        self.align_drag_group = QButtonGroup(self)
-        self.align_drag_group.setExclusive(True)
-        self.align_drag_group.addButton(self.align_drag_offset_radio)
-        self.align_drag_group.addButton(self.align_drag_pan_radio)
-        self.align_drag_offset_radio.toggled.connect(
-            lambda checked: self.waveform_view.set_drag_mode("offset" if checked else "pan")
-        )
-        helper_layout.addWidget(self.align_drag_offset_radio)
-        helper_layout.addWidget(self.align_drag_pan_radio)
+        helper_title = helper_layout.itemAt(0).widget()
+        if helper_title is not None:
+            helper_title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
 
         for key_text, description in (
             ("空格", "生成波形、播放、暂停"),
@@ -2732,8 +2750,7 @@ class KrokHelperQtApp(QMainWindow):
             row.addWidget(desc, 1)
             helper_layout.addLayout(row)
 
-        layout.addWidget(helper_card)
-        layout.addStretch(1)
+        layout.addWidget(helper_card, 1)
         return panel
 
     def _build_waveform_toolbar(self) -> QWidget:
@@ -2768,6 +2785,22 @@ class KrokHelperQtApp(QMainWindow):
             button.setMinimumHeight(36)
             top_row.addWidget(button)
 
+        self.align_drag_offset_radio = QRadioButton("移动字幕视频")
+        self.align_drag_pan_radio = QRadioButton("平移视图")
+        self.align_drag_offset_radio.setChecked(True)
+        self.align_drag_group = QButtonGroup(self)
+        self.align_drag_group.setExclusive(True)
+        self.align_drag_group.addButton(self.align_drag_offset_radio)
+        self.align_drag_group.addButton(self.align_drag_pan_radio)
+        self.align_drag_offset_radio.toggled.connect(
+            lambda checked: self.waveform_view.set_drag_mode("offset" if checked else "pan")
+        )
+        self.rb_drag_move = self.align_drag_offset_radio
+        self.rb_drag_pan = self.align_drag_pan_radio
+        top_row.addSpacing(4)
+        top_row.addWidget(self.align_drag_offset_radio)
+        top_row.addWidget(self.align_drag_pan_radio)
+
         volume_button = ToolButton(toolbar_card)
         volume_button.setIcon(FIF.VOLUME.icon())
         volume_button.setIconSize(QSize(18, 18))
@@ -2780,6 +2813,7 @@ class KrokHelperQtApp(QMainWindow):
         self.align_volume_slider.setRange(0, 100)
         self.align_volume_slider.setValue(50)
         self.align_volume_slider.setFixedWidth(140)
+        self.align_volume_slider.valueChanged.connect(self._queue_alignment_preview_volume_refresh)
         top_row.addWidget(self.align_volume_slider)
 
         top_row.addStretch(1)
@@ -2799,7 +2833,6 @@ class KrokHelperQtApp(QMainWindow):
         self.align_jump_to_end_button.setMinimumHeight(36)
         self.align_jump_to_end_button.clicked.connect(self.waveform_view.jump_to_end)
         top_row.addWidget(self.align_jump_to_end_button)
-
         layout.addLayout(top_row)
 
         bottom_row = QHBoxLayout()
@@ -2829,71 +2862,335 @@ class KrokHelperQtApp(QMainWindow):
         return toolbar_card
 
     def _build_adjustment_panels(self) -> QWidget:
+        from PyQt6.QtCore import QSize
         from PyQt6.QtWidgets import QAbstractSpinBox
+        from qfluentwidgets import TransparentPushButton
+
+        def create_badge(
+            text: str,
+            *,
+            background: str,
+            foreground: str,
+            border: str,
+        ) -> TransparentPushButton:
+            badge = TransparentPushButton(text)
+            badge.setEnabled(False)
+            badge.setMinimumHeight(28)
+            badge.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background: {background};
+                    color: {foreground};
+                    border: 1px solid {border};
+                    border-radius: 14px;
+                    padding: 4px 10px;
+                    font-weight: 600;
+                }}
+                QPushButton:disabled {{
+                    background: {background};
+                    color: {foreground};
+                    border: 1px solid {border};
+                }}
+                """
+            )
+            return badge
+
+        def set_expanding(widget: QWidget) -> None:
+            widget.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+        def create_title_badge(text: str, *, background: str, foreground: str) -> QLabel:
+            badge = QLabel(text)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setFixedSize(34, 34)
+            badge.setStyleSheet(
+                f"""
+                QLabel {{
+                    background: {background};
+                    color: {foreground};
+                    border-radius: 10px;
+                    font-size: 15pt;
+                    font-weight: 800;
+                }}
+                """
+            )
+            return badge
+
+        def create_round_badge(text: str, *, background: str) -> QLabel:
+            badge = QLabel(text)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setFixedSize(36, 36)
+            badge.setStyleSheet(
+                f"""
+                QLabel {{
+                    background: {background};
+                    color: white;
+                    border-radius: 18px;
+                    font-size: 14pt;
+                    font-weight: 700;
+                }}
+                """
+            )
+            return badge
+
+        def create_group_card(
+            *,
+            title: str,
+            description: str,
+            icon_text: str,
+            icon_background: str,
+            icon_foreground: str,
+        ) -> tuple[CardWidget, QVBoxLayout, QHBoxLayout]:
+            card = CardWidget(radius=12, padding=(20, 20, 20, 20), spacing=12)
+            set_expanding(card)
+            layout = card.createVBoxLayout()
+
+            header_row = QHBoxLayout()
+            header_row.setContentsMargins(0, 0, 0, 0)
+            header_row.setSpacing(12)
+            header_row.addWidget(
+                create_title_badge(
+                    icon_text,
+                    background=icon_background,
+                    foreground=icon_foreground,
+                ),
+                0,
+                Qt.AlignmentFlag.AlignVCenter,
+            )
+            title_label = StrongBodyLabel(title)
+            title_label.setStyleSheet("font-size: 17pt; font-weight: 800; color: #111827;")
+            header_row.addWidget(title_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            header_row.addSpacing(2)
+            layout.addLayout(header_row)
+
+            desc = BodyLabel(description)
+            desc.setWordWrap(True)
+            desc.setStyleSheet("color: #667085; font-size: 11pt;")
+            layout.addWidget(desc)
+            return card, layout, header_row
+
+        def create_tinted_card(
+            *,
+            object_name: str,
+            background: str,
+            border: str,
+        ) -> CardWidget:
+            card = CardWidget(radius=12, padding=(18, 18, 18, 18), spacing=10)
+            set_expanding(card)
+            card.setObjectName(object_name)
+            card.setStyleSheet(
+                f"""
+                #{object_name} {{
+                    background: {background};
+                    border: 1px solid {border};
+                    border-radius: 12px;
+                }}
+                #{object_name} StrongBodyLabel {{
+                    font-size: 15pt;
+                    font-weight: 700;
+                    color: #111827;
+                }}
+                """
+            )
+            return card
+
+        def add_subcard_header(
+            layout: QVBoxLayout,
+            *,
+            icon_text: str,
+            icon_background: str,
+            title: str,
+            hint: str,
+        ) -> None:
+            title_row = QHBoxLayout()
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.setSpacing(12)
+            title_row.addWidget(create_round_badge(icon_text, background=icon_background), 0, Qt.AlignmentFlag.AlignTop)
+            title_label = StrongBodyLabel(title)
+            title_label.setStyleSheet("font-size: 15pt; font-weight: 800; color: #111827;")
+            title_row.addWidget(title_label, 0, Qt.AlignmentFlag.AlignVCenter)
+            title_row.addStretch(1)
+            layout.addLayout(title_row)
+
+            hint_label = BodyLabel(hint)
+            hint_label.setWordWrap(True)
+            hint_label.setStyleSheet("color: #667085; font-size: 10.5pt;")
+            layout.addWidget(hint_label)
+
+        def create_head_mode_button(text: str) -> QPushButton:
+            button = QPushButton(text)
+            button.setMinimumHeight(38)
+            return button
 
         wrapper = QWidget()
-        wrapper_layout = QHBoxLayout(wrapper)
+        wrapper_layout = QGridLayout(wrapper)
         wrapper_layout.setContentsMargins(0, 0, 0, 0)
-        wrapper_layout.setSpacing(14)
+        wrapper_layout.setHorizontalSpacing(14)
+        wrapper_layout.setVerticalSpacing(14)
+        wrapper_layout.setColumnStretch(0, 10)
+        wrapper_layout.setColumnStretch(1, 4)
+        wrapper_layout.setColumnStretch(2, 4)
+        wrapper_layout.setRowStretch(0, 1)
+        wrapper_layout.setRowStretch(1, 1)
 
-        options_column = QVBoxLayout()
-        options_column.setContentsMargins(0, 0, 0, 0)
-        options_column.setSpacing(14)
+        subtitle_group_card, subtitle_group_layout, subtitle_header = create_group_card(
+            title="字幕视频处理",
+            description="处理字幕视频的片头补偿和片尾裁剪，避免导出后出现多余黑场或长度超出音频。",
+            icon_text="T",
+            icon_background="#ff4d5e",
+            icon_foreground="white",
+        )
+        self.SubtitleAdjust = subtitle_group_card
+        self.subtitle_adjust_card = subtitle_group_card
+        self.subtitle_adjust_badge = create_badge(
+            "导出视频时可用",
+            background="#fff1f3",
+            foreground="#ff4d5e",
+            border="#ffd7de",
+        )
+        subtitle_header.addWidget(self.subtitle_adjust_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        subtitle_header.addStretch(1)
 
-        self.SubtitleAdjust = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=12)
-        subtitle_layout = self.SubtitleAdjust.createVBoxLayout()
-        subtitle_layout.addWidget(StrongBodyLabel("调整字幕视频"))
-        subtitle_hint = BodyLabel("将对齐原唱音频音轨")
-        subtitle_hint.setStyleSheet("color: #ff4d5e;")
-        subtitle_layout.addWidget(subtitle_hint)
+        subtitle_cards_row = QHBoxLayout()
+        subtitle_cards_row.setContentsMargins(0, 8, 0, 0)
+        subtitle_cards_row.setSpacing(14)
 
-        self.align_lead_row_widget = QFrame()
-        self.align_lead_row_widget.setFrameShape(QFrame.Shape.NoFrame)
-        lead_layout = QVBoxLayout(self.align_lead_row_widget)
-        lead_layout.setContentsMargins(0, 0, 0, 0)
-        lead_layout.setSpacing(8)
-        lead_layout.addWidget(BodyLabel("开头处理"))
+        lead_card = create_tinted_card(
+            object_name="alignLeadCard",
+            background="#fff9fa",
+            border="#ffd9de",
+        )
+        lead_layout = lead_card.createVBoxLayout()
+        add_subcard_header(
+            lead_layout,
+            icon_text="?",
+            icon_background="#ff4d5e",
+            title="片头处理",
+            hint="决定字幕视频开头如何补偿",
+        )
 
-        lead_radio_row = QHBoxLayout()
-        lead_radio_row.setContentsMargins(0, 0, 0, 0)
-        lead_radio_row.setSpacing(10)
-        self.align_lead_fill_black_radio = QRadioButton("补黑")
-        self.align_lead_fill_white_radio = QRadioButton("补白")
-        self.align_lead_fill_freeze_radio = QRadioButton("首帧定格")
+        self.align_lead_trim_radio = QRadioButton("裁剪开头", lead_card)
+        self.align_lead_fill_black_radio = QRadioButton("补黑", lead_card)
+        self.align_lead_fill_white_radio = QRadioButton("补白", lead_card)
+        self.align_lead_fill_freeze_radio = QRadioButton("首帧定格", lead_card)
+        self.align_lead_trim_radio.hide()
+        self.align_lead_fill_black_radio.hide()
+        self.align_lead_fill_white_radio.hide()
+        self.align_lead_fill_freeze_radio.hide()
         self.align_lead_fill_black_radio.setChecked(True)
         self.align_lead_fill_group = QButtonGroup(self)
         self.align_lead_fill_group.setExclusive(True)
+        self.align_lead_fill_group.addButton(self.align_lead_trim_radio)
         self.align_lead_fill_group.addButton(self.align_lead_fill_black_radio)
         self.align_lead_fill_group.addButton(self.align_lead_fill_white_radio)
         self.align_lead_fill_group.addButton(self.align_lead_fill_freeze_radio)
-        lead_radio_row.addWidget(self.align_lead_fill_black_radio)
-        lead_radio_row.addWidget(self.align_lead_fill_white_radio)
-        lead_radio_row.addWidget(self.align_lead_fill_freeze_radio)
-        lead_radio_row.addStretch(1)
-        lead_layout.addLayout(lead_radio_row)
-        subtitle_layout.addWidget(self.align_lead_row_widget)
 
-        trim_title = BodyLabel("尾部处理")
-        trim_title.setStyleSheet("font-weight: 600;")
-        subtitle_layout.addWidget(trim_title)
+        self.align_lead_row_widget = QWidget()
+        self.align_lead_row_widget.setStyleSheet("background: transparent; border: none;")
+        lead_mode_row = QHBoxLayout(self.align_lead_row_widget)
+        lead_mode_row.setContentsMargins(0, 0, 0, 0)
+        lead_mode_row.setSpacing(8)
+        self.align_head_btn_crop = create_head_mode_button("裁剪开头")
+        self.align_head_btn_black = create_head_mode_button("补黑")
+        self.align_head_btn_white = create_head_mode_button("补白")
+        self.align_head_btn_freeze = create_head_mode_button("首帧定格")
+        lead_mode_row.addWidget(self.align_head_btn_crop, 1)
+        lead_mode_row.addWidget(self.align_head_btn_black, 1)
+        lead_mode_row.addWidget(self.align_head_btn_white, 1)
+        lead_mode_row.addWidget(self.align_head_btn_freeze, 1)
+        lead_layout.addWidget(self.align_lead_row_widget)
 
-        self.align_trim_label = QLabel("未设置")
+        self.align_head_trim_row_widget = QWidget()
+        head_trim_row = QHBoxLayout(self.align_head_trim_row_widget)
+        head_trim_row.setContentsMargins(0, 0, 0, 0)
+        head_trim_row.setSpacing(8)
+        self.align_head_trim_label = BodyLabel("裁剪时长")
+        head_trim_row.addWidget(self.align_head_trim_label)
+        self.align_lead_trim_seconds_spin = QDoubleSpinBox()
+        self.align_lead_trim_seconds_spin.setDecimals(3)
+        self.align_lead_trim_seconds_spin.setRange(0.0, 99999.0)
+        self.align_lead_trim_seconds_spin.setValue(0.0)
+        self.align_lead_trim_seconds_spin.setSuffix(" 秒")
+        self.align_lead_trim_seconds_spin.setEnabled(False)
+        self.spin_head_trim = self.align_lead_trim_seconds_spin
+        head_trim_row.addWidget(self.align_lead_trim_seconds_spin, 1)
+        self.align_head_trim_row_widget.hide()
+        lead_layout.addStretch(1)
+
+        def update_head_trim_visibility(checked: bool) -> None:
+            self.align_head_trim_row_widget.hide()
+            self.align_lead_trim_seconds_spin.setEnabled(checked)
+
+        def select_head_mode(key: str, radio: QRadioButton) -> None:
+            if key == "black":
+                self._last_fill_mode = LEAD_FILL_BLACK
+            elif key == "white":
+                self._last_fill_mode = LEAD_FILL_WHITE
+            elif key == "freeze":
+                self._last_fill_mode = LEAD_FILL_FREEZE
+            radio.setChecked(True)
+            self._update_head_mode_buttons(key)
+
+        self.align_lead_trim_radio.toggled.connect(update_head_trim_visibility)
+        self.align_lead_trim_radio.toggled.connect(lambda checked: checked and self._update_head_mode_buttons("crop"))
+        self.align_lead_fill_black_radio.toggled.connect(
+            lambda checked: checked and (setattr(self, "_last_fill_mode", LEAD_FILL_BLACK), self._update_head_mode_buttons("black"))
+        )
+        self.align_lead_fill_white_radio.toggled.connect(
+            lambda checked: checked and (setattr(self, "_last_fill_mode", LEAD_FILL_WHITE), self._update_head_mode_buttons("white"))
+        )
+        self.align_lead_fill_freeze_radio.toggled.connect(
+            lambda checked: checked and (setattr(self, "_last_fill_mode", LEAD_FILL_FREEZE), self._update_head_mode_buttons("freeze"))
+        )
+        self.align_head_btn_crop.clicked.connect(lambda: select_head_mode("crop", self.align_lead_trim_radio))
+        self.align_head_btn_black.clicked.connect(lambda: select_head_mode("black", self.align_lead_fill_black_radio))
+        self.align_head_btn_white.clicked.connect(lambda: select_head_mode("white", self.align_lead_fill_white_radio))
+        self.align_head_btn_freeze.clicked.connect(
+            lambda: select_head_mode("freeze", self.align_lead_fill_freeze_radio)
+        )
+        self.align_target_video_radio.toggled.connect(
+            lambda checked: checked and self._on_offset_finalized(self.waveform_view.offset_seconds)
+        )
+        self._update_head_mode_buttons("black")
+
+        tail_card = create_tinted_card(
+            object_name="alignTailCard",
+            background="#fff9fa",
+            border="#ffd9de",
+        )
+        tail_layout = tail_card.createVBoxLayout()
+        add_subcard_header(
+            tail_layout,
+            icon_text="?",
+            icon_background="#ff4d5e",
+            title="片尾处理",
+            hint="设置字幕视频尾裁",
+        )
+
+        self.align_trim_none_radio = QRadioButton("不处理")
+        self.align_trim_to_audio_radio = QRadioButton("自动裁到音频末尾")
+        self.align_trim_none_radio.setChecked(True)
+        self.rb_tail_none = self.align_trim_none_radio
+        self.rb_tail_trim = self.align_trim_to_audio_radio
+        self.align_trim_mode_group = QButtonGroup(self)
+        self.align_trim_mode_group.setExclusive(True)
+        self.align_trim_mode_group.addButton(self.align_trim_none_radio)
+        self.align_trim_mode_group.addButton(self.align_trim_to_audio_radio)
+        tail_layout.addWidget(self.align_trim_none_radio)
+        tail_layout.addWidget(self.align_trim_to_audio_radio)
+
+        self.align_trim_label = BodyLabel("未设置")
         self.align_trim_label.setWordWrap(True)
         self.align_trim_label.setStyleSheet("color: #475467;")
-        subtitle_layout.addWidget(self.align_trim_label)
+        tail_layout.addWidget(self.align_trim_label)
 
-        trim_value_row = QHBoxLayout()
-        trim_value_row.setContentsMargins(0, 0, 0, 0)
-        trim_value_row.setSpacing(8)
-        trim_value_row.addWidget(BodyLabel("尾裁点"))
         self.align_trim_seconds_spin = QDoubleSpinBox()
         self.align_trim_seconds_spin.setDecimals(3)
         self.align_trim_seconds_spin.setRange(0.0, 99999.0)
         self.align_trim_seconds_spin.setReadOnly(True)
         self.align_trim_seconds_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
         self.align_trim_seconds_spin.setSuffix(" 秒")
-        trim_value_row.addWidget(self.align_trim_seconds_spin, 1)
-        subtitle_layout.addLayout(trim_value_row)
+        self.spin_tail_point = self.align_trim_seconds_spin
+        tail_layout.addWidget(self.align_trim_seconds_spin)
         self.waveform_view.trimChanged.connect(
             lambda value: self.align_trim_seconds_spin.setValue(float(value) if isinstance(value, float) else 0.0)
         )
@@ -2901,123 +3198,343 @@ class KrokHelperQtApp(QMainWindow):
         trim_button_row = QHBoxLayout()
         trim_button_row.setContentsMargins(0, 0, 0, 0)
         trim_button_row.setSpacing(8)
-        self.align_trim_mark_button = QPushButton("将当前播放头设为尾裁点")
+        self.align_trim_mark_button = QPushButton("将当前位置设为尾裁点")
+        self.align_trim_mark_button.setIcon(FIF.SYNC.icon())
         self.align_trim_mark_button.clicked.connect(
             lambda: self.waveform_view.set_trim_end(self.waveform_view.playhead_seconds)
         )
         self.align_trim_clear_button = QPushButton("清除尾裁点")
+        self.align_trim_clear_button.setIcon(FIF.DELETE.icon())
         self.align_trim_clear_button.clicked.connect(self.waveform_view.clear_trim_end)
         trim_button_row.addWidget(self.align_trim_mark_button, 1)
         trim_button_row.addWidget(self.align_trim_clear_button, 1)
-        subtitle_layout.addLayout(trim_button_row)
+        tail_layout.addLayout(trim_button_row)
+        tail_layout.addStretch(1)
 
-        self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
-        self.align_auto_trim_check = QCheckBox("导出视频时自动裁到音频末尾")
-        self.align_use_video_audio_check = QCheckBox("导出视频时保留裁剪后的源视频音轨")
-        self.align_extra_wav_check = QCheckBox("额外导出一份原唱音源的 WAV")
-        self.align_auto_trim_check.toggled.connect(
+        self.chk_auto_trim = self.align_trim_to_audio_radio
+        self.align_trim_none_radio.toggled.connect(
             lambda _checked: self._refresh_align_trim_status(self.waveform_view.trim_end_seconds)
         )
+        self.align_trim_none_radio.toggled.connect(lambda _checked: self._refresh_alignment_export_panels())
+        self.align_trim_to_audio_radio.toggled.connect(
+            lambda _checked: self._refresh_align_trim_status(self.waveform_view.trim_end_seconds)
+        )
+        self.align_trim_to_audio_radio.toggled.connect(lambda _checked: self._refresh_alignment_export_panels())
+
+        subtitle_cards_row.addWidget(lead_card, 1)
+        subtitle_cards_row.addWidget(tail_card, 1)
+        subtitle_group_layout.addLayout(subtitle_cards_row, 1)
+        wrapper_layout.addWidget(subtitle_group_card, 0, 0)
+
+        original_group_card, original_group_layout, original_header = create_group_card(
+            title="原唱音频处理",
+            description="当目标是导出对齐音频时，可为原唱音源增加前置静音或裁掉开头片段。",
+            icon_text="?",
+            icon_background="#3b82f6",
+            icon_foreground="white",
+        )
+        self.OriginalAdjust = original_group_card
+        self.original_adjust_card = original_group_card
+        self.original_adjust_badge = create_badge(
+            "导出音频时可用",
+            background="#eef4ff",
+            foreground="#3b82f6",
+            border="#cfe0ff",
+        )
+        original_header.addWidget(self.original_adjust_badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        original_header.addStretch(1)
+
+        original_cards_row = QHBoxLayout()
+        original_cards_row.setContentsMargins(0, 8, 0, 0)
+        original_cards_row.setSpacing(14)
+
+        positive_card = create_tinted_card(
+            object_name="alignPositiveCard",
+            background="#f7fbff",
+            border="#d6e6ff",
+        )
+        positive_layout = positive_card.createVBoxLayout()
+        add_subcard_header(
+            positive_layout,
+            icon_text="?",
+            icon_background="#3b82f6",
+            title="向后偏移",
+            hint="给原唱开头补充静音",
+        )
+        self.align_positive_offset_spin = QDoubleSpinBox()
+        self.align_positive_offset_spin.setDecimals(3)
+        self.align_positive_offset_spin.setRange(0.0, 99999.0)
+        self.align_positive_offset_spin.setReadOnly(True)
+        self.align_positive_offset_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.align_positive_offset_spin.setSuffix(" 秒")
+        self.spin_pos_offset = self.align_positive_offset_spin
+        positive_layout.addWidget(self.align_positive_offset_spin)
+        positive_layout.addStretch(1)
+
+        negative_card = create_tinted_card(
+            object_name="alignNegativeCard",
+            background="#f7fbff",
+            border="#d6e6ff",
+        )
+        negative_layout = negative_card.createVBoxLayout()
+        add_subcard_header(
+            negative_layout,
+            icon_text="?",
+            icon_background="#3b82f6",
+            title="向前偏移",
+            hint="裁掉原唱开头片段",
+        )
+        self.align_negative_offset_spin = QDoubleSpinBox()
+        self.align_negative_offset_spin.setDecimals(3)
+        self.align_negative_offset_spin.setRange(0.0, 99999.0)
+        self.align_negative_offset_spin.setReadOnly(True)
+        self.align_negative_offset_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.align_negative_offset_spin.setSuffix(" 秒")
+        self.spin_neg_offset = self.align_negative_offset_spin
+        negative_layout.addWidget(self.align_negative_offset_spin)
+        negative_layout.addStretch(1)
+
+        original_cards_row.addWidget(positive_card, 1)
+        original_cards_row.addWidget(negative_card, 1)
+        original_group_layout.addLayout(original_cards_row, 1)
+        self.align_offset_seconds_spin = self.align_positive_offset_spin
+        self.waveform_view.offsetChanged.connect(self._refresh_original_adjustment_panel)
+        self._on_offset_finalized(self.waveform_view.offset_seconds)
+        wrapper_layout.addWidget(original_group_card, 1, 0)
+
+        video_export_options_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        set_expanding(video_export_options_card)
+        video_export_options_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
+        video_export_options_layout = video_export_options_card.createVBoxLayout()
+        video_export_options_layout.addWidget(StrongBodyLabel("视频导出选项"))
+        video_export_desc = BodyLabel("这些选项仅在导出字幕视频时生效")
+        video_export_desc.setWordWrap(True)
+        video_export_desc.setStyleSheet("color: #475467;")
+        video_export_options_layout.addWidget(video_export_desc)
+
+        self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
+        self.align_force_1080p60_check.setChecked(False)
+        self.align_use_video_audio_check = QCheckBox("导出视频时保留裁剪后的源视频音轨")
+        self.align_use_video_audio_check.setChecked(False)
+        self.chk_reencode = self.align_force_1080p60_check
+        self.chk_keep_audio = self.align_use_video_audio_check
         self.align_use_video_audio_check.toggled.connect(self._persist_alignment_preferences)
+        video_export_options_layout.addWidget(self.align_force_1080p60_check)
+        video_export_options_layout.addWidget(self.align_use_video_audio_check)
 
-        subtitle_layout.addWidget(self.align_force_1080p60_check)
-        subtitle_layout.addWidget(self.align_auto_trim_check)
-        subtitle_layout.addWidget(self.align_use_video_audio_check)
-        subtitle_layout.addWidget(self.align_extra_wav_check)
-
-        self.align_encode_row_widget = QFrame()
-        self.align_encode_row_widget.setFrameShape(QFrame.Shape.NoFrame)
-        encode_layout = QHBoxLayout(self.align_encode_row_widget)
+        self.align_encode_row_widget = QWidget()
+        encode_layout = QVBoxLayout(self.align_encode_row_widget)
         encode_layout.setContentsMargins(0, 0, 0, 0)
-        encode_layout.setSpacing(10)
-        encode_layout.addWidget(BodyLabel("视频编码"))
-        self.align_encode_software_radio = QRadioButton("软编（CPU）")
-        self.align_encode_hardware_radio = QRadioButton("硬编（GPU）")
+        encode_layout.setSpacing(6)
+        encode_layout.addWidget(BodyLabel("编码方式"))
+
+        encode_radio_row = QHBoxLayout()
+        encode_radio_row.setContentsMargins(0, 0, 0, 0)
+        encode_radio_row.setSpacing(10)
+        self.align_encode_software_radio = QRadioButton("软件 (CPU)")
+        self.align_encode_hardware_radio = QRadioButton("硬件 (GPU)")
+        self.rb_codec_cpu = self.align_encode_software_radio
+        self.rb_codec_gpu = self.align_encode_hardware_radio
         self.align_encode_software_radio.setChecked(True)
         self.align_encode_group = QButtonGroup(self)
         self.align_encode_group.setExclusive(True)
         self.align_encode_group.addButton(self.align_encode_software_radio)
         self.align_encode_group.addButton(self.align_encode_hardware_radio)
-        encode_layout.addWidget(self.align_encode_software_radio)
-        encode_layout.addWidget(self.align_encode_hardware_radio)
-        encode_layout.addStretch(1)
-        subtitle_layout.addWidget(self.align_encode_row_widget)
-        options_column.addWidget(self.SubtitleAdjust)
+        encode_radio_row.addWidget(self.align_encode_software_radio)
+        encode_radio_row.addWidget(self.align_encode_hardware_radio)
+        encode_radio_row.addStretch(1)
+        encode_layout.addLayout(encode_radio_row)
+        video_export_options_layout.addWidget(self.align_encode_row_widget)
+        video_export_options_layout.addStretch(1)
+        wrapper_layout.addWidget(video_export_options_card, 0, 1)
 
-        self.OriginalAdjust = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=12)
-        original_layout = self.OriginalAdjust.createVBoxLayout()
-        original_layout.addWidget(StrongBodyLabel("调整原唱音源"))
-        original_hint = BodyLabel("当前偏移会直接用于导出 WAV")
-        original_hint.setStyleSheet("color: #ff4d5e;")
-        original_layout.addWidget(original_hint)
-
-        offset_value_row = QHBoxLayout()
-        offset_value_row.setContentsMargins(0, 0, 0, 0)
-        offset_value_row.setSpacing(8)
-        offset_value_row.addWidget(BodyLabel("当前偏移"))
-        self.align_offset_seconds_spin = QDoubleSpinBox()
-        self.align_offset_seconds_spin.setDecimals(3)
-        self.align_offset_seconds_spin.setRange(-99999.0, 99999.0)
-        self.align_offset_seconds_spin.setReadOnly(True)
-        self.align_offset_seconds_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.align_offset_seconds_spin.setSuffix(" 秒")
-        offset_value_row.addWidget(self.align_offset_seconds_spin, 1)
-        original_layout.addLayout(offset_value_row)
-        self.waveform_view.offsetChanged.connect(self.align_offset_seconds_spin.setValue)
-
-        original_note_1 = BodyLabel("WAV 导出不会使用首帧补画面、尾部裁切或视频编码设置。")
-        original_note_1.setWordWrap(True)
-        original_note_1.setStyleSheet("color: #475467;")
-        original_note_2 = BodyLabel("如需更细的对齐，请使用左侧时间偏移按钮或直接拖动波形。")
-        original_note_2.setWordWrap(True)
-        original_note_2.setStyleSheet("color: #475467;")
-        original_layout.addWidget(original_note_1)
-        original_layout.addWidget(original_note_2)
-        original_layout.addStretch(1)
-        options_column.addWidget(self.OriginalAdjust)
-
-        wrapper_layout.addLayout(options_column, 2)
-
-        export_column = QVBoxLayout()
-        export_column.setContentsMargins(0, 0, 0, 0)
-        export_column.setSpacing(14)
+        audio_placeholder_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        set_expanding(audio_placeholder_card)
+        audio_placeholder_layout = audio_placeholder_card.createVBoxLayout()
+        audio_placeholder_layout.addStretch(1)
+        placeholder_icon = ToolButton(audio_placeholder_card)
+        placeholder_icon.setEnabled(False)
+        placeholder_icon.setIcon(FIF.MUSIC.icon())
+        placeholder_icon.setIconSize(QSize(36, 36))
+        placeholder_icon.setFixedSize(56, 56)
+        placeholder_icon.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        placeholder_icon.setStyleSheet("ToolButton { background: transparent; border: 0; padding: 0; }")
+        audio_placeholder_layout.addWidget(placeholder_icon, 0, Qt.AlignmentFlag.AlignHCenter)
+        placeholder_label = BodyLabel("音频导出无需额外设置")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        placeholder_label.setStyleSheet("color: #9ca3af;")
+        audio_placeholder_layout.addWidget(placeholder_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        audio_placeholder_layout.addStretch(1)
+        wrapper_layout.addWidget(audio_placeholder_card, 1, 1)
 
         video_export_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        set_expanding(video_export_card)
+        video_export_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         video_export_layout = video_export_card.createVBoxLayout()
-        video_export_layout.addWidget(StrongBodyLabel("导出选项"))
-        video_export_desc = BodyLabel("将应用当前偏移、开头处理、尾部裁切和视频编码设置。")
-        video_export_desc.setWordWrap(True)
-        video_export_desc.setStyleSheet("color: #475467;")
-        video_export_layout.addWidget(video_export_desc)
-        self.ExportVideoBtn = PrimaryPushButton("导出对齐后视频")
+        video_export_layout.addWidget(StrongBodyLabel("导出对齐视频"))
+        video_export_layout.addWidget(BodyLabel("预计时长"))
+        self.align_video_export_duration_label = QLabel("时长未知")
+        self.align_video_export_duration_label.setStyleSheet(
+            'color: #ff2947; font-family: "Microsoft YaHei UI"; font-size: 18pt; font-weight: 700;'
+        )
+        self.label_export_video_duration = self.align_video_export_duration_label
+        video_export_layout.addWidget(self.align_video_export_duration_label)
+        self.align_video_export_origin_label = BodyLabel("(原始时长: 时长未知)")
+        self.align_video_export_origin_label.setStyleSheet("color: #667085;")
+        self.label_export_video_src_duration = self.align_video_export_origin_label
+        video_export_layout.addWidget(self.align_video_export_origin_label)
+        video_export_layout.addStretch(1)
+        self.ExportVideoBtn = PrimaryPushButton("导出对齐视频")
         self.ExportVideoBtn.setIcon(FIF.VIDEO.icon())
         self.ExportVideoBtn.setMinimumHeight(40)
         self.ExportVideoBtn.clicked.connect(lambda: self._trigger_alignment_export(ALIGN_TARGET_VIDEO))
-        video_export_layout.addStretch(1)
+        self.btn_export_video = self.ExportVideoBtn
         video_export_layout.addWidget(self.ExportVideoBtn)
-        export_column.addWidget(video_export_card)
+        wrapper_layout.addWidget(video_export_card, 0, 2)
 
         wav_export_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        set_expanding(wav_export_card)
+        wav_export_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         wav_export_layout = wav_export_card.createVBoxLayout()
-        wav_export_layout.addWidget(StrongBodyLabel("导出选项"))
-        wav_export_desc = BodyLabel("会基于当前波形偏移导出修正后的高品质 WAV。")
+        wav_export_layout.addWidget(StrongBodyLabel("导出对齐 WAV"))
+        wav_export_desc = BodyLabel("将原唱音源导出为对齐后的 WAV 文件")
         wav_export_desc.setWordWrap(True)
         wav_export_desc.setStyleSheet("color: #475467;")
         wav_export_layout.addWidget(wav_export_desc)
-        self.ExportWAVBtn = PrimaryPushButton("导出对齐后的 WAV")
+        wav_export_layout.addWidget(BodyLabel("预计时长"))
+        self.align_audio_export_duration_label = QLabel("时长未知")
+        self.align_audio_export_duration_label.setStyleSheet(
+            'color: #ff2947; font-family: "Microsoft YaHei UI"; font-size: 18pt; font-weight: 700;'
+        )
+        self.label_export_wav_duration = self.align_audio_export_duration_label
+        wav_export_layout.addWidget(self.align_audio_export_duration_label)
+        self.align_audio_export_origin_label = BodyLabel("(原始时长: 时长未知)")
+        self.align_audio_export_origin_label.setStyleSheet("color: #667085;")
+        self.label_export_wav_src_duration = self.align_audio_export_origin_label
+        wav_export_layout.addWidget(self.align_audio_export_origin_label)
+        wav_export_layout.addStretch(1)
+        self.ExportWAVBtn = PrimaryPushButton("导出对齐 WAV")
         self.ExportWAVBtn.setIcon(FIF.MUSIC.icon())
         self.ExportWAVBtn.setMinimumHeight(40)
         self.ExportWAVBtn.clicked.connect(lambda: self._trigger_alignment_export(ALIGN_TARGET_AUDIO))
-        wav_export_layout.addStretch(1)
+        self.btn_export_wav = self.ExportWAVBtn
         wav_export_layout.addWidget(self.ExportWAVBtn)
-        export_column.addWidget(wav_export_card)
-        export_column.addStretch(1)
+        wrapper_layout.addWidget(wav_export_card, 1, 2)
 
-        wrapper_layout.addLayout(export_column, 1)
+        self.waveform_view.offsetChanged.connect(self._refresh_alignment_export_panels)
+        self.waveform_view.trimChanged.connect(lambda _value: self._refresh_alignment_export_panels())
+        self._refresh_original_adjustment_panel(self.waveform_view.offset_seconds)
+        self._refresh_alignment_export_panels()
+
         return wrapper
+
+    def _update_head_mode_buttons(self, selected_key: str | None) -> None:
+        button_map = {
+            "crop": getattr(self, "align_head_btn_crop", None),
+            "black": getattr(self, "align_head_btn_black", None),
+            "white": getattr(self, "align_head_btn_white", None),
+            "freeze": getattr(self, "align_head_btn_freeze", None),
+        }
+        selected_style = (
+            "QPushButton {"
+            " background: #ff4d5e;"
+            " color: white;"
+            " border: none;"
+            " border-radius: 6px;"
+            " padding: 6px 12px;"
+            " font-weight: 600;"
+            "}"
+        )
+        unselected_style = (
+            "QPushButton {"
+            " background: #f5f5f5;"
+            " color: #374151;"
+            " border: 1px solid #e5e7eb;"
+            " border-radius: 6px;"
+            " padding: 6px 12px;"
+            " font-weight: 400;"
+            "}"
+            "QPushButton:hover {"
+            " background: #fff1f2;"
+            " border: 1px solid #ffb3bc;"
+            " color: #ff4d5e;"
+            "}"
+        )
+        disabled_style = (
+            "QPushButton {"
+            " background: #f3f4f6;"
+            " color: #9ca3af;"
+            " border: 1px solid #e5e7eb;"
+            " border-radius: 6px;"
+            " padding: 6px 12px;"
+            " font-weight: 400;"
+            "}"
+        )
+        for key, button in button_map.items():
+            if button is None:
+                continue
+            if not button.isEnabled():
+                button.setStyleSheet(disabled_style)
+            else:
+                button.setStyleSheet(selected_style if selected_key and key == selected_key else unselected_style)
+
+    def _on_offset_finalized(self, seconds: float) -> None:
+        if not hasattr(self, "align_target_video_radio") or not self.align_target_video_radio.isChecked():
+            return
+        if not hasattr(self, "align_lead_trim_radio"):
+            return
+
+        if seconds < 0:
+            if self.align_lead_fill_white_radio.isChecked():
+                self._last_fill_mode = LEAD_FILL_WHITE
+            elif self.align_lead_fill_freeze_radio.isChecked():
+                self._last_fill_mode = LEAD_FILL_FREEZE
+            elif self.align_lead_fill_black_radio.isChecked():
+                self._last_fill_mode = LEAD_FILL_BLACK
+
+            self.align_lead_trim_radio.setEnabled(True)
+            self.align_lead_fill_black_radio.setEnabled(False)
+            self.align_lead_fill_white_radio.setEnabled(False)
+            self.align_lead_fill_freeze_radio.setEnabled(False)
+            if hasattr(self, "align_head_btn_crop"):
+                self.align_head_btn_crop.setEnabled(True)
+            if hasattr(self, "align_head_btn_black"):
+                self.align_head_btn_black.setEnabled(False)
+            if hasattr(self, "align_head_btn_white"):
+                self.align_head_btn_white.setEnabled(False)
+            if hasattr(self, "align_head_btn_freeze"):
+                self.align_head_btn_freeze.setEnabled(False)
+            self.align_lead_trim_radio.setChecked(True)
+            self._update_head_mode_buttons("crop")
+            return
+
+        self.align_lead_trim_radio.setEnabled(False)
+        self.align_lead_fill_black_radio.setEnabled(True)
+        self.align_lead_fill_white_radio.setEnabled(True)
+        self.align_lead_fill_freeze_radio.setEnabled(True)
+        if hasattr(self, "align_head_btn_crop"):
+            self.align_head_btn_crop.setEnabled(False)
+        if hasattr(self, "align_head_btn_black"):
+            self.align_head_btn_black.setEnabled(True)
+        if hasattr(self, "align_head_btn_white"):
+            self.align_head_btn_white.setEnabled(True)
+        if hasattr(self, "align_head_btn_freeze"):
+            self.align_head_btn_freeze.setEnabled(True)
+
+        if self._last_fill_mode == LEAD_FILL_WHITE:
+            self.align_lead_fill_white_radio.setChecked(True)
+            self._update_head_mode_buttons("white")
+        elif self._last_fill_mode == LEAD_FILL_FREEZE:
+            self.align_lead_fill_freeze_radio.setChecked(True)
+            self._update_head_mode_buttons("freeze")
+        else:
+            self.align_lead_fill_black_radio.setChecked(True)
+            self._update_head_mode_buttons("black")
 
     def _set_alignment_nudge_step(self, seconds: float) -> None:
         self._align_nudge_step = seconds
+        if not hasattr(self, "align_step_small_button") or not hasattr(self, "align_step_large_button"):
+            return
         button_map = {
             self.align_step_small_button: seconds == 0.01,
             self.align_step_large_button: seconds == 0.1,
@@ -3043,10 +3560,16 @@ class KrokHelperQtApp(QMainWindow):
     def _sync_alignment_export_buttons(self) -> None:
         base_enabled = bool(getattr(self, "align_export_button", None) and self.align_export_button.isEnabled())
         is_video_target = bool(getattr(self, "align_target_video_radio", None) and self.align_target_video_radio.isChecked())
+        video_enabled = base_enabled and is_video_target
+        wav_enabled = base_enabled and not is_video_target
         if hasattr(self, "ExportVideoBtn"):
-            self.ExportVideoBtn.setEnabled(base_enabled and is_video_target)
+            self.ExportVideoBtn.setEnabled(video_enabled)
+        if hasattr(self, "btn_export_video"):
+            self.btn_export_video.setEnabled(video_enabled)
         if hasattr(self, "ExportWAVBtn"):
-            self.ExportWAVBtn.setEnabled(base_enabled and not is_video_target)
+            self.ExportWAVBtn.setEnabled(wav_enabled)
+        if hasattr(self, "btn_export_wav"):
+            self.btn_export_wav.setEnabled(wav_enabled)
 
     def _on_alignment_target_changed(self, *_args) -> None:
         target_track = ALIGN_TARGET_VIDEO if self.align_target_video_radio.isChecked() else ALIGN_TARGET_AUDIO
@@ -3054,13 +3577,60 @@ class KrokHelperQtApp(QMainWindow):
             self._stop_alignment_preview(log_message=False)
         self.waveform_view.set_target_track(target_track)
         self._refresh_align_target_ui()
-        self._set_panel_enabled(self.SubtitleAdjust, self.rb_adjust_subtitle.isChecked())
-        self._set_panel_enabled(self.OriginalAdjust, self.rb_adjust_original.isChecked())
+        is_subtitle_target = self.rb_adjust_subtitle.isChecked()
+        self._set_panel_enabled(self.subtitle_adjust_card, is_subtitle_target)
+        self._set_panel_enabled(self.original_adjust_card, not is_subtitle_target)
+        if hasattr(self, "subtitle_accent_bar"):
+            self.subtitle_accent_bar.setVisible(is_subtitle_target)
+        if hasattr(self, "original_accent_bar"):
+            self.original_accent_bar.setVisible(not is_subtitle_target)
+        if hasattr(self, "subtitle_adjust_badge"):
+            self.subtitle_adjust_badge.setEnabled(False)
+        if hasattr(self, "original_adjust_badge"):
+            self.original_adjust_badge.setEnabled(False)
+        if not is_subtitle_target and hasattr(self, "align_lead_trim_radio"):
+            self.align_lead_trim_radio.setChecked(False)
+            if hasattr(self, "align_head_trim_row_widget"):
+                self.align_head_trim_row_widget.setVisible(False)
+            self.align_lead_trim_seconds_spin.setEnabled(False)
         self._sync_alignment_export_buttons()
+        self._refresh_alignment_export_panels()
 
     def _set_panel_enabled(self, panel: QWidget, enabled: bool):
         for w in panel.findChildren(QWidget):
             w.setEnabled(enabled)
+
+    def _refresh_original_adjustment_panel(self, seconds: float) -> None:
+        self.align_positive_offset_spin.setValue(max(0.0, seconds))
+        self.align_negative_offset_spin.setValue(max(0.0, -seconds))
+
+    def _refresh_alignment_export_panels(self) -> None:
+        video_waveform = self.waveform_view.video_waveform
+        audio_waveform = self.waveform_view.audio_waveform
+
+        if video_waveform is None:
+            video_duration_text = "时长未知"
+            video_origin_text = "时长未知"
+        else:
+            video_origin_text = format_media_duration(video_waveform.duration)
+            video_duration_seconds = max(0.0, video_waveform.duration + self.waveform_view.offset_seconds)
+            trim_duration = self._compute_video_trim_duration()
+            if trim_duration is not None:
+                video_duration_seconds = trim_duration
+            video_duration_text = format_media_duration(video_duration_seconds)
+
+        if audio_waveform is None:
+            audio_duration_text = "时长未知"
+            audio_origin_text = "时长未知"
+        else:
+            audio_origin_text = format_media_duration(audio_waveform.duration)
+            audio_duration_seconds = max(0.0, audio_waveform.duration + self.waveform_view.offset_seconds)
+            audio_duration_text = format_media_duration(audio_duration_seconds)
+
+        self.align_video_export_duration_label.setText(video_duration_text)
+        self.align_video_export_origin_label.setText(f"(原始时长: {video_origin_text})")
+        self.align_audio_export_duration_label.setText(audio_duration_text)
+        self.align_audio_export_origin_label.setText(f"(原始时长: {audio_origin_text})")
 
     def _load_settings_into_ui(self) -> None:
         self._loading_settings_into_ui = True
@@ -3801,13 +4371,11 @@ class KrokHelperQtApp(QMainWindow):
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
         self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
-        if not is_video_target:
-            self.align_extra_wav_check.setChecked(False)
-        self.align_extra_wav_check.setEnabled(has_waveforms and is_video_target)
         self.align_trim_mark_button.setEnabled(has_waveforms and is_video_target)
         self.align_trim_clear_button.setEnabled(has_waveforms and is_video_target)
         self.align_force_1080p60_check.setEnabled(has_waveforms and is_video_target)
-        self.align_auto_trim_check.setEnabled(has_waveforms and is_video_target)
+        self.align_trim_none_radio.setEnabled(has_waveforms and is_video_target)
+        self.align_trim_to_audio_radio.setEnabled(has_waveforms and is_video_target)
         self.align_use_video_audio_check.setEnabled(has_waveforms and is_video_target)
         if has_waveforms and is_video_target:
             self.align_lead_row_widget.setEnabled(True)
@@ -3822,6 +4390,7 @@ class KrokHelperQtApp(QMainWindow):
                 self.align_encode_hardware_radio.setChecked(True)
             else:
                 self.align_encode_software_radio.setChecked(True)
+            self._on_offset_finalized(self.waveform_view.offset_seconds)
         else:
             if self.align_lead_fill_white_radio.isChecked():
                 self._align_lead_fill_selection = LEAD_FILL_WHITE
@@ -3835,6 +4404,7 @@ class KrokHelperQtApp(QMainWindow):
                 self._align_encode_selection = ENCODE_MODE_SOFTWARE
 
             self.align_lead_fill_group.setExclusive(False)
+            self.align_lead_trim_radio.setChecked(False)
             self.align_lead_fill_black_radio.setChecked(False)
             self.align_lead_fill_white_radio.setChecked(False)
             self.align_lead_fill_freeze_radio.setChecked(False)
@@ -3847,6 +4417,11 @@ class KrokHelperQtApp(QMainWindow):
 
             self.align_lead_row_widget.setEnabled(False)
             self.align_encode_row_widget.setEnabled(False)
+            self.align_head_btn_crop.setEnabled(False)
+            self.align_head_btn_black.setEnabled(False)
+            self.align_head_btn_white.setEnabled(False)
+            self.align_head_btn_freeze.setEnabled(False)
+            self._update_head_mode_buttons(None)
         if self.align_control_panel is not None:
             self.align_control_panel.setEnabled(has_waveforms)
         self.waveform_view.setEnabled(has_waveforms)
@@ -3878,7 +4453,7 @@ class KrokHelperQtApp(QMainWindow):
         parts: list[str] = []
         if manual_trim is not None:
             parts.append(f"手动尾裁到 {manual_trim:.3f}s")
-        if self.align_auto_trim_check.isChecked():
+        if self.align_trim_to_audio_radio.isChecked():
             auto_trim = self._compute_video_trim_duration()
             if auto_trim is not None and self.waveform_view.audio_waveform is not None:
                 parts.append(f"自动最多保留到音频末尾 {self.waveform_view.audio_waveform.duration:.3f}s")
@@ -3897,7 +4472,7 @@ class KrokHelperQtApp(QMainWindow):
         candidates = [base_duration]
         if self.waveform_view.trim_end_seconds is not None:
             candidates.append(self.waveform_view.trim_end_seconds)
-        if self.align_auto_trim_check.isChecked() and self.waveform_view.audio_waveform is not None:
+        if self.align_trim_to_audio_radio.isChecked() and self.waveform_view.audio_waveform is not None:
             candidates.append(self.waveform_view.audio_waveform.duration)
         trim_duration = min(candidates)
         if trim_duration < base_duration - 0.001:
@@ -3929,6 +4504,16 @@ class KrokHelperQtApp(QMainWindow):
         if self.align_reset_view_button is not None:
             self.align_reset_view_button.setEnabled(has_waveforms)
         self.align_zoom_slider.setEnabled(has_waveforms)
+        if hasattr(self, "align_volume_slider"):
+            self.align_volume_slider.setEnabled(has_waveforms)
+
+    def _queue_alignment_preview_volume_refresh(self, _value: int) -> None:
+        if hasattr(self, "_align_volume_refresh_timer"):
+            self._align_volume_refresh_timer.start()
+
+    def _apply_alignment_preview_volume(self) -> None:
+        if self.align_preview_process is not None and self.align_preview_process.is_running():
+            self._restart_alignment_preview_from_playhead()
 
     def _is_align_export_running(self) -> bool:
         return self.align_export_task is not None and self.align_export_task.isRunning()
@@ -3980,15 +4565,54 @@ class KrokHelperQtApp(QMainWindow):
         self._stop_alignment_preview(log_message=False)
         target_track = ALIGN_TARGET_VIDEO if self._is_align_video_target() else ALIGN_TARGET_AUDIO
         preview_start_seconds = self.waveform_view.playhead_seconds
+        volume_percent = self.align_volume_slider.value() if hasattr(self, "align_volume_slider") else 50
         try:
-            self.align_preview_process = start_alignment_preview(
+            ffmpeg_path = find_tool("ffmpeg.exe", ffmpeg_dir)
+            ffplay_path = find_tool("ffplay.exe", ffmpeg_dir)
+            ffmpeg_command = build_alignment_preview_command(
+                ffmpeg_path=ffmpeg_path,
                 video_path=video_path,
                 audio_path=audio_path,
                 offset_seconds=self.waveform_view.offset_seconds,
-                ffmpeg_dir=ffmpeg_dir,
-                logger=self._append_align_log,
                 target_track=target_track,
                 preview_start_seconds=preview_start_seconds,
+            )
+            ffplay_command = [
+                ffplay_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nodisp",
+                "-autoexit",
+                "-volume",
+                str(max(0, min(100, int(volume_percent)))),
+                "-i",
+                "pipe:0",
+            ]
+            ffmpeg_process = subprocess.Popen(
+                ffmpeg_command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                **_build_subprocess_kwargs(),
+            )
+            assert ffmpeg_process.stdout is not None
+            try:
+                ffplay_process = subprocess.Popen(
+                    ffplay_command,
+                    stdin=ffmpeg_process.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    **_build_subprocess_kwargs(),
+                )
+            except Exception:
+                ffmpeg_process.terminate()
+                raise
+            finally:
+                ffmpeg_process.stdout.close()
+            self._append_align_log(f"棰勮闊抽噺: {int(volume_percent)}%")
+            self.align_preview_process = AlignmentPreviewProcess(
+                ffmpeg_process=ffmpeg_process,
+                ffplay_process=ffplay_process,
             )
         except Exception as exc:  # noqa: BLE001
             self.align_preview_process = None
@@ -4110,20 +4734,9 @@ class KrokHelperQtApp(QMainWindow):
         force_1080p60 = self.align_force_1080p60_check.isChecked()
         use_source_video_audio = self.align_use_video_audio_check.isChecked() if is_video_target else False
         video_trim_duration = self._compute_video_trim_duration() if is_video_target else None
-        extra_wav_output: Path | None = None
-        if self.align_extra_wav_check.isChecked():
-            extra_candidate = self._render_alignment_output_path(
-                video_path=video_path,
-                audio_path=audio_path,
-                is_video_target=False,
-            )
-            if not (not is_video_target and extra_candidate == output_path):
-                extra_wav_output = extra_candidate
         self._align_export_cancel_requested = False
         self._align_export_process = None
         self._align_export_expected_outputs = [output_path]
-        if extra_wav_output is not None:
-            self._align_export_expected_outputs.append(extra_wav_output)
         self._align_export_completed_outputs = []
 
         self._stop_alignment_preview(log_message=False)
@@ -4161,19 +4774,6 @@ class KrokHelperQtApp(QMainWindow):
                         audio_path=audio_path,
                         output_path=output_path,
                         offset_seconds=offset_seconds,
-                        ffmpeg_dir=ffmpeg_dir,
-                        logger=logger,
-                        should_cancel=lambda: self._align_export_cancel_requested,
-                        on_process_started=self._register_align_export_process,
-                    )
-                )
-                self._align_export_completed_outputs.append(outputs[-1])
-            if extra_wav_output is not None:
-                outputs.append(
-                    export_aligned_audio(
-                        audio_path=audio_path,
-                        output_path=extra_wav_output,
-                        offset_seconds=0.0 if is_video_target else offset_seconds,
                         ffmpeg_dir=ffmpeg_dir,
                         logger=logger,
                         should_cancel=lambda: self._align_export_cancel_requested,
