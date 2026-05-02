@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import subprocess
 import time
@@ -7,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from string import Formatter
 from typing import Callable
+
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_DONOTROUND = 1
 
 os.environ["QFLUENT_WIDGETS_NO_PROMOTION"] = "1"
 
@@ -55,6 +59,7 @@ from qfluentwidgets import (
     ToolButton,
 )
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
+from qfluentwidgets.components.widgets.menu import MenuAnimationType
 
 from krok_helper.audio_alignment import (
     DEFAULT_ALIGNED_AUDIO_NAME_TEMPLATE,
@@ -139,16 +144,11 @@ LYRICS_PREVIEW_MODE_MAP = {label: mode for label, mode in LYRICS_PREVIEW_MODE_OP
 
 APP_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo" / "logo.jpg"
 TASKBAR_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo" / "logo2.png"
-COMBO_BOX_MENU_QSS = """
-background: white;
-border: 1px solid #EAEAEA;
-border-radius: 8px;
-"""
 COMBO_BOX_VIEW_QSS = """
 QAbstractItemView {
-    background-color: white;
-    border: 1px solid #EAEAEA;
-    border-radius: 8px;
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
     padding: 4px;
     outline: none;
 }
@@ -229,12 +229,45 @@ def format_media_duration(seconds: float | None) -> str:
 class WhiteComboBoxMenu(ComboBoxMenu):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
-        self.setStyleSheet(COMBO_BOX_MENU_QSS)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.NoDropShadowWindowHint)
+        # 保留 qfluentwidgets 默认的透明顶层窗口，不要关闭 WA_TranslucentBackground
         self.view.setStyleSheet(COMBO_BOX_VIEW_QSS)
-        self.view.window().setStyleSheet("background: white;")
-        self.hBoxLayout.setContentsMargins(4, 4, 4, 4)
+        self.view.setFrameShape(QFrame.Shape.NoFrame)
+        self.hBoxLayout.setContentsMargins(0, 0, 0, 0)
+        self.hBoxLayout.setSpacing(0)
+        self.view.setViewportMargins(0, 0, 0, 0)
         self.setShadowEffect(blurRadius=0, offset=(0, 0), color=QColor(0, 0, 0, 0))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        try:
+            preference = ctypes.c_int(DWMWCP_DONOTROUND)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(preference),
+                ctypes.sizeof(preference),
+            )
+        except Exception:
+            pass
+
+    def exec(self, pos, ani=True, aniType=MenuAnimationType.DROP_DOWN):
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.adjustSize(pos, aniType)
+
+        overflow = self.view.verticalScrollBar().maximum()
+        if overflow > 0:
+            self.view.setFixedHeight(self.view.height() + overflow + 8)
+
+        self.adjustSize()
+        return super().exec(pos, ani, aniType)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#EAEAEA"), 1))
+        painter.setBrush(QColor("white"))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
 
 
 class StyledComboBox(QComboBox):
