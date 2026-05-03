@@ -3716,7 +3716,7 @@ class KrokHelperQtApp(QMainWindow):
         self.label_export_video_src_duration = self.align_video_export_origin_label
         video_export_layout.addWidget(self.align_video_export_origin_label)
         video_export_layout.addStretch(1)
-        self.ExportVideoBtn = PrimaryPushButton("导出对齐视频")
+        self.ExportVideoBtn = PrimaryPushButton("导出对齐视频（Ctrl + S）")
         self.ExportVideoBtn.setIcon(FIF.VIDEO.icon())
         self.ExportVideoBtn.setMinimumHeight(40)
         self.ExportVideoBtn.clicked.connect(lambda: self._trigger_alignment_export(ALIGN_TARGET_VIDEO))
@@ -3745,7 +3745,7 @@ class KrokHelperQtApp(QMainWindow):
         self.label_export_wav_src_duration = self.align_audio_export_origin_label
         wav_export_layout.addWidget(self.align_audio_export_origin_label)
         wav_export_layout.addStretch(1)
-        self.ExportWAVBtn = PrimaryPushButton("导出对齐 WAV")
+        self.ExportWAVBtn = PrimaryPushButton("导出对齐 WAV（Ctrl + S）")
         self.ExportWAVBtn.setIcon(FIF.MUSIC.icon())
         self.ExportWAVBtn.setMinimumHeight(40)
         self.ExportWAVBtn.clicked.connect(lambda: self._trigger_alignment_export(ALIGN_TARGET_AUDIO))
