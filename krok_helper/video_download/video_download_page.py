@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QSignalBlocker, QThread, Qt, pyqtSignal as Signal
+from PyQt6.QtCore import QPoint, QRectF, QSignalBlocker, QThread, Qt, pyqtSignal as Signal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
@@ -58,6 +59,7 @@ from .ytdlp_service import DownloadCancelledError, VideoDownloadError, YtDlpServ
 
 
 DEFAULT_CUSTOM_TEMPLATE = "{title}"
+PLATFORM_ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "platforms"
 
 
 def open_in_explorer(path: Path) -> None:
@@ -94,9 +96,10 @@ class PanelCard(QFrame):
         super().__init__(parent)
         self._padding = padding
         self._spacing = spacing
+        self.setObjectName("PanelCard")
         self.setStyleSheet(
             f"""
-            QFrame {{
+            QFrame#PanelCard {{
                 background: #ffffff;
                 border: 1px solid rgba(226, 232, 240, 0.95);
                 border-radius: {radius}px;
@@ -124,46 +127,157 @@ class PanelCard(QFrame):
         return layout
 
 
-class PlatformCard(PushButton):
-    def __init__(self, title: str, subtitle: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent=parent)
-        self._subtitle = subtitle
-        self.setText(title)
-        self.setCheckable(True)
-        self.setMinimumHeight(74)
+class PlatformCard(QFrame):
+    clicked = Signal()
+
+    def __init__(self, title: str, brand: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._title = title
+        self._brand = brand
+        self._checked = False
+        self._hovered = False
+        self.setObjectName("PlatformCard")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setLineWidth(0)
+        self.setMidLineWidth(0)
+        self.setAutoFillBackground(False)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
+        self.setStyleSheet("QFrame#PlatformCard { background: transparent; border: 0; }")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._refresh_style()
-        self.toggled.connect(self._refresh_style)
+        self.setFixedHeight(74)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def isChecked(self) -> bool:  # noqa: N802
+        return self._checked
+
+    def setChecked(self, checked: bool) -> None:  # noqa: N802
+        if self._checked == checked:
+            return
+        self._checked = checked
+        self.update()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
-        super().paintEvent(event)
+        del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#6b7280"))
-        painter.setFont(QFont("Microsoft YaHei UI", 9))
-        painter.drawText(self.rect().adjusted(18, 34, -18, -10), Qt.AlignmentFlag.AlignLeft, self._subtitle)
 
-    def _refresh_style(self) -> None:
-        border = "#ff5a6f" if self.isChecked() else "#e5e7eb"
-        background = "#fff6f7" if self.isChecked() else "#ffffff"
-        self.setStyleSheet(
-            f"""
-            PushButton {{
-                text-align: left;
-                padding: 10px 16px 18px 16px;
-                border-radius: 14px;
-                border: 1px solid {border};
-                background: {background};
-                color: #111827;
-                font-size: 12pt;
-                font-weight: 700;
-            }}
-            PushButton:hover {{
-                border-color: #ff8998;
-                background: #fff8f8;
-            }}
-            """
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        if self._checked:
+            background = QColor("#fff7f7")
+            border = QColor("#ff7b89")
+        elif self._hovered:
+            background = QColor("#fffdfd")
+            border = QColor("#f0c5cb")
+        else:
+            background = QColor("#ffffff")
+            border = QColor("#e5e7eb")
+
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(background)
+        painter.drawRoundedRect(rect, 14, 14)
+
+        title_left = self._draw_brand_icon(painter, rect)
+
+        painter.setPen(QColor("#ff5a6f") if self._checked else QColor("#374151"))
+        title_font = QFont("Microsoft YaHei UI")
+        title_font.setPointSizeF(12.5)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.drawText(
+            rect.adjusted(title_left, 0, -58, 0),
+            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+            self._title,
         )
+
+        circle_size = 28
+        circle_rect = QRectF(
+            rect.right() - 16 - circle_size,
+            rect.center().y() - circle_size / 2,
+            circle_size,
+            circle_size,
+        )
+        painter.setPen(QPen(QColor("#ff5a6f") if self._checked else QColor("#d1d5db"), 2))
+        painter.setBrush(QColor("#ff5a6f") if self._checked else QColor("#ffffff"))
+        painter.drawEllipse(circle_rect)
+        if self._checked:
+            painter.setPen(QPen(QColor("#ffffff"), 2))
+            painter.drawLine(
+                QPoint(int(circle_rect.left() + 7), int(circle_rect.center().y())),
+                QPoint(int(circle_rect.left() + 12), int(circle_rect.bottom() - 8)),
+            )
+            painter.drawLine(
+                QPoint(int(circle_rect.left() + 12), int(circle_rect.bottom() - 8)),
+                QPoint(int(circle_rect.right() - 7), int(circle_rect.top() + 8)),
+            )
+
+    def _draw_brand_icon(self, painter: QPainter, rect) -> int:
+        icon_rect = rect.adjusted(18, 18, -(rect.width() - 80), -18)
+        if self._draw_svg_icon(painter, icon_rect):
+            return icon_rect.right() + 14
+
+        if self._brand == "youtube":
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor("#ff1f1f"))
+            painter.drawRoundedRect(icon_rect, 8, 8)
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawPolygon(
+                QPoint(icon_rect.left() + 13, icon_rect.top() + 9),
+                QPoint(icon_rect.left() + 13, icon_rect.bottom() - 9),
+                QPoint(icon_rect.right() - 10, icon_rect.center().y()),
+            )
+            return icon_rect.right() + 14
+
+        painter.setPen(QColor("#10a6ff"))
+        logo_font = QFont("Segoe UI", 16)
+        logo_font.setBold(True)
+        painter.setFont(logo_font)
+        painter.drawText(icon_rect.adjusted(-2, -3, 14, 2), Qt.AlignmentFlag.AlignCenter, "bilibili")
+        return icon_rect.right() + 14
+
+    def _draw_svg_icon(self, painter: QPainter, icon_rect) -> bool:
+        svg_path = PLATFORM_ICON_DIR / f"{self._brand}.svg"
+        if not svg_path.is_file():
+            return False
+
+        renderer = QSvgRenderer(str(svg_path))
+        if not renderer.isValid():
+            return False
+
+        default_size = renderer.defaultSize()
+        if not default_size.isValid() or default_size.width() <= 0 or default_size.height() <= 0:
+            renderer.render(painter, QRectF(icon_rect))
+            return True
+
+        width_ratio = icon_rect.width() / default_size.width()
+        height_ratio = icon_rect.height() / default_size.height()
+        scale = min(width_ratio, height_ratio)
+        target_width = default_size.width() * scale
+        target_height = default_size.height() * scale
+        target_rect = QRectF(
+            icon_rect.center().x() - target_width / 2,
+            icon_rect.center().y() - target_height / 2,
+            target_width,
+            target_height,
+        )
+        renderer.render(painter, target_rect)
+        return True
 
 
 class TabButton(PushButton):
@@ -324,13 +438,21 @@ class VideoDownloadPage(QWidget):
         self.setStyleSheet(
             """
             QLabel[panelTitle="true"] {
+                background: transparent;
+                border: 0;
                 color: #111827;
                 font-size: 13pt;
                 font-weight: 700;
             }
             QLabel[hint="true"] {
+                background: transparent;
+                border: 0;
                 color: #6b7280;
                 font-size: 10pt;
+            }
+            QLabel, CaptionLabel, BodyLabel {
+                background: transparent;
+                border: 0;
             }
             TableWidget {
                 background: #ffffff;
@@ -370,17 +492,16 @@ class VideoDownloadPage(QWidget):
         root.addWidget(right_panel, 0)
 
     def _build_left_panel(self) -> QWidget:
-        panel = QWidget(self)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        panel = PanelCard(self, padding=(12, 12, 12, 12), spacing=12)
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        layout = panel.create_vbox()
 
         source_card = PanelCard(panel)
         source_layout = source_card.create_vbox()
         source_layout.addWidget(self._create_panel_title("下载来源"))
 
-        self.youtube_button = PlatformCard("YouTube", "下载公开视频或音乐视频")
-        self.bilibili_button = PlatformCard("Bilibili", "支持 BV / 番剧等 B 站链接")
+        self.youtube_button = PlatformCard("YouTube", "youtube")
+        self.bilibili_button = PlatformCard("Bilibili", "bilibili")
         self.youtube_button.clicked.connect(lambda: self._set_source(SOURCE_YOUTUBE))
         self.bilibili_button.clicked.connect(lambda: self._set_source(SOURCE_BILIBILI))
         source_layout.addWidget(self.youtube_button)
@@ -455,8 +576,8 @@ class VideoDownloadPage(QWidget):
         )
         cookie_layout.addWidget(tip_label)
 
-        layout.addWidget(source_card)
-        layout.addWidget(cookie_card)
+        layout.addWidget(source_card, 0)
+        layout.addWidget(cookie_card, 0)
         layout.addStretch(1)
 
         self._switch_cookie_tab(0)
@@ -620,10 +741,9 @@ class VideoDownloadPage(QWidget):
         return panel
 
     def _build_right_panel(self) -> QWidget:
-        panel = QWidget(self)
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(12)
+        panel = PanelCard(self, padding=(12, 12, 12, 12), spacing=12)
+        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        layout = panel.create_vbox()
 
         settings_card = PanelCard(panel)
         settings_layout = settings_card.create_vbox()
@@ -689,12 +809,12 @@ class VideoDownloadPage(QWidget):
         self.start_download_button.setMinimumHeight(44)
         self.start_download_button.clicked.connect(self._start_all_downloads)
 
-        layout.addWidget(settings_card)
-        layout.addWidget(options_card)
-        layout.addWidget(concurrent_card)
-        layout.addWidget(network_card)
+        layout.addWidget(settings_card, 0)
+        layout.addWidget(options_card, 0)
+        layout.addWidget(concurrent_card, 0)
+        layout.addWidget(network_card, 0)
         layout.addStretch(1)
-        layout.addWidget(self.start_download_button)
+        layout.addWidget(self.start_download_button, 0)
         return panel
 
     def _create_panel_title(self, text: str) -> QLabel:
