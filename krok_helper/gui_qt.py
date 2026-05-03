@@ -508,6 +508,262 @@ class AlignModeCard(QFrame):
         self.desc_label.setStyleSheet("color: #667085; font-size: 10.5pt; background: transparent; border: 0;")
 
 
+class ExportOptionRow(QFrame):
+    def __init__(
+        self,
+        button: QWidget,
+        *,
+        title: str,
+        icon: FIF,
+        accent: str = "#ff5a6f",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._button = button
+        self._title = title
+        self._icon = icon
+        self._accent = accent
+        self._hovered = False
+        self.setObjectName("ExportOptionRow")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(96)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(16)
+
+        self.icon_label = QLabel(self)
+        self.icon_label.setFixedSize(42, 42)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.icon_label, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self._button.setText("")
+        self._button.setVisible(False)
+        self._button.setFixedSize(0, 0)
+        self._button.setStyleSheet(self._button_style())
+
+        self.indicator_frame = QFrame(self)
+        self.indicator_frame.setFixedSize(24, 24)
+        self.indicator_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.indicator_frame.setStyleSheet("background: transparent; border: 0;")
+        self.indicator_mark = QLabel("✓", self.indicator_frame)
+        self.indicator_mark.setGeometry(0, 0, 24, 24)
+        self.indicator_mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.indicator_mark.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.indicator_frame, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.title_label = QLabel(title, self)
+        self.title_label.setWordWrap(True)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        self._button.toggled.connect(self._refresh_style)
+        self._refresh_style()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self._refresh_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self._refresh_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._button.isEnabled():
+            if isinstance(self._button, QRadioButton):
+                self._button.setChecked(True)
+            else:
+                self._button.setChecked(not self._button.isChecked())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.EnabledChange:
+            self._refresh_style()
+        super().changeEvent(event)
+
+    def _button_style(self) -> str:
+        return "QCheckBox, QRadioButton { background: transparent; border: 0; padding: 0; margin: 0; }"
+
+    def _refresh_style(self) -> None:
+        enabled = self.isEnabled() and self._button.isEnabled()
+        checked = self._button.isChecked()
+        if not enabled:
+            background = "transparent"
+            title_color = "#98A2B3"
+            icon_color = "#D0D5DD"
+        elif checked:
+            background = "#FFF6F7"
+            title_color = "#111827"
+            icon_color = self._accent
+        elif self._hovered:
+            background = "#FFF9FA"
+            title_color = "#111827"
+            icon_color = self._accent
+        else:
+            background = "transparent"
+            title_color = "#111827"
+            icon_color = self._accent
+
+        self.setStyleSheet(
+            f"""
+            QFrame#ExportOptionRow {{
+                background: {background};
+                border: 0;
+                border-radius: 12px;
+            }}
+            """
+        )
+        self.title_label.setStyleSheet(
+            f"color: {title_color}; font-size: 12.5pt; background: transparent; border: 0; padding: 0; margin: 0;"
+        )
+        self.icon_label.setStyleSheet("background: transparent; border: 0;")
+        self.icon_label.setPixmap(self._icon.icon(color=QColor(icon_color)).pixmap(QSize(28, 28)))
+        if enabled:
+            if checked:
+                indicator_background = self._accent
+                indicator_border = self._accent
+                mark_color = "#ffffff"
+            else:
+                indicator_background = "#ffffff"
+                indicator_border = "#98A2B3"
+                mark_color = "transparent"
+        else:
+            indicator_background = "#F8FAFC"
+            indicator_border = "#D0D5DD"
+            mark_color = "transparent"
+        self.indicator_frame.setStyleSheet(
+            f"background: {indicator_background}; border: 2px solid {indicator_border}; border-radius: 6px;"
+        )
+        self.indicator_mark.setStyleSheet(
+            f"color: {mark_color}; font-size: 13pt; font-weight: 700; background: transparent; border: 0;"
+        )
+        self.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
+
+
+class ExportChoiceCard(QFrame):
+    def __init__(
+        self,
+        radio: QRadioButton,
+        *,
+        title: str,
+        accent: str = "#ff5a6f",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._radio = radio
+        self._title = title
+        self._accent = accent
+        self._hovered = False
+        self.setObjectName("ExportChoiceCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(92)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(14)
+
+        self._radio.setText("")
+        self._radio.setVisible(False)
+        self._radio.setFixedSize(0, 0)
+        self._radio.setStyleSheet("QRadioButton { background: transparent; border: 0; padding: 0; margin: 0; }")
+
+        self.indicator_frame = QFrame(self)
+        self.indicator_frame.setFixedSize(24, 24)
+        self.indicator_frame.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.indicator_frame.setStyleSheet("background: transparent; border: 0;")
+        self.indicator_dot = QFrame(self.indicator_frame)
+        self.indicator_dot.setFixedSize(10, 10)
+        self.indicator_dot.move(7, 7)
+        self.indicator_dot.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.indicator_frame, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        self.title_label = QLabel(title, self)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        self._radio.toggled.connect(self._refresh_style)
+        self._refresh_style()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self._refresh_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self._refresh_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self._radio.isEnabled():
+            self._radio.setChecked(True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        if event.type() == QEvent.Type.EnabledChange:
+            self._refresh_style()
+        super().changeEvent(event)
+
+    def _refresh_style(self) -> None:
+        enabled = self.isEnabled() and self._radio.isEnabled()
+        checked = self._radio.isChecked()
+
+        if not enabled:
+            background = "#F8FAFC"
+            border = "#EAECF0"
+            title_color = "#98A2B3"
+        elif checked:
+            background = "#FFF6F7"
+            border = "#F7C8CE"
+            title_color = "#111827"
+        elif self._hovered:
+            background = "#FFFBFB"
+            border = "#F1D7DB"
+            title_color = "#111827"
+        else:
+            background = "#FFFFFF"
+            border = "#E5E7EB"
+            title_color = "#111827"
+
+        self.setStyleSheet(
+            f"""
+            QFrame#ExportChoiceCard {{
+                background: {background};
+                border: 1px solid {border};
+                border-radius: 14px;
+            }}
+            """
+        )
+        self.title_label.setStyleSheet(
+            f"color: {title_color}; font-size: 13.5pt; font-weight: 700; background: transparent; border: 0; padding: 0; margin: 0;"
+        )
+        if not enabled:
+            indicator_border = "#D0D5DD"
+            indicator_fill = "transparent"
+        elif checked:
+            indicator_border = self._accent
+            indicator_fill = self._accent
+        else:
+            indicator_border = "#98A2B3"
+            indicator_fill = "transparent"
+        self.indicator_frame.setStyleSheet(
+            f"background: #ffffff; border: 2px solid {indicator_border}; border-radius: 12px;"
+        )
+        self.indicator_dot.setStyleSheet(
+            f"background: {indicator_fill}; border: 0; border-radius: 5px;"
+        )
+        self.setCursor(Qt.CursorShape.PointingHandCursor if enabled else Qt.CursorShape.ArrowCursor)
+
+
 @dataclass(frozen=True)
 class WorkflowStepItem:
     module_id: str
@@ -3621,14 +3877,14 @@ class KrokHelperQtApp(QMainWindow):
         self._on_offset_finalized(self.waveform_view.offset_seconds)
         wrapper_layout.addWidget(original_group_card, 1, 0)
 
-        video_export_options_card = CardWidget(radius=12, padding=(16, 16, 16, 16), spacing=10)
+        video_export_options_card = CardWidget(radius=12, padding=(20, 20, 20, 20), spacing=14)
         set_expanding(video_export_options_card)
-        video_export_options_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
+        video_export_options_card.setStyleSheet("StrongBodyLabel { font-size: 17pt; font-weight: 800; color: #111827; }")
         video_export_options_layout = video_export_options_card.createVBoxLayout()
         video_export_options_layout.addWidget(StrongBodyLabel("视频导出选项"))
         video_export_desc = BodyLabel("这些选项仅在导出字幕视频时生效")
         video_export_desc.setWordWrap(True)
-        video_export_desc.setStyleSheet("color: #475467;")
+        video_export_desc.setStyleSheet("color: #667085; font-size: 11pt;")
         video_export_options_layout.addWidget(video_export_desc)
 
         self.align_force_1080p60_check = QCheckBox("导出视频时重编码为 1080p 60fps")
@@ -3638,21 +3894,70 @@ class KrokHelperQtApp(QMainWindow):
         self.chk_reencode = self.align_force_1080p60_check
         self.chk_keep_audio = self.align_use_video_audio_check
         self.align_use_video_audio_check.toggled.connect(self._persist_alignment_preferences)
-        video_export_options_layout.addWidget(self.align_force_1080p60_check)
-        video_export_options_layout.addWidget(self.align_use_video_audio_check)
+        self.align_video_option_list = QFrame()
+        self.align_video_option_list.setObjectName("AlignVideoOptionList")
+        self.align_video_option_list.setStyleSheet(
+            """
+            QFrame#AlignVideoOptionList {
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
+            }
+            """
+        )
+        option_list_layout = QVBoxLayout(self.align_video_option_list)
+        option_list_layout.setContentsMargins(0, 0, 0, 0)
+        option_list_layout.setSpacing(0)
+
+        self.align_force_1080p60_card = ExportOptionRow(
+            self.align_force_1080p60_check,
+            title="导出视频时重编码为 1080p 60fps",
+            icon=FIF.MOVIE,
+        )
+        option_list_layout.addWidget(self.align_force_1080p60_card)
+
+        option_divider = QFrame(self.align_video_option_list)
+        option_divider.setFixedHeight(1)
+        option_divider.setStyleSheet("background: #EAECF0; border: 0;")
+        option_list_layout.addWidget(option_divider)
+
+        self.align_use_video_audio_card = ExportOptionRow(
+            self.align_use_video_audio_check,
+            title="导出视频时保留裁剪后的源视频音轨",
+            icon=FIF.CUT,
+        )
+        option_list_layout.addWidget(self.align_use_video_audio_card)
+        video_export_options_layout.addWidget(self.align_video_option_list)
+
+        section_divider = QFrame()
+        section_divider.setFixedHeight(1)
+        section_divider.setStyleSheet("background: #EAECF0; border: 0;")
+        video_export_options_layout.addWidget(section_divider)
+
+        encode_title_row = QHBoxLayout()
+        encode_title_row.setContentsMargins(0, 0, 0, 0)
+        encode_title_row.setSpacing(12)
+        encode_accent = QFrame()
+        encode_accent.setFixedSize(6, 28)
+        encode_accent.setStyleSheet("background: #ff5a6f; border: 0; border-radius: 3px;")
+        encode_title_row.addWidget(encode_accent, 0, Qt.AlignmentFlag.AlignVCenter)
+        encode_title = QLabel("编码方式")
+        encode_title.setStyleSheet("font-size: 15pt; font-weight: 800; color: #111827;")
+        encode_title_row.addWidget(encode_title, 0, Qt.AlignmentFlag.AlignVCenter)
+        encode_title_row.addStretch(1)
+        video_export_options_layout.addLayout(encode_title_row)
 
         self.align_encode_row_widget = QWidget()
         self.align_encode_row_widget.setStyleSheet("background: transparent;")
         encode_layout = QVBoxLayout(self.align_encode_row_widget)
         encode_layout.setContentsMargins(0, 0, 0, 0)
-        encode_layout.setSpacing(6)
-        encode_layout.addWidget(BodyLabel("编码方式"))
+        encode_layout.setSpacing(0)
 
         encode_radio_row = QHBoxLayout()
         encode_radio_row.setContentsMargins(0, 0, 0, 0)
-        encode_radio_row.setSpacing(10)
-        self.align_encode_software_radio = QRadioButton("软件 (CPU)")
-        self.align_encode_hardware_radio = QRadioButton("硬件 (GPU)")
+        encode_radio_row.setSpacing(14)
+        self.align_encode_software_radio = QRadioButton("软编（CPU）")
+        self.align_encode_hardware_radio = QRadioButton("硬编（GPU）")
         self.rb_codec_cpu = self.align_encode_software_radio
         self.rb_codec_gpu = self.align_encode_hardware_radio
         self.align_encode_software_radio.setChecked(True)
@@ -3660,9 +3965,14 @@ class KrokHelperQtApp(QMainWindow):
         self.align_encode_group.setExclusive(True)
         self.align_encode_group.addButton(self.align_encode_software_radio)
         self.align_encode_group.addButton(self.align_encode_hardware_radio)
-        encode_radio_row.addWidget(self.align_encode_software_radio)
-        encode_radio_row.addWidget(self.align_encode_hardware_radio)
-        encode_radio_row.addStretch(1)
+        self.align_encode_software_card = ExportChoiceCard(self.align_encode_software_radio, title="软编（CPU）")
+        self.align_encode_hardware_card = ExportChoiceCard(self.align_encode_hardware_radio, title="硬编（GPU）")
+        encode_radio_row.addWidget(self.align_encode_software_card, 1)
+        encode_vertical_divider = QFrame()
+        encode_vertical_divider.setFixedWidth(1)
+        encode_vertical_divider.setStyleSheet("background: #EAECF0; border: 0;")
+        encode_radio_row.addWidget(encode_vertical_divider)
+        encode_radio_row.addWidget(self.align_encode_hardware_card, 1)
         encode_layout.addLayout(encode_radio_row)
         video_export_options_layout.addWidget(self.align_encode_row_widget)
         video_export_options_layout.addStretch(1)
@@ -4698,12 +5008,16 @@ class KrokHelperQtApp(QMainWindow):
         self.align_trim_mark_button.setEnabled(has_waveforms and is_video_target)
         self.align_trim_clear_button.setEnabled(has_waveforms and is_video_target)
         self.align_force_1080p60_check.setEnabled(has_waveforms and is_video_target)
+        self.align_force_1080p60_card.setEnabled(has_waveforms and is_video_target)
         self.align_trim_none_radio.setEnabled(has_waveforms and is_video_target)
         self.align_trim_to_audio_radio.setEnabled(has_waveforms and is_video_target)
         self.align_use_video_audio_check.setEnabled(has_waveforms and is_video_target)
+        self.align_use_video_audio_card.setEnabled(has_waveforms and is_video_target)
         if has_waveforms and is_video_target:
             self.align_lead_row_widget.setEnabled(True)
             self.align_encode_row_widget.setEnabled(True)
+            self.align_encode_software_card.setEnabled(True)
+            self.align_encode_hardware_card.setEnabled(True)
             if self._align_lead_fill_selection == LEAD_FILL_WHITE:
                 self.align_lead_fill_white_radio.setChecked(True)
             elif self._align_lead_fill_selection == LEAD_FILL_FREEZE:
@@ -4741,6 +5055,8 @@ class KrokHelperQtApp(QMainWindow):
 
             self.align_lead_row_widget.setEnabled(False)
             self.align_encode_row_widget.setEnabled(False)
+            self.align_encode_software_card.setEnabled(False)
+            self.align_encode_hardware_card.setEnabled(False)
             self.align_head_btn_crop.setEnabled(False)
             self.align_head_btn_black.setEnabled(False)
             self.align_head_btn_white.setEnabled(False)
