@@ -14,7 +14,7 @@ DWMWCP_DONOTROUND = 1
 
 os.environ["QFLUENT_WIDGETS_NO_PROMOTION"] = "1"
 
-from PyQt6.QtCore import QEvent, QThread, QTimer, Qt, pyqtSignal as Signal
+from PyQt6.QtCore import QEvent, QSize, QThread, QTimer, Qt, pyqtSignal as Signal
 from PyQt6.QtGui import QColor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -323,6 +323,189 @@ class ControlBar(CardWidget):
         for button in buttons:
             if hasattr(button, "setMinimumHeight"):
                 button.setMinimumHeight(34)
+
+
+class AlignModeCard(QFrame):
+    def __init__(
+        self,
+        radio: QRadioButton,
+        *,
+        title: str,
+        tag_text: str,
+        description: str,
+        icon: FIF,
+        palette: dict[str, str],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._radio = radio
+        self._title = title
+        self._tag_text = tag_text
+        self._description = description
+        self._icon = icon
+        self._palette = palette
+        self._hovered = False
+        self.setObjectName("AlignModeCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(110)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 12, 12, 12)
+        layout.setSpacing(16)
+
+        self.accent_bar = QFrame(self)
+        self.accent_bar.setFixedWidth(4)
+        self.accent_bar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.accent_bar)
+
+        self.icon_box = QLabel(self)
+        self.icon_box.setFixedSize(64, 64)
+        self.icon_box.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.icon_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        layout.addWidget(self.icon_box, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        body_row = QHBoxLayout()
+        body_row.setContentsMargins(0, 0, 0, 0)
+        body_row.setSpacing(14)
+        layout.addLayout(body_row, 1)
+
+        self._radio.setText("")
+        self._radio.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._radio.setFixedWidth(26)
+        body_row.addWidget(self._radio, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        text_content = QWidget(self)
+        text_content.setObjectName("AlignModeTextContent")
+        text_content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        text_content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        text_column = QVBoxLayout(text_content)
+        text_column.setContentsMargins(0, 0, 0, 0)
+        text_column.setSpacing(8)
+        body_row.addWidget(text_content, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+
+        self.title_label = QLabel(self._title, self)
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        title_row.addWidget(self.title_label, 1, Qt.AlignmentFlag.AlignVCenter)
+
+        self.tag_label = QLabel(self._tag_text, self)
+        self.tag_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.tag_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        title_row.addWidget(self.tag_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        text_column.addLayout(title_row)
+
+        self.desc_label = QLabel(self._description, self)
+        self.desc_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.desc_label.setWordWrap(False)
+        self.desc_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.desc_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        text_column.addWidget(self.desc_label, 0, Qt.AlignmentFlag.AlignLeft)
+
+        self._refresh_style()
+
+    def enterEvent(self, event) -> None:  # noqa: N802
+        self._hovered = True
+        self._refresh_style()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802
+        self._hovered = False
+        self._refresh_style()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._radio.setChecked(True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def sync_ui(self) -> None:
+        self._refresh_style()
+
+    def _refresh_style(self) -> None:
+        checked = self._radio.isChecked()
+        accent = self._palette["accent"]
+        background = self._palette["selected_background"] if checked else "#ffffff"
+        if self._hovered and not checked:
+            background = self._palette["hover_background"]
+        border = self._palette["selected_border"] if checked else "#E5E7EB"
+        if self._hovered and not checked:
+            border = self._palette["hover_border"]
+
+        self.setStyleSheet(
+            f"""
+            QFrame#AlignModeCard {{
+                background: {background};
+                border: 1px solid {border};
+                border-radius: 14px;
+            }}
+            QWidget#AlignModeTextContent {{
+                background: transparent;
+                border: 0;
+            }}
+            """
+        )
+        self.accent_bar.setStyleSheet(
+            f"background: {accent if checked else 'transparent'}; border: 0; border-radius: 2px;"
+        )
+        self.icon_box.setStyleSheet(
+            f"""
+            QLabel {{
+                background: {self._palette["selected_icon_background"] if checked else self._palette["icon_background"]};
+                border: 1px solid {self._palette["icon_border"]};
+                border-radius: 16px;
+            }}
+            """
+        )
+        self.icon_box.setPixmap(self._icon.icon(color=QColor(accent)).pixmap(QSize(24, 24)))
+        self._radio.setStyleSheet(
+            f"""
+            QRadioButton {{
+                background: transparent;
+                border: 0;
+                padding: 0;
+                margin: 0;
+                min-width: 24px;
+                max-width: 24px;
+            }}
+            QRadioButton::indicator {{
+                width: 20px;
+                height: 20px;
+            }}
+            QRadioButton::indicator:unchecked {{
+                background: #ffffff;
+                border: 2px solid #98A2B3;
+                border-radius: 10px;
+            }}
+            QRadioButton::indicator:checked {{
+                background: #ffffff;
+                border: 6px solid {accent};
+                border-radius: 10px;
+            }}
+            """
+        )
+        self.title_label.setStyleSheet("color: #111827; font-size: 15pt; font-weight: 800; background: transparent;")
+        self.tag_label.setStyleSheet(
+            f"""
+            QLabel {{
+                background: {self._palette["tag_background"]};
+                color: {accent};
+                border: 1px solid {self._palette["tag_border"]};
+                border-radius: 11px;
+                padding: 3px 9px;
+                font-size: 9pt;
+                font-weight: 600;
+            }}
+            """
+        )
+        self.desc_label.setStyleSheet("color: #667085; font-size: 10.5pt; background: transparent; border: 0;")
 
 
 @dataclass(frozen=True)
@@ -2670,7 +2853,7 @@ class KrokHelperQtApp(QMainWindow):
         main_layout.setSpacing(14)
 
         left_panel = self._build_left_panel()
-        left_panel.setFixedWidth(264)
+        left_panel.setFixedWidth(388)
         left_panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Expanding)
         main_layout.addWidget(left_panel, 0)
 
@@ -2713,19 +2896,15 @@ class KrokHelperQtApp(QMainWindow):
         return scroll
 
     def _build_left_panel(self) -> QWidget:
-        from PyQt6.QtCore import QSize
-
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        target_card = CardWidget(radius=12, padding=(14, 14, 14, 14), spacing=8)
+        target_card = CardWidget(radius=14, padding=(12, 12, 12, 12), spacing=12)
         target_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
-        target_card.setStyleSheet("StrongBodyLabel { font-size: 15pt; font-weight: 700; color: #111827; }")
         target_layout = target_card.createVBoxLayout()
-        target_layout.setSpacing(6)
-        target_layout.addWidget(StrongBodyLabel("对齐目标"))
+        target_layout.setSpacing(12)
 
         self.align_target_video_radio = QRadioButton("调整字幕视频")
         self.align_target_audio_radio = QRadioButton("调整原唱音源")
@@ -2738,21 +2917,49 @@ class KrokHelperQtApp(QMainWindow):
         self.align_target_audio_radio.toggled.connect(self._on_alignment_target_changed)
         self.rb_adjust_subtitle = self.align_target_video_radio
         self.rb_adjust_original = self.align_target_audio_radio
-        target_title = target_layout.itemAt(0).widget()
-        if target_title is not None:
-            target_title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
 
-        subtitle_hint = BodyLabel("将对齐原唱音频音轨")
-        subtitle_hint.setStyleSheet("color: #667085;")
-        original_hint = BodyLabel("将对齐字幕视频音轨")
-        original_hint.setStyleSheet("color: #667085;")
-        subtitle_hint.setWordWrap(True)
-        original_hint.setWordWrap(True)
-        target_layout.addWidget(self.align_target_video_radio)
-        target_layout.addWidget(subtitle_hint)
-        target_layout.addSpacing(2)
-        target_layout.addWidget(self.align_target_audio_radio)
-        target_layout.addWidget(original_hint)
+        self.align_target_video_card = AlignModeCard(
+            self.align_target_video_radio,
+            title="调整字幕视频",
+            tag_text="基于音频",
+            description="将字幕视频时间轴对齐至原唱音频",
+            icon=FIF.MOVIE,
+            palette={
+                "accent": "#F04452",
+                "selected_background": "#FFF5F6",
+                "selected_border": "#FFC7CE",
+                "hover_background": "#FFFAFB",
+                "hover_border": "#F1D5D9",
+                "icon_background": "#FFF2F4",
+                "selected_icon_background": "#FFE9ED",
+                "icon_border": "#FFD6DD",
+                "tag_background": "#FFF7F8",
+                "tag_border": "#FFD0D7",
+            },
+            parent=target_card,
+        )
+        self.align_target_audio_card = AlignModeCard(
+            self.align_target_audio_radio,
+            title="调整原唱音源",
+            tag_text="基于视频",
+            description="将原唱音频时间轴对齐至字幕视频",
+            icon=FIF.MUSIC,
+            palette={
+                "accent": "#2F6BFF",
+                "selected_background": "#F4F8FF",
+                "selected_border": "#C9DBFF",
+                "hover_background": "#F8FBFF",
+                "hover_border": "#D9E4FA",
+                "icon_background": "#EEF4FF",
+                "selected_icon_background": "#E6EFFF",
+                "icon_border": "#D5E2FF",
+                "tag_background": "#F7FAFF",
+                "tag_border": "#D5E2FF",
+            },
+            parent=target_card,
+        )
+        target_layout.addWidget(self.align_target_video_card)
+        target_layout.addWidget(self.align_target_audio_card)
         layout.addWidget(target_card, 0)
 
         offset_card = CardWidget(radius=12, padding=(14, 14, 14, 14), spacing=8)
@@ -4493,6 +4700,10 @@ class KrokHelperQtApp(QMainWindow):
     def _refresh_align_target_ui(self) -> None:
         is_video_target = self._is_align_video_target()
         has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
+        if hasattr(self, "align_target_video_card"):
+            self.align_target_video_card.sync_ui()
+        if hasattr(self, "align_target_audio_card"):
+            self.align_target_audio_card.sync_ui()
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
         self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
