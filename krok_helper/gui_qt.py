@@ -3511,18 +3511,6 @@ class KrokHelperQtApp(QMainWindow):
         self.align_trim_label.setStyleSheet("color: #475467;")
         tail_layout.addWidget(self.align_trim_label)
 
-        self.align_trim_seconds_spin = QDoubleSpinBox()
-        self.align_trim_seconds_spin.setDecimals(3)
-        self.align_trim_seconds_spin.setRange(0.0, 99999.0)
-        self.align_trim_seconds_spin.setReadOnly(True)
-        self.align_trim_seconds_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.align_trim_seconds_spin.setSuffix(" 秒")
-        self.spin_tail_point = self.align_trim_seconds_spin
-        tail_layout.addWidget(self.align_trim_seconds_spin)
-        self.waveform_view.trimChanged.connect(
-            lambda value: self.align_trim_seconds_spin.setValue(float(value) if isinstance(value, float) else 0.0)
-        )
-
         trim_button_row = QHBoxLayout()
         trim_button_row.setContentsMargins(0, 0, 0, 0)
         trim_button_row.setSpacing(8)
