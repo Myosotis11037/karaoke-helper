@@ -1432,28 +1432,11 @@ class KrokHelperQtApp(QMainWindow):
         shell.setContentsMargins(24, 20, 24, 16)
         shell.setSpacing(12)
 
-        top_bar = QWidget()
-        top_bar_layout = QVBoxLayout(top_bar)
-        top_bar_layout.setContentsMargins(2, 0, 2, 0)
-        top_bar_layout.setSpacing(8)
-
-        title_layout = QVBoxLayout()
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(8)
-        app_title = QLabel("卡拉OK工作台")
-        app_title.setObjectName("AppTitle")
-        app_subtitle = QLabel("地表最强的卡拉OK字幕制作一站式工作台")
-        app_subtitle.setObjectName("AppSubtitle")
-        title_layout.addWidget(app_title)
-        title_layout.addWidget(app_subtitle)
-
         self.top_settings_button = ToolButton(FIF.SETTING)
         self.top_settings_button.setObjectName("WorkflowSettingsButton")
         self.top_settings_button.setToolTip("设置")
         self.top_settings_button.clicked.connect(self._open_current_module_settings)
         self.top_settings_button.setFixedSize(40, 40)
-
-        top_bar_layout.addLayout(title_layout)
 
         self.workflow_stepper = WorkflowStepper(WORKFLOW_STEPS, self)
         self.workflow_stepper.stepClicked.connect(self._handle_workflow_step_clicked)
@@ -1499,7 +1482,6 @@ class KrokHelperQtApp(QMainWindow):
         self.page_stack.addWidget(self.subtitle_render_page)
         self.page_stack.addWidget(self.hires_page)
 
-        shell.addWidget(top_bar)
         shell.addWidget(workflow_bar)
         shell.addWidget(self.page_stack, 1)
         self.setCentralWidget(central)
@@ -2240,7 +2222,7 @@ class KrokHelperQtApp(QMainWindow):
                 theme: str,
                 parent: QWidget | None = None,
             ) -> None:
-                super().__init__(parent, radius=18, padding=(20, 20, 20, 20), spacing=14)
+                super().__init__(parent, radius=18, padding=(16, 16, 16, 16), spacing=12)
                 self._owner = owner
                 self.extensions = {ext.lower() for ext in extensions}
                 self.path: Path | None = None
@@ -2254,20 +2236,20 @@ class KrokHelperQtApp(QMainWindow):
                 self.setObjectName("AlignmentDropCard")
                 self.setCursor(Qt.CursorShape.PointingHandCursor)
                 self.setAcceptDrops(True)
-                self.setMinimumHeight(188)
+                self.setMinimumHeight(158)
 
                 layout = self.createVBoxLayout()
-                layout.setContentsMargins(20, 20, 20, 20)
-                layout.setSpacing(14)
+                layout.setContentsMargins(16, 16, 16, 16)
+                layout.setSpacing(12)
 
                 header = QHBoxLayout()
                 header.setContentsMargins(0, 0, 0, 0)
-                header.setSpacing(18)
+                header.setSpacing(14)
 
                 self.icon_button = ToolButton(self)
                 self.icon_button.setIcon(icon.icon())
-                self.icon_button.setIconSize(QSize(44, 44))
-                self.icon_button.setFixedSize(92, 92)
+                self.icon_button.setIconSize(QSize(34, 34))
+                self.icon_button.setFixedSize(68, 68)
                 self.icon_button.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                 self.icon_button.setStyleSheet("ToolButton { background: transparent; border: 0; padding: 0; }")
 
@@ -2314,7 +2296,7 @@ class KrokHelperQtApp(QMainWindow):
                 self.action_frame = QFrame(self)
                 self.action_frame.setObjectName("AlignmentDropAction")
                 action_layout = QHBoxLayout(self.action_frame)
-                action_layout.setContentsMargins(18, 16, 18, 16)
+                action_layout.setContentsMargins(16, 12, 16, 12)
                 action_layout.setSpacing(10)
 
                 self.action_icon = ToolButton(self.action_frame)
@@ -4752,7 +4734,7 @@ class KrokHelperQtApp(QMainWindow):
                 raise
             finally:
                 ffmpeg_process.stdout.close()
-            self._append_align_log(f"棰勮闊抽噺: {int(volume_percent)}%")
+            self._append_align_log(f"预览音量: {int(volume_percent)}%")
             self.align_preview_process = AlignmentPreviewProcess(
                 ffmpeg_process=ffmpeg_process,
                 ffplay_process=ffplay_process,
