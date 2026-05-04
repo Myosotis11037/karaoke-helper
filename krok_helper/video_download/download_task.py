@@ -73,6 +73,10 @@ class DownloadTask:
     cancel_requested: bool = False
     info: VideoInfo | None = None
     available_formats: list[FormatOption] = field(default_factory=list)
+    progress_total_phases: int = 1
+    progress_phase_index: int = 0
+    progress_phase_bytes: int = 0
+    progress_phase_name: str = ""
 
 
 @dataclass(slots=True)

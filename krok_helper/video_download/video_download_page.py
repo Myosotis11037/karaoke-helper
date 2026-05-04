@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QFrame,
     QGridLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -66,6 +67,14 @@ DEFAULT_CUSTOM_TEMPLATE = "{title}"
 PLATFORM_ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "platforms"
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWCP_DONOTROUND = 1
+DOWNLOAD_TABLE_FIXED_WIDTHS = {
+    0: 88,
+    2: 92,
+    3: 108,
+    4: 84,
+    5: 118,
+    6: 92,
+}
 COMBO_BOX_VIEW_QSS = """
 QAbstractItemView {
     background-color: transparent;
@@ -794,11 +803,6 @@ class VideoDownloadPage(QWidget):
         input_row.addLayout(input_buttons)
         input_layout.addLayout(input_row)
 
-        input_hint = CaptionLabel(
-            "示例：https://www.youtube.com/watch?v=xxxxxxx 或 https://www.bilibili.com/video/BVxxxxxxx"
-        )
-        input_hint.setWordWrap(True)
-        input_layout.addWidget(input_hint)
         self.parse_status_label = CaptionLabel("准备解析视频链接。")
         self.parse_status_label.setWordWrap(True)
         input_layout.addWidget(self.parse_status_label)
@@ -944,14 +948,21 @@ class VideoDownloadPage(QWidget):
         self.download_table.setEditTriggers(TableWidget.EditTrigger.NoEditTriggers)
         self.download_table.setSelectionBehavior(TableWidget.SelectionBehavior.SelectRows)
         self.download_table.setSelectionMode(TableWidget.SelectionMode.SingleSelection)
-        self.download_table.horizontalHeader().setStretchLastSection(False)
-        self.download_table.horizontalHeader().resizeSection(0, 90)
-        self.download_table.horizontalHeader().resizeSection(1, 260)
-        self.download_table.horizontalHeader().resizeSection(2, 90)
-        self.download_table.horizontalHeader().resizeSection(3, 90)
-        self.download_table.horizontalHeader().resizeSection(4, 110)
-        self.download_table.horizontalHeader().resizeSection(5, 100)
-        self.download_table.horizontalHeader().resizeSection(6, 90)
+        self.download_table.setWordWrap(False)
+        self.download_table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.download_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        download_header = self.download_table.horizontalHeader()
+        download_header.setStretchLastSection(False)
+        download_header.setMinimumSectionSize(44)
+        download_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        download_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        download_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        download_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        download_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        download_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        download_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
+        for column, width in DOWNLOAD_TABLE_FIXED_WIDTHS.items():
+            self.download_table.setColumnWidth(column, width)
         self.download_table.itemSelectionChanged.connect(self._handle_task_selection_changed)
         download_layout.addWidget(self.download_table, 1)
         self.download_hint_label = CaptionLabel("暂无下载任务。")
@@ -1550,16 +1561,40 @@ class VideoDownloadPage(QWidget):
         for row, task in enumerate(self._tasks):
             resolution = task.selected_format.resolution if task.selected_format else "-"
             progress_text = "100%" if task.status == TASK_STATUS_COMPLETED else f"{task.progress:.0f}%"
-            if task.status == TASK_STATUS_DOWNLOADING and task.speed_text:
-                progress_text = f"{progress_text} · {task.speed_text}"
 
-            self.download_table.setItem(row, 0, QTableWidgetItem(task.status))
-            self.download_table.setItem(row, 1, QTableWidgetItem(task.title or "-"))
-            self.download_table.setItem(row, 2, QTableWidgetItem(task.source))
-            self.download_table.setItem(row, 3, QTableWidgetItem(resolution))
-            self.download_table.setItem(row, 4, QTableWidgetItem(progress_text))
-            self.download_table.setItem(row, 5, QTableWidgetItem(format_bytes(task.filesize)))
+            status_item = QTableWidgetItem(task.status)
+            status_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+            if task.error_message:
+                status_item.setToolTip(task.error_message)
+
+            title_text = task.title or "-"
+            title_item = QTableWidgetItem(title_text)
+            title_item.setTextAlignment(int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter))
+            title_item.setToolTip(title_text)
+
+            source_item = QTableWidgetItem(task.source)
+            source_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+
+            resolution_item = QTableWidgetItem(resolution)
+            resolution_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+            resolution_item.setToolTip(resolution)
+
+            progress_item = QTableWidgetItem(progress_text)
+            progress_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+            if task.speed_text:
+                progress_item.setToolTip(task.speed_text)
+
+            size_item = QTableWidgetItem(format_bytes(task.filesize))
+            size_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
+
+            self.download_table.setItem(row, 0, status_item)
+            self.download_table.setItem(row, 1, title_item)
+            self.download_table.setItem(row, 2, source_item)
+            self.download_table.setItem(row, 3, resolution_item)
+            self.download_table.setItem(row, 4, progress_item)
+            self.download_table.setItem(row, 5, size_item)
             self.download_table.setCellWidget(row, 6, self._build_task_action_button(task))
+            self.download_table.setRowHeight(row, 44)
 
         if self._current_task_id:
             for row, task in enumerate(self._tasks):
@@ -1568,9 +1603,15 @@ class VideoDownloadPage(QWidget):
                     break
 
     def _build_task_action_button(self, task: DownloadTask) -> QWidget:
+        container = QWidget()
+        container.setStyleSheet("background: transparent; border: 0;")
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 4, 0, 4)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         button = PushButton("取消" if task.status in (TASK_STATUS_WAITING, TASK_STATUS_DOWNLOADING) else "重试")
         button.setProperty("compact", True)
-        button.setMinimumHeight(28)
+        button.setFixedSize(72, 30)
         if task.status == TASK_STATUS_COMPLETED:
             button.setText("打开")
             button.clicked.connect(lambda: self._open_task_file(task.task_id))
@@ -1578,7 +1619,54 @@ class VideoDownloadPage(QWidget):
             button.clicked.connect(lambda: self._cancel_task(task.task_id))
         else:
             button.clicked.connect(lambda: self._retry_task(task.task_id))
-        return button
+        layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
+        return container
+
+    def _reset_task_progress_tracking(self, task: DownloadTask) -> None:
+        task.progress = 0.0
+        task.speed_text = ""
+        task.downloaded_bytes = 0
+        task.progress_total_phases = 2 if task.selected_format and task.selected_format.requires_merge else 1
+        task.progress_phase_index = 0
+        task.progress_phase_bytes = 0
+        task.progress_phase_name = ""
+
+    def _update_task_download_phase(self, task: DownloadTask, payload: dict) -> None:
+        if task.progress_total_phases <= 1:
+            task.progress_phase_bytes = max(task.progress_phase_bytes, int(payload.get("downloaded_bytes") or 0))
+            return
+
+        filename = str(payload.get("filename") or "")
+        downloaded_bytes = int(payload.get("downloaded_bytes") or 0)
+        current_phase_limit = ((task.progress_phase_index + 1) * 100 / task.progress_total_phases) - 2
+
+        if filename:
+            if not task.progress_phase_name:
+                task.progress_phase_name = filename
+            elif filename != task.progress_phase_name:
+                task.progress_phase_index = min(task.progress_phase_index + 1, task.progress_total_phases - 1)
+                task.progress_phase_name = filename
+                task.progress_phase_bytes = 0
+        elif (
+            task.progress_phase_index < task.progress_total_phases - 1
+            and task.progress_phase_bytes > 0
+            and downloaded_bytes > 0
+            and downloaded_bytes < max(1, int(task.progress_phase_bytes * 0.25))
+            and task.progress >= current_phase_limit
+        ):
+            task.progress_phase_index = min(task.progress_phase_index + 1, task.progress_total_phases - 1)
+            task.progress_phase_bytes = 0
+
+        task.progress_phase_bytes = max(task.progress_phase_bytes, downloaded_bytes)
+
+    def _compose_task_progress(self, task: DownloadTask, phase_progress: float) -> float:
+        phase_total = max(1, task.progress_total_phases)
+        if phase_total == 1:
+            return max(0.0, min(99.0, phase_progress))
+
+        phase_index = min(task.progress_phase_index, phase_total - 1)
+        overall_progress = (phase_index * 100 / phase_total) + (phase_progress / phase_total)
+        return max(0.0, min(99.0, overall_progress))
 
     def _handle_task_selection_changed(self) -> None:
         rows = sorted({index.row() for index in self.download_table.selectedIndexes()})
@@ -1617,8 +1705,7 @@ class VideoDownloadPage(QWidget):
         for task in self._tasks:
             if task.status in (TASK_STATUS_FAILED, TASK_STATUS_CANCELLED):
                 task.status = TASK_STATUS_WAITING
-                task.progress = 0.0
-                task.speed_text = ""
+                self._reset_task_progress_tracking(task)
                 task.error_message = ""
 
         self._start_pending_downloads()
@@ -1639,8 +1726,7 @@ class VideoDownloadPage(QWidget):
 
             task.cancel_requested = False
             task.status = TASK_STATUS_DOWNLOADING
-            task.progress = 0.0
-            task.speed_text = ""
+            self._reset_task_progress_tracking(task)
             worker = DownloadWorker(task, options, self)
             worker.progressChanged.connect(self._handle_download_progress)
             worker.taskSucceeded.connect(self._handle_download_success)
@@ -1661,20 +1747,30 @@ class VideoDownloadPage(QWidget):
         downloaded_bytes = int(payload.get("downloaded_bytes") or 0)
         fragment_index = int(payload.get("fragment_index") or 0)
         fragment_count = int(payload.get("fragment_count") or 0)
+        self._update_task_download_phase(task, payload)
         task.downloaded_bytes = downloaded_bytes
+        phase_progress = 0.0
         if total_bytes > 0:
-            task.progress = max(0.0, min(100.0, downloaded_bytes * 100 / total_bytes))
+            phase_progress = downloaded_bytes * 100 / total_bytes
             task.filesize = total_bytes
         elif estimated_bytes > 0 and downloaded_bytes > 0:
-            task.progress = max(0.0, min(99.0, downloaded_bytes * 100 / estimated_bytes))
+            phase_progress = downloaded_bytes * 100 / estimated_bytes
             task.filesize = estimated_bytes
         elif fragment_count > 0 and fragment_index > 0:
-            task.progress = max(task.progress, min(99.0, fragment_index * 100 / fragment_count))
+            phase_progress = fragment_index * 100 / fragment_count
         elif downloaded_bytes > 0:
-            task.progress = max(task.progress, 1.0)
+            phase_progress = 1.0
 
         if payload.get("status") == "finished":
-            task.progress = max(task.progress, 99.0)
+            if task.progress_total_phases > 1 and task.progress_phase_index < task.progress_total_phases - 1:
+                task.progress = max(
+                    task.progress,
+                    ((task.progress_phase_index + 1) * 100 / task.progress_total_phases) - 1,
+                )
+            else:
+                task.progress = max(task.progress, 99.0)
+        elif phase_progress > 0:
+            task.progress = max(task.progress, self._compose_task_progress(task, phase_progress))
         task.speed_text = format_speed(payload.get("speed"))
         self._refresh_download_table()
 
@@ -1731,8 +1827,7 @@ class VideoDownloadPage(QWidget):
             return
         task.cancel_requested = False
         task.status = TASK_STATUS_WAITING
-        task.progress = 0.0
-        task.speed_text = ""
+        self._reset_task_progress_tracking(task)
         task.error_message = ""
         self._start_pending_downloads()
 
