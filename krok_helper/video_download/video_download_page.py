@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import subprocess
 import time
 import uuid
@@ -36,6 +37,8 @@ from qfluentwidgets import (
     TableWidget,
     ToolButton,
 )
+from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
+from qfluentwidgets.components.widgets.menu import MenuAnimationType
 
 from .bilibili_auth import BilibiliQrLoginService
 from .cookie_manager import BilibiliAccountProfile, CookieManager
@@ -61,6 +64,28 @@ from .ytdlp_service import DownloadCancelledError, VideoDownloadError, YtDlpServ
 
 DEFAULT_CUSTOM_TEMPLATE = "{title}"
 PLATFORM_ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "platforms"
+DWMWA_WINDOW_CORNER_PREFERENCE = 33
+DWMWCP_DONOTROUND = 1
+COMBO_BOX_VIEW_QSS = """
+QAbstractItemView {
+    background-color: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 4px;
+    outline: none;
+}
+
+QAbstractItemView::item {
+    height: 32px;
+    padding: 0 12px;
+    border-radius: 6px;
+}
+
+QAbstractItemView::item:selected {
+    background-color: #FFF1F2;
+    color: black;
+}
+"""
 
 
 def open_in_explorer(path: Path) -> None:
@@ -126,6 +151,54 @@ class PanelCard(QFrame):
         layout.setHorizontalSpacing(self._spacing)
         layout.setVerticalSpacing(self._spacing)
         return layout
+
+
+class WhiteComboBoxMenu(ComboBoxMenu):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.NoDropShadowWindowHint)
+        self.view.setStyleSheet(COMBO_BOX_VIEW_QSS)
+        self.view.setFrameShape(QFrame.Shape.NoFrame)
+        self.hBoxLayout.setContentsMargins(0, 0, 0, 0)
+        self.hBoxLayout.setSpacing(0)
+        self.view.setViewportMargins(0, 0, 0, 0)
+        self.setShadowEffect(blurRadius=0, offset=(0, 0), color=QColor(0, 0, 0, 0))
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        try:
+            preference = ctypes.c_int(DWMWCP_DONOTROUND)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                int(self.winId()),
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                ctypes.byref(preference),
+                ctypes.sizeof(preference),
+            )
+        except Exception:
+            pass
+
+    def exec(self, pos, ani=True, aniType=MenuAnimationType.DROP_DOWN):
+        self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.view.adjustSize(pos, aniType)
+
+        overflow = self.view.verticalScrollBar().maximum()
+        if overflow > 0:
+            self.view.setFixedHeight(self.view.height() + overflow + 8)
+
+        self.adjustSize()
+        return super().exec(pos, ani, aniType)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor("#EAEAEA"), 1))
+        painter.setBrush(QColor("white"))
+        painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8, 8)
+
+
+class StyledComboBox(ComboBox):
+    def _createComboMenu(self):
+        return WhiteComboBoxMenu(self)
 
 
 class PlatformCard(QFrame):
@@ -618,8 +691,21 @@ class VideoDownloadPage(QWidget):
         cookie_layout.addWidget(self.qr_wrapper)
 
         self.account_profile_widget = QWidget(cookie_card)
+        self.account_profile_widget.setObjectName("AccountProfileWidget")
         self.account_profile_widget.setStyleSheet(
-            "background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px;"
+            """
+            QWidget#AccountProfileWidget {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 16px;
+            }
+            QWidget#AccountProfileWidget QLabel,
+            QWidget#AccountProfileWidget BodyLabel,
+            QWidget#AccountProfileWidget CaptionLabel {
+                background: transparent;
+                border: 0;
+            }
+            """
         )
         account_layout = QVBoxLayout(self.account_profile_widget)
         account_layout.setContentsMargins(16, 16, 16, 16)
@@ -683,6 +769,7 @@ class VideoDownloadPage(QWidget):
         layout.setSpacing(12)
 
         input_card = PanelCard(panel)
+        input_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         input_layout = input_card.create_vbox()
         input_layout.addWidget(self._create_panel_title("视频链接输入"))
 
@@ -691,7 +778,7 @@ class VideoDownloadPage(QWidget):
         input_row.setSpacing(12)
         self.link_input = PlainTextEdit()
         self.link_input.setPlaceholderText("粘贴 YouTube 或 Bilibili 视频链接，每行一个链接")
-        self.link_input.setMinimumHeight(120)
+        self.link_input.setFixedHeight(76)
         input_row.addWidget(self.link_input, 1)
 
         input_buttons = QVBoxLayout()
@@ -717,12 +804,14 @@ class VideoDownloadPage(QWidget):
         input_layout.addWidget(self.parse_status_label)
 
         info_card = PanelCard(panel)
+        info_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         info_layout = info_card.create_vbox()
         info_layout.addWidget(self._create_panel_title("视频信息"))
 
         info_row = QHBoxLayout()
         info_row.setContentsMargins(0, 0, 0, 0)
         info_row.setSpacing(18)
+        info_row.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self.thumbnail_label = QLabel("暂无视频信息")
         self.thumbnail_label.setFixedSize(250, 148)
@@ -733,10 +822,13 @@ class VideoDownloadPage(QWidget):
         info_row.addWidget(self.thumbnail_label, 0)
 
         meta_widget = QWidget()
+        meta_widget.setStyleSheet("background: transparent; border: 0;")
         meta_layout = QGridLayout(meta_widget)
         meta_layout.setContentsMargins(0, 0, 0, 0)
         meta_layout.setHorizontalSpacing(12)
         meta_layout.setVerticalSpacing(10)
+        meta_layout.setColumnStretch(0, 0)
+        meta_layout.setColumnStretch(1, 1)
         self.info_value_labels: dict[str, QLabel] = {}
         for row, (key, title) in enumerate(
             (
@@ -751,18 +843,76 @@ class VideoDownloadPage(QWidget):
             label.setStyleSheet("color: #374151; font-weight: 700;")
             value = QLabel("-")
             value.setWordWrap(True)
+            value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             value.setStyleSheet("color: #111827;")
             meta_layout.addWidget(label, row, 0)
             meta_layout.addWidget(value, row, 1)
             self.info_value_labels[key] = value
-        info_row.addWidget(meta_widget, 1)
+        info_row.addWidget(meta_widget, 1, Qt.AlignmentFlag.AlignTop)
         info_layout.addLayout(info_row)
 
         format_card = PanelCard(panel)
+        format_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         format_layout = format_card.create_vbox()
         format_layout.addWidget(self._create_panel_title("清晰度与格式选择"))
 
+        format_selector_row = QHBoxLayout()
+        format_selector_row.setContentsMargins(0, 0, 0, 0)
+        format_selector_row.setSpacing(10)
+        format_selector_row.addWidget(CaptionLabel("下载格式"))
+        self.format_combo = StyledComboBox()
+        self.format_combo.setMinimumHeight(40)
+        self.format_combo.currentIndexChanged.connect(self._handle_format_combo_changed)
+        self._install_single_click_combo_behavior(self.format_combo)
+        format_selector_row.addWidget(self.format_combo, 1)
+        format_layout.addLayout(format_selector_row)
+
+        self.format_summary_widget = QWidget(format_card)
+        self.format_summary_widget.setObjectName("FormatSummaryWidget")
+        self.format_summary_widget.setStyleSheet(
+            """
+            QWidget#FormatSummaryWidget {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 16px;
+            }
+            QWidget#FormatSummaryWidget QLabel,
+            QWidget#FormatSummaryWidget BodyLabel,
+            QWidget#FormatSummaryWidget CaptionLabel {
+                background: transparent;
+                border: 0;
+            }
+            """
+        )
+        format_summary_layout = QGridLayout(self.format_summary_widget)
+        format_summary_layout.setContentsMargins(16, 14, 16, 14)
+        format_summary_layout.setHorizontalSpacing(12)
+        format_summary_layout.setVerticalSpacing(8)
+        format_summary_layout.setColumnStretch(0, 0)
+        format_summary_layout.setColumnStretch(1, 1)
+        self.format_value_labels: dict[str, QLabel] = {}
+        for row, (key, title) in enumerate(
+            (
+                ("format", "格式"),
+                ("resolution", "分辨率"),
+                ("video_codec", "视频编码"),
+                ("audio_codec", "音频编码"),
+                ("filesize", "大小"),
+            )
+        ):
+            label = QLabel(f"{title}：")
+            label.setStyleSheet("color: #374151; font-weight: 700;")
+            value = QLabel("-")
+            value.setWordWrap(True)
+            value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            value.setStyleSheet("color: #111827;")
+            format_summary_layout.addWidget(label, row, 0)
+            format_summary_layout.addWidget(value, row, 1)
+            self.format_value_labels[key] = value
+        format_layout.addWidget(self.format_summary_widget)
+        self.format_summary_widget.hide()
         self.format_table = TableWidget()
+        self.format_table.hide()
         self.format_table.setColumnCount(6)
         self.format_table.setHorizontalHeaderLabels(["选择", "格式", "分辨率", "视频编码", "音频编码", "大小"])
         self.format_table.verticalHeader().hide()
@@ -779,9 +929,11 @@ class VideoDownloadPage(QWidget):
         self.format_table.cellClicked.connect(self._handle_format_cell_clicked)
         format_layout.addWidget(self.format_table)
         self.format_hint_label = CaptionLabel("请先解析视频链接。")
+        self.format_hint_label.setWordWrap(True)
         format_layout.addWidget(self.format_hint_label)
 
         download_card = PanelCard(panel)
+        download_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         download_layout = download_card.create_vbox()
         download_layout.addWidget(self._create_panel_title("下载列表"))
 
@@ -801,7 +953,7 @@ class VideoDownloadPage(QWidget):
         self.download_table.horizontalHeader().resizeSection(5, 100)
         self.download_table.horizontalHeader().resizeSection(6, 90)
         self.download_table.itemSelectionChanged.connect(self._handle_task_selection_changed)
-        download_layout.addWidget(self.download_table)
+        download_layout.addWidget(self.download_table, 1)
         self.download_hint_label = CaptionLabel("暂无下载任务。")
         download_layout.addWidget(self.download_hint_label)
 
@@ -856,9 +1008,10 @@ class VideoDownloadPage(QWidget):
         settings_layout.addLayout(save_path_row)
 
         settings_layout.addWidget(CaptionLabel("文件命名"))
-        self.naming_rule_combo = ComboBox()
+        self.naming_rule_combo = StyledComboBox()
         self.naming_rule_combo.addItems([NAMING_RULE_TITLE, NAMING_RULE_TITLE_UPLOADER, NAMING_RULE_CUSTOM])
         self.naming_rule_combo.currentTextChanged.connect(self._handle_naming_rule_changed)
+        self._install_single_click_combo_behavior(self.naming_rule_combo)
         settings_layout.addWidget(self.naming_rule_combo)
 
         self.custom_template_edit = LineEdit()
@@ -908,6 +1061,23 @@ class VideoDownloadPage(QWidget):
         layout.addStretch(1)
         layout.addWidget(self.start_download_button, 0)
         return panel
+
+    def _install_single_click_combo_behavior(self, combo: ComboBox) -> None:
+        popup_view = getattr(combo, "view", None)
+        if not callable(popup_view):
+            return
+        view = popup_view()
+        if view is None:
+            return
+        view.pressed.connect(lambda index, combo=combo: self._handle_combo_popup_pressed(combo, index.row()))
+
+    def _handle_combo_popup_pressed(self, combo: ComboBox, row: int) -> None:
+        if row < 0 or row >= combo.count():
+            return
+        combo.setCurrentIndex(row)
+        hide_popup = getattr(combo, "hidePopup", None)
+        if callable(hide_popup):
+            hide_popup()
 
     def _create_panel_title(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -1277,6 +1447,101 @@ class VideoDownloadPage(QWidget):
         task.filesize = option.filesize or (task.info.filesize if task.info else None)
         self._refresh_preview()
         self._refresh_download_table()
+
+    def _refresh_format_table(self) -> None:
+        self._format_table_updating = True
+        self.format_table.setRowCount(0)
+        self.format_combo.clear()
+
+        task = self._current_task()
+        if task is None or not self._format_options:
+            self._set_format_summary(None)
+            self.format_hint_label.setText("请先解析视频链接。")
+            self._format_table_updating = False
+            return
+
+        self.format_table.setRowCount(len(self._format_options))
+        selected_index = 0
+        for row, option in enumerate(self._format_options):
+            choose_item = QTableWidgetItem("推荐" if option.is_recommended else "")
+            choose_item.setFlags(
+                Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            is_selected = bool(task.selected_format and task.selected_format.option_id == option.option_id)
+            choose_item.setCheckState(Qt.CheckState.Checked if is_selected else Qt.CheckState.Unchecked)
+            self.format_table.setItem(row, 0, choose_item)
+            self.format_table.setItem(row, 1, QTableWidgetItem(option.format_label))
+            self.format_table.setItem(row, 2, QTableWidgetItem(option.resolution))
+            self.format_table.setItem(row, 3, QTableWidgetItem(option.video_codec))
+            self.format_table.setItem(row, 4, QTableWidgetItem(option.audio_codec))
+            self.format_table.setItem(row, 5, QTableWidgetItem(format_bytes(option.filesize)))
+            self.format_combo.addItem(self._format_option_text(option))
+            if is_selected:
+                selected_index = row
+
+        self.format_combo.setCurrentIndex(selected_index)
+        self._set_format_summary(self._format_options[selected_index])
+        self.format_hint_label.setText("解析完成后可在这里切换当前任务的下载格式。")
+        self._format_table_updating = False
+
+    def _handle_format_cell_clicked(self, row: int, column: int) -> None:
+        if column != 0 or row < 0 or row >= len(self._format_options):
+            return
+        self.format_combo.setCurrentIndex(row)
+
+    def _handle_format_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._format_table_updating or item.column() != 0 or item.checkState() != Qt.CheckState.Checked:
+            return
+        self.format_combo.setCurrentIndex(item.row())
+
+    def _handle_format_combo_changed(self, index: int) -> None:
+        if self._format_table_updating or index < 0 or index >= len(self._format_options):
+            return
+
+        task = self._current_task()
+        if task is None:
+            return
+
+        self._format_table_updating = True
+        for row in range(len(self._format_options)):
+            row_item = self.format_table.item(row, 0)
+            if row_item is None:
+                continue
+            row_item.setCheckState(Qt.CheckState.Checked if row == index else Qt.CheckState.Unchecked)
+        self._format_table_updating = False
+
+        option = self._format_options[index]
+        task.selected_format = option
+        task.filesize = option.filesize or (task.info.filesize if task.info else None)
+        self._set_format_summary(option)
+        self._refresh_preview()
+        self._refresh_download_table()
+
+    def _format_option_text(self, option: FormatOption) -> str:
+        codecs = " / ".join(part for part in (option.video_codec, option.audio_codec) if part and part != "-")
+        parts = [option.format_label or "默认格式", option.resolution or "-"]
+        if codecs:
+            parts.append(codecs)
+        size_text = format_bytes(option.filesize)
+        if size_text != "-":
+            parts.append(size_text)
+        text = " | ".join(parts)
+        return f"推荐 | {text}" if option.is_recommended else text
+
+    def _set_format_summary(self, option: FormatOption | None) -> None:
+        if option is None:
+            for label in self.format_value_labels.values():
+                label.setText("-")
+            return
+
+        format_text = option.format_label or "-"
+        if option.is_recommended:
+            format_text = f"推荐 | {format_text}"
+        self.format_value_labels["format"].setText(format_text)
+        self.format_value_labels["resolution"].setText(option.resolution or "-")
+        self.format_value_labels["video_codec"].setText(option.video_codec or "-")
+        self.format_value_labels["audio_codec"].setText(option.audio_codec or "-")
+        self.format_value_labels["filesize"].setText(format_bytes(option.filesize))
 
     def _refresh_download_table(self) -> None:
         self.download_table.setRowCount(len(self._tasks))
