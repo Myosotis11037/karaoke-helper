@@ -52,6 +52,7 @@ class VideoInfo:
     formats: list[FormatOption] = field(default_factory=list)
     recommended_option_id: str = ""
     subtitles_available: bool = False
+    extractor_args_hint: str = ""
 
 
 @dataclass(slots=True)

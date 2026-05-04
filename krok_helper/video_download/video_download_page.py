@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from PyQt6.QtCore import QPoint, QRectF, QSignalBlocker, QThread, Qt, pyqtSignal as Signal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QPixmap
+from PyQt6.QtCore import QPoint, QRectF, QSignalBlocker, QThread, Qt, QTimer, QUrl, pyqtSignal as Signal
+from PyQt6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtSvg import QSvgRenderer
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -17,7 +18,6 @@ from PyQt6.QtWidgets import (
     QLabel,
     QMessageBox,
     QSizePolicy,
-    QStackedWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -37,7 +37,8 @@ from qfluentwidgets import (
     ToolButton,
 )
 
-from .cookie_manager import CookieManager
+from .bilibili_auth import BilibiliQrLoginService
+from .cookie_manager import BilibiliAccountProfile, CookieManager
 from .download_task import (
     DownloadOptions,
     DownloadTask,
@@ -280,63 +281,63 @@ class PlatformCard(QFrame):
         return True
 
 
-class TabButton(PushButton):
-    def __init__(self, text: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent=parent)
-        self.setText(text)
-        self.setCheckable(True)
-        self.toggled.connect(self._refresh_style)
-        self._refresh_style()
-
-    def _refresh_style(self) -> None:
-        if self.isChecked():
-            self.setStyleSheet(
-                """
-                PushButton {
-                    background: transparent;
-                    border: 0;
-                    border-bottom: 2px solid #ff5a6f;
-                    border-radius: 0;
-                    color: #ff5a6f;
-                    font-size: 11pt;
-                    font-weight: 700;
-                    padding: 6px 2px 10px 2px;
-                }
-                """
-            )
-            return
-        self.setStyleSheet(
-            """
-            PushButton {
-                background: transparent;
-                border: 0;
-                border-bottom: 2px solid transparent;
-                border-radius: 0;
-                color: #4b5563;
-                font-size: 11pt;
-                font-weight: 600;
-                padding: 6px 2px 10px 2px;
-            }
-            PushButton:hover {
-                color: #111827;
-            }
-            """
-        )
-
-
 class QrPlaceholder(QLabel):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(210, 210)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._pixmap = QPixmap()
+        self._message = "正在准备二维码…"
+        self._login_url = ""
+
+    def set_qr_image(self, image_bytes: bytes, login_url: str) -> None:
+        self._login_url = login_url
+        if image_bytes and self._pixmap.loadFromData(image_bytes):
+            self.update()
+            return
+        self._pixmap = QPixmap()
+        self._message = "二维码生成失败，点击在浏览器中打开"
+        self.update()
+
+    def set_message(self, message: str, login_url: str = "") -> None:
+        if login_url:
+            self._login_url = login_url
+        self._message = message or "请点击刷新状态重新生成二维码"
+        self._pixmap = QPixmap()
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self._login_url
+            and self.rect().contains(event.position().toPoint())
+        ):
+            QDesktopServices.openUrl(QUrl(self._login_url))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(1, 1, -1, -1)
         painter.setPen(QPen(QColor("#e5e7eb"), 1))
         painter.setBrush(QColor("#f8fafc"))
         painter.drawRoundedRect(rect, 18, 18)
+
+        if not self._pixmap.isNull():
+            qr_rect = rect.adjusted(16, 16, -16, -16)
+            scaled = self._pixmap.scaled(
+                qr_rect.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            target_x = int(qr_rect.center().x() - scaled.width() / 2)
+            target_y = int(qr_rect.center().y() - scaled.height() / 2)
+            painter.drawPixmap(target_x, target_y, scaled)
+            return
 
         painter.setPen(QPen(QColor("#111827"), 5))
         box = rect.adjusted(26, 26, -26, -26)
@@ -350,7 +351,59 @@ class QrPlaceholder(QLabel):
 
         painter.setPen(QColor("#94a3b8"))
         painter.setFont(QFont("Microsoft YaHei UI", 10))
-        painter.drawText(rect.adjusted(20, 148, -20, -20), Qt.AlignmentFlag.AlignCenter, "扫码登录接口预留")
+        painter.drawText(rect.adjusted(20, 148, -20, -20), Qt.AlignmentFlag.AlignCenter, self._message)
+
+
+class AvatarLabel(QLabel):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(72, 72)
+        self._pixmap = QPixmap()
+        self._fallback_text = "B"
+
+    def set_avatar(self, image_bytes: bytes, fallback_text: str) -> None:
+        self._fallback_text = (fallback_text or "B").strip()[:1].upper() or "B"
+        self._pixmap = QPixmap()
+        if image_bytes:
+            self._pixmap.loadFromData(image_bytes)
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -1, -1)
+        painter.setPen(QPen(QColor("#dbeafe"), 1))
+        painter.setBrush(QColor("#eff6ff"))
+        painter.drawEllipse(rect)
+
+        if not self._pixmap.isNull():
+            scaled = self._pixmap.scaled(
+                rect.size(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            painter.setClipPath(self._build_clip_path(rect))
+            painter.drawPixmap(
+                int(rect.center().x() - scaled.width() / 2),
+                int(rect.center().y() - scaled.height() / 2),
+                scaled,
+            )
+            painter.setClipping(False)
+            return
+
+        painter.setPen(QColor("#2563eb"))
+        font = QFont("Segoe UI", 24)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._fallback_text)
+
+    def _build_clip_path(self, rect):
+        from PyQt6.QtGui import QPainterPath
+
+        path = QPainterPath()
+        path.addEllipse(QRectF(rect))
+        return path
 
 
 @dataclass(slots=True)
@@ -412,6 +465,47 @@ class DownloadWorker(QThread):
         self.taskSucceeded.emit(self._task.task_id)
 
 
+class BilibiliQrLoginWorker(QThread):
+    qrReady = Signal(bytes, str)
+    loginStatusChanged = Signal(object)
+    loginSucceeded = Signal(str)
+    loginFailed = Signal(str)
+
+    def __init__(self, cookie_manager: CookieManager, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._cookie_manager = cookie_manager
+        self._stop_requested = False
+
+    def stop(self) -> None:
+        self._stop_requested = True
+
+    def run(self) -> None:  # noqa: D401
+        service = BilibiliQrLoginService(self._cookie_manager)
+        try:
+            ticket = service.request_qr_ticket()
+        except Exception as exc:  # noqa: BLE001
+            self.loginFailed.emit(str(exc))
+            return
+
+        self.qrReady.emit(ticket.image_bytes, ticket.login_url)
+        self.loginStatusChanged.emit({"code": 86101, "message": "请使用哔哩哔哩 App 扫码"})
+
+        while not self._stop_requested:
+            try:
+                status = service.poll_login(ticket.qrcode_key)
+            except Exception as exc:  # noqa: BLE001
+                self.loginFailed.emit(str(exc))
+                return
+
+            self.loginStatusChanged.emit({"code": status.code, "message": status.message, "success": status.success})
+            if status.success:
+                self.loginSucceeded.emit(self._cookie_manager.get_cookie_path() or "")
+                return
+            if status.code == 86038:
+                return
+            self.msleep(1800)
+
+
 class VideoDownloadPage(QWidget):
     settingsChanged = Signal()
 
@@ -421,16 +515,19 @@ class VideoDownloadPage(QWidget):
         self._save_settings = save_settings
         self.cookie_manager = CookieManager(getattr(settings, "video_download_cookie_path", ""))
         self._parse_worker: ParseLinksWorker | None = None
+        self._qr_login_worker: BilibiliQrLoginWorker | None = None
         self._running_workers: dict[str, DownloadWorker] = {}
         self._tasks: list[DownloadTask] = []
         self._task_index: dict[str, DownloadTask] = {}
         self._current_task_id = ""
         self._format_options: list[FormatOption] = []
         self._format_table_updating = False
+        self._recent_bilibili_login_deadline = 0.0
 
         self._build_ui()
         self._load_settings()
         self._refresh_cookie_status()
+        self._ensure_qr_login()
         self._refresh_preview()
         self._refresh_download_table()
 
@@ -509,64 +606,61 @@ class VideoDownloadPage(QWidget):
 
         cookie_card = PanelCard(panel, padding=(16, 16, 16, 14))
         cookie_layout = cookie_card.create_vbox()
-        cookie_layout.addWidget(self._create_panel_title("Bilibili 账号 / Cookie"))
+        cookie_layout.addWidget(self._create_panel_title("Bilibili 账号"))
 
-        tabs = QHBoxLayout()
-        tabs.setContentsMargins(0, 0, 0, 0)
-        tabs.setSpacing(20)
-        self.qr_tab_button = TabButton("扫码登录")
-        self.cookie_tab_button = TabButton("Cookie 登录")
-        self.qr_tab_button.clicked.connect(lambda: self._switch_cookie_tab(0))
-        self.cookie_tab_button.clicked.connect(lambda: self._switch_cookie_tab(1))
-        tabs.addWidget(self.qr_tab_button)
-        tabs.addWidget(self.cookie_tab_button)
-        tabs.addStretch(1)
-        cookie_layout.addLayout(tabs)
-
-        self.cookie_stack = QStackedWidget(cookie_card)
-
-        qr_page = QWidget()
-        qr_layout = QVBoxLayout(qr_page)
+        self.qr_wrapper = QWidget(cookie_card)
+        self.qr_wrapper.setStyleSheet("background: transparent; border: 0;")
+        qr_layout = QVBoxLayout(self.qr_wrapper)
         qr_layout.setContentsMargins(0, 6, 0, 0)
         qr_layout.setSpacing(10)
-        qr_layout.addWidget(QrPlaceholder(), 0, Qt.AlignmentFlag.AlignHCenter)
-        self.cookie_stack.addWidget(qr_page)
+        self.qr_placeholder = QrPlaceholder()
+        qr_layout.addWidget(self.qr_placeholder, 0, Qt.AlignmentFlag.AlignHCenter)
+        cookie_layout.addWidget(self.qr_wrapper)
 
-        cookie_page = QWidget()
-        cookie_page_layout = QVBoxLayout(cookie_page)
-        cookie_page_layout.setContentsMargins(0, 6, 0, 0)
-        cookie_page_layout.setSpacing(10)
-        cookie_page_layout.addWidget(CaptionLabel("Cookie 文件路径"))
-        cookie_path_row = QHBoxLayout()
-        cookie_path_row.setContentsMargins(0, 0, 0, 0)
-        cookie_path_row.setSpacing(8)
-        self.cookie_path_edit = LineEdit()
-        self.cookie_path_edit.setPlaceholderText("默认读取本地 bilibili_cookies.txt")
-        self.cookie_path_edit.editingFinished.connect(self._on_cookie_path_changed)
-        self.cookie_browse_button = ToolButton(FIF.FOLDER)
-        self.cookie_browse_button.setFixedSize(34, 34)
-        self.cookie_browse_button.clicked.connect(self._choose_cookie_file)
-        cookie_path_row.addWidget(self.cookie_path_edit, 1)
-        cookie_path_row.addWidget(self.cookie_browse_button, 0)
-        cookie_page_layout.addLayout(cookie_path_row)
-        default_hint = CaptionLabel("支持 Netscape 格式 cookies.txt，后续扫码登录会复用这个保存路径。")
-        default_hint.setWordWrap(True)
-        cookie_page_layout.addWidget(default_hint)
-        self.cookie_stack.addWidget(cookie_page)
-        cookie_layout.addWidget(self.cookie_stack)
+        self.account_profile_widget = QWidget(cookie_card)
+        self.account_profile_widget.setStyleSheet(
+            "background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px;"
+        )
+        account_layout = QVBoxLayout(self.account_profile_widget)
+        account_layout.setContentsMargins(16, 16, 16, 16)
+        account_layout.setSpacing(8)
+        self.account_avatar_label = AvatarLabel()
+        self.account_name_label = BodyLabel("Bilibili 用户")
+        self.account_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.account_name_label.setStyleSheet("color: #111827; font-size: 12pt; font-weight: 700;")
+        self.account_hint_label = CaptionLabel("当前已登录 Bilibili 账号")
+        self.account_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.account_hint_label.setStyleSheet("color: #64748b;")
+        account_layout.addWidget(self.account_avatar_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        account_layout.addWidget(self.account_name_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        account_layout.addWidget(self.account_hint_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.account_profile_widget.hide()
+        cookie_layout.addWidget(self.account_profile_widget)
 
-        self.cookie_status_label = BodyLabel("未登录")
-        cookie_layout.addWidget(self.cookie_status_label, 0, Qt.AlignmentFlag.AlignHCenter)
+        status_row = QWidget(cookie_card)
+        status_row.setStyleSheet("background: transparent; border: 0;")
+        status_row_layout = QHBoxLayout(status_row)
+        status_row_layout.setContentsMargins(0, 0, 0, 0)
+        status_row_layout.setSpacing(8)
+        status_row_layout.addStretch(1)
+        self.cookie_status_dot = QFrame(status_row)
+        self.cookie_status_dot.setFixedSize(10, 10)
+        self.cookie_status_dot.setStyleSheet("background: #dc2626; border-radius: 5px;")
+        status_row_layout.addWidget(self.cookie_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.cookie_status_text_label = BodyLabel("未登录")
+        self.cookie_status_text_label.setStyleSheet("color: #dc2626; font-weight: 700;")
+        status_row_layout.addWidget(self.cookie_status_text_label, 0, Qt.AlignmentFlag.AlignVCenter)
+        status_row_layout.addStretch(1)
+        cookie_layout.addWidget(status_row)
 
         cookie_button_row = QHBoxLayout()
         cookie_button_row.setContentsMargins(0, 0, 0, 0)
         cookie_button_row.setSpacing(8)
         self.refresh_cookie_button = PushButton(FIF.SYNC, "刷新状态")
-        self.clear_cookie_button = PushButton(FIF.DELETE, "清除 Cookie")
-        self.refresh_cookie_button.clicked.connect(self._refresh_cookie_status)
-        self.clear_cookie_button.clicked.connect(self._clear_cookie)
-        cookie_button_row.addWidget(self.refresh_cookie_button, 1)
-        cookie_button_row.addWidget(self.clear_cookie_button, 1)
+        self.refresh_cookie_button.clicked.connect(self._handle_refresh_cookie_clicked)
+        cookie_button_row.addStretch(1)
+        cookie_button_row.addWidget(self.refresh_cookie_button, 0)
+        cookie_button_row.addStretch(1)
         cookie_layout.addLayout(cookie_button_row)
 
         tip_label = CaptionLabel("提示：登录成功后，Cookie 将自动保存到本地，下次无需重新登录。")
@@ -580,7 +674,6 @@ class VideoDownloadPage(QWidget):
         layout.addWidget(cookie_card, 0)
         layout.addStretch(1)
 
-        self._switch_cookie_tab(0)
         return panel
 
     def _build_center_panel(self) -> QWidget:
@@ -778,8 +871,7 @@ class VideoDownloadPage(QWidget):
         options_layout.addWidget(self._create_panel_title("选项"))
         self.merge_checkbox = CheckBox("自动合并音视频（推荐）")
         self.thumbnail_checkbox = CheckBox("下载封面")
-        self.subtitle_checkbox = CheckBox("下载字幕（可用时）")
-        for checkbox in (self.merge_checkbox, self.thumbnail_checkbox, self.subtitle_checkbox):
+        for checkbox in (self.merge_checkbox, self.thumbnail_checkbox):
             checkbox.stateChanged.connect(self._persist_settings)
             options_layout.addWidget(checkbox)
 
@@ -831,11 +923,9 @@ class VideoDownloadPage(QWidget):
         )
         self.merge_checkbox.setChecked(bool(getattr(self.settings, "video_download_merge_video_audio", True)))
         self.thumbnail_checkbox.setChecked(bool(getattr(self.settings, "video_download_download_thumbnail", True)))
-        self.subtitle_checkbox.setChecked(bool(getattr(self.settings, "video_download_download_subtitle", False)))
         self.concurrent_spin.setValue(int(getattr(self.settings, "video_download_concurrent_count", 3) or 3))
         self.timeout_spin.setValue(int(getattr(self.settings, "video_download_timeout", 30) or 30))
         self.retry_spin.setValue(int(getattr(self.settings, "video_download_retry_count", 3) or 3))
-        self.cookie_path_edit.setText(getattr(self.settings, "video_download_cookie_path", ""))
         self._set_source(getattr(self.settings, "video_download_source", SOURCE_YOUTUBE))
         self._handle_naming_rule_changed(self.naming_rule_combo.currentText())
 
@@ -849,50 +939,125 @@ class VideoDownloadPage(QWidget):
         self.settings.video_download_source = source
         self._persist_settings(save=False)
 
-    def _switch_cookie_tab(self, index: int) -> None:
-        self.cookie_stack.setCurrentIndex(index)
-        with QSignalBlocker(self.qr_tab_button):
-            self.qr_tab_button.setChecked(index == 0)
-        with QSignalBlocker(self.cookie_tab_button):
-            self.cookie_tab_button.setChecked(index == 1)
+    def _set_cookie_status_display(self, text: str, color: str) -> None:
+        self.cookie_status_text_label.setText(text)
+        self.cookie_status_text_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        self.cookie_status_dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
 
-    def _choose_cookie_file(self) -> None:
-        default_dir = str(self.cookie_manager.resolved_cookie_path().parent)
-        path, _ = QFileDialog.getOpenFileName(self, "选择 Cookie 文件", default_dir, "Text Files (*.txt);;All Files (*.*)")
-        if not path:
+    def _apply_account_profile(self, profile: BilibiliAccountProfile | None) -> None:
+        if profile is None:
+            self.account_profile_widget.hide()
+            self.qr_wrapper.show()
             return
-        self.cookie_path_edit.setText(path)
-        self._on_cookie_path_changed()
 
-    def _on_cookie_path_changed(self) -> None:
-        self.cookie_manager.set_cookie_path(self.cookie_path_edit.text().strip())
-        self._persist_settings()
+        self.account_avatar_label.set_avatar(profile.avatar_bytes, profile.nickname)
+        self.account_name_label.setText(profile.nickname or "Bilibili 用户")
+        self.account_profile_widget.show()
+        self.qr_wrapper.hide()
+
+    def _clear_account_profile(self) -> None:
+        self.account_avatar_label.set_avatar(b"", "B")
+        self.account_name_label.setText("Bilibili 用户")
+        self.account_profile_widget.hide()
+        self.qr_wrapper.show()
+
+    def _handle_refresh_cookie_clicked(self) -> None:
         self._refresh_cookie_status()
+        if not self.cookie_manager.check_login_status():
+            self._ensure_qr_login(force_restart=True)
+
+    def _ensure_qr_login(self, force_restart: bool = False) -> None:
+        profile = self.cookie_manager.get_account_profile()
+        if profile is not None:
+            self._apply_account_profile(profile)
+            self.qr_placeholder.set_message("当前已登录，如需重新扫码可点击刷新状态")
+            return
+
+        self._clear_account_profile()
+        if self._qr_login_worker is not None and self._qr_login_worker.isRunning():
+            if not force_restart:
+                return
+            self._qr_login_worker.stop()
+            self._qr_login_worker.wait(2000)
+
+        self.qr_placeholder.set_message("正在生成二维码…")
+        self._qr_login_worker = BilibiliQrLoginWorker(self.cookie_manager, self)
+        self._qr_login_worker.qrReady.connect(self._handle_qr_ready)
+        self._qr_login_worker.loginStatusChanged.connect(self._handle_qr_status_changed)
+        self._qr_login_worker.loginSucceeded.connect(self._handle_qr_login_succeeded)
+        self._qr_login_worker.loginFailed.connect(self._handle_qr_login_failed)
+        self._qr_login_worker.finished.connect(self._handle_qr_worker_finished)
+        self._qr_login_worker.start()
+
+    def _handle_qr_ready(self, image_bytes: bytes, login_url: str) -> None:
+        self.qr_placeholder.set_qr_image(image_bytes, login_url)
+
+    def _handle_qr_status_changed(self, status_payload: object) -> None:
+        if isinstance(status_payload, dict):
+            status_code = int(status_payload.get("code") or -1)
+            message = str(status_payload.get("message") or "")
+        else:
+            status_code = -1
+            message = str(status_payload or "")
+
+        if status_code == 86090 or "确认" in message:
+            self._set_cookie_status_display("等待确认", "#b45309")
+            return
+        if status_code == 86038 or "过期" in message:
+            self._set_cookie_status_display("二维码已过期", "#b45309")
+            self.qr_placeholder.set_message("二维码已过期，点击刷新状态重新生成")
+            return
+        if status_code == 0 or "成功" in message:
+            self._set_cookie_status_display("已登录", "#15803d")
+            self.qr_placeholder.set_message("登录成功，正在同步账号信息…")
+            return
+        if status_code == 86101:
+            self._set_cookie_status_display("待扫码", "#dc2626")
+            return
+        self._set_cookie_status_display("未登录", "#dc2626")
+
+    def _handle_qr_login_succeeded(self, cookie_path: str) -> None:
+        self._recent_bilibili_login_deadline = time.monotonic() + 10.0
+        self._set_cookie_status_display("已登录", "#15803d")
+        self.qr_placeholder.set_message("登录成功，正在同步账号信息…")
+        self.parse_status_label.setText(f"扫码登录成功，Cookie 已保存到 {cookie_path or self.cookie_manager.resolved_cookie_path()}。")
+        self._refresh_cookie_status_with_retry(remaining=6)
+
+    def _handle_qr_login_failed(self, message: str) -> None:
+        self._clear_account_profile()
+        self.qr_placeholder.set_message("二维码加载失败，点击二维码可在浏览器中打开登录页")
+        self.parse_status_label.setText(f"Bilibili 扫码登录失败：{message}")
+
+    def _handle_qr_worker_finished(self) -> None:
+        self._qr_login_worker = None
 
     def _refresh_cookie_status(self) -> None:
-        self.cookie_manager.set_cookie_path(self.cookie_path_edit.text().strip())
-        logged_in = self.cookie_manager.check_login_status()
-        cookie_path = self.cookie_manager.resolved_cookie_path()
-        if logged_in:
-            self.cookie_status_label.setText(f"已登录\n{cookie_path}")
-            self.cookie_status_label.setStyleSheet("color: #15803d; font-weight: 700;")
+        profile = self.cookie_manager.get_account_profile()
+        if profile is not None:
+            self._apply_account_profile(profile)
+            self._set_cookie_status_display("已登录", "#15803d")
+            self._recent_bilibili_login_deadline = 0.0
             return
-        if self.cookie_manager.has_cookie():
-            self.cookie_status_label.setText(f"检测到 Cookie 文件，但登录状态不可用\n{cookie_path}")
-            self.cookie_status_label.setStyleSheet("color: #b45309; font-weight: 700;")
-            return
-        self.cookie_status_label.setText(f"未登录\n{cookie_path}")
-        self.cookie_status_label.setStyleSheet("color: #dc2626; font-weight: 700;")
 
-    def _clear_cookie(self) -> None:
-        try:
-            self.cookie_manager.set_cookie_path(self.cookie_path_edit.text().strip())
-            self.cookie_manager.clear_cookie()
-        except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "视频下载", f"清除 Cookie 失败：{exc}")
+        if self.cookie_manager.has_cookie() and time.monotonic() < self._recent_bilibili_login_deadline:
+            self._clear_account_profile()
+            self.qr_placeholder.set_message("登录成功，正在同步账号信息…")
+            self._set_cookie_status_display("已登录", "#15803d")
             return
+
+        self._clear_account_profile()
+        if self.cookie_manager.has_cookie():
+            self._set_cookie_status_display("Cookie 无效", "#b45309")
+            return
+        self._set_cookie_status_display("未登录", "#dc2626")
+
+    def _refresh_cookie_status_with_retry(self, remaining: int) -> None:
         self._refresh_cookie_status()
-        self.parse_status_label.setText("已清除本地 Cookie 文件。")
+        if remaining <= 0:
+            return
+        if self.cookie_manager.get_account_profile() is not None:
+            return
+        QTimer.singleShot(1000, lambda: self._refresh_cookie_status_with_retry(remaining - 1))
 
     def _choose_save_dir(self) -> None:
         directory = QFileDialog.getExistingDirectory(self, "选择保存路径", self.save_dir_edit.text().strip() or str(Path.home()))
@@ -912,11 +1077,11 @@ class VideoDownloadPage(QWidget):
         self.settings.video_download_custom_template = self.custom_template_edit.text().strip() or DEFAULT_CUSTOM_TEMPLATE
         self.settings.video_download_merge_video_audio = self.merge_checkbox.isChecked()
         self.settings.video_download_download_thumbnail = self.thumbnail_checkbox.isChecked()
-        self.settings.video_download_download_subtitle = self.subtitle_checkbox.isChecked()
+        self.settings.video_download_download_subtitle = False
         self.settings.video_download_concurrent_count = self.concurrent_spin.value()
         self.settings.video_download_timeout = self.timeout_spin.value()
         self.settings.video_download_retry_count = self.retry_spin.value()
-        self.settings.video_download_cookie_path = self.cookie_path_edit.text().strip()
+        self.settings.video_download_cookie_path = ""
         if save:
             self._save_settings()
             self.settingsChanged.emit()
@@ -931,7 +1096,6 @@ class VideoDownloadPage(QWidget):
             self.parse_status_label.setText("请输入至少一个视频链接。")
             return
 
-        self.cookie_manager.set_cookie_path(self.cookie_path_edit.text().strip())
         cookie_path = self.cookie_manager.get_cookie_path() or str(self.cookie_manager.resolved_cookie_path())
         self.parse_button.setEnabled(False)
         self.parse_status_label.setText(f"正在解析 {len(urls)} 个链接…")
@@ -1155,14 +1319,13 @@ class VideoDownloadPage(QWidget):
 
     def _build_download_options(self) -> DownloadOptions:
         self._persist_settings()
-        self.cookie_manager.set_cookie_path(self.cookie_path_edit.text().strip())
         return DownloadOptions(
             save_dir=self.save_dir_edit.text().strip() or str(Path.home() / "Downloads"),
             naming_rule=self.naming_rule_combo.currentText() or NAMING_RULE_TITLE,
             custom_template=self.custom_template_edit.text().strip() or DEFAULT_CUSTOM_TEMPLATE,
             merge_video_audio=self.merge_checkbox.isChecked(),
             download_thumbnail=self.thumbnail_checkbox.isChecked(),
-            download_subtitle=self.subtitle_checkbox.isChecked(),
+            download_subtitle=False,
             concurrent_count=self.concurrent_spin.value(),
             timeout=self.timeout_spin.value(),
             retry_count=self.retry_spin.value(),
@@ -1221,11 +1384,24 @@ class VideoDownloadPage(QWidget):
         if task is None:
             return
         total_bytes = int(payload.get("total_bytes") or 0)
+        estimated_bytes = int(payload.get("total_bytes_estimate") or 0)
         downloaded_bytes = int(payload.get("downloaded_bytes") or 0)
+        fragment_index = int(payload.get("fragment_index") or 0)
+        fragment_count = int(payload.get("fragment_count") or 0)
         task.downloaded_bytes = downloaded_bytes
         if total_bytes > 0:
             task.progress = max(0.0, min(100.0, downloaded_bytes * 100 / total_bytes))
             task.filesize = total_bytes
+        elif estimated_bytes > 0 and downloaded_bytes > 0:
+            task.progress = max(0.0, min(99.0, downloaded_bytes * 100 / estimated_bytes))
+            task.filesize = estimated_bytes
+        elif fragment_count > 0 and fragment_index > 0:
+            task.progress = max(task.progress, min(99.0, fragment_index * 100 / fragment_count))
+        elif downloaded_bytes > 0:
+            task.progress = max(task.progress, 1.0)
+
+        if payload.get("status") == "finished":
+            task.progress = max(task.progress, 99.0)
         task.speed_text = format_speed(payload.get("speed"))
         self._refresh_download_table()
 
