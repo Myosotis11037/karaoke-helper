@@ -23,7 +23,7 @@ from .format_parser import FormatParser
 
 
 WINDOWS_INVALID_FILENAME_PATTERN = re.compile(r'[\\/:*?"<>|]+')
-YOUTUBE_FALLBACK_EXTRACTOR_ARGS = "youtube:player_client=tv,ios,android"
+YOUTUBE_FALLBACK_EXTRACTOR_ARGS = "youtube:player_client=tv,web_safari,mweb,android"
 
 
 class VideoDownloadError(RuntimeError):
@@ -587,7 +587,7 @@ class YtDlpService:
 
     def _build_python_extractor_args(self, extractor_args_hint: str) -> dict[str, dict[str, list[str]]]:
         if extractor_args_hint == YOUTUBE_FALLBACK_EXTRACTOR_ARGS:
-            return {"youtube": {"player_client": ["tv", "ios", "android"]}}
+            return {"youtube": {"player_client": ["tv", "web_safari", "mweb", "android"]}}
         return {}
 
     def _should_retry_youtube_with_fallback(
