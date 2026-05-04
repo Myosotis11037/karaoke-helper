@@ -53,8 +53,8 @@ class BilibiliQrLoginService:
         poll_url = f"{BILIBILI_QR_POLL_URL}?qrcode_key={urllib.parse.quote(qrcode_key)}"
         payload, response_headers = self._request_json_with_headers(poll_url)
         data = payload.get("data") or {}
-        code = int(data.get("code") or payload.get("code") or -1)
-        message = str(data.get("message") or payload.get("message") or "")
+        code = self._coerce_status_code(data.get("code"), payload.get("code"))
+        message = self._coerce_status_message(data.get("message"), payload.get("message"))
         if code == 0:
             redirect_url = str(data.get("url") or "")
             self._persist_login_cookies(response_headers, redirect_url)
@@ -158,6 +158,25 @@ class BilibiliQrLoginService:
             return int(email.utils.mktime_tz(parsed))
         except Exception:
             return None
+
+    def _coerce_status_code(self, *candidates: object) -> int:
+        for candidate in candidates:
+            if candidate is None or candidate == "":
+                continue
+            try:
+                return int(candidate)
+            except (TypeError, ValueError):
+                continue
+        return -1
+
+    def _coerce_status_message(self, *candidates: object) -> str:
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            message = str(candidate).strip()
+            if message:
+                return message
+        return ""
 
     def _fallback_message(self, code: int) -> str:
         if code == 86101:

@@ -994,7 +994,11 @@ class VideoDownloadPage(QWidget):
 
     def _handle_qr_status_changed(self, status_payload: object) -> None:
         if isinstance(status_payload, dict):
-            status_code = int(status_payload.get("code") or -1)
+            raw_code = status_payload.get("code")
+            try:
+                status_code = int(raw_code) if raw_code not in (None, "") else -1
+            except (TypeError, ValueError):
+                status_code = -1
             message = str(status_payload.get("message") or "")
         else:
             status_code = -1
@@ -1013,6 +1017,10 @@ class VideoDownloadPage(QWidget):
             return
         if status_code == 86101:
             self._set_cookie_status_display("待扫码", "#dc2626")
+            return
+        if message:
+            self._set_cookie_status_display(f"状态码 {status_code}", "#b45309")
+            self.qr_placeholder.set_message(message)
             return
         self._set_cookie_status_display("未登录", "#dc2626")
 
