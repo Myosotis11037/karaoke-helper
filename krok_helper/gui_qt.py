@@ -1637,7 +1637,6 @@ class KrokHelperQtApp(QMainWindow):
             self.setWindowIcon(app_icon)
         self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
         self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
-        self.setWindowState(self.windowState() | Qt.WindowState.WindowMaximized)
 
         self._apply_styles()
         self._build_ui()
@@ -1670,7 +1669,7 @@ class KrokHelperQtApp(QMainWindow):
         super().changeEvent(event)
 
     def _apply_startup_window_geometry(self) -> None:
-        self.showMaximized()
+        self._restore_windowed_geometry_centered()
 
     def _restore_windowed_geometry_centered(self) -> None:
         try:
@@ -1678,16 +1677,26 @@ class KrokHelperQtApp(QMainWindow):
             if screen is None:
                 return
             available = screen.availableGeometry()
+            safe_left_padding = 24
+            safe_top_padding = 24
+            safe_right_padding = 24
+            safe_bottom_padding = 48
+            safe_rect = available.adjusted(
+                safe_left_padding,
+                safe_top_padding,
+                -safe_right_padding,
+                -safe_bottom_padding,
+            )
             target_width = min(
                 max(WINDOW_MIN_WIDTH, WINDOW_WIDTH),
-                max(WINDOW_MIN_WIDTH, available.width()),
+                max(WINDOW_MIN_WIDTH, safe_rect.width()),
             )
             target_height = min(
-                WINDOW_MIN_HEIGHT,
-                max(WINDOW_MIN_HEIGHT, available.height()),
+                max(WINDOW_MIN_HEIGHT, WINDOW_HEIGHT),
+                max(WINDOW_MIN_HEIGHT, safe_rect.height()),
             )
-            left = available.x() + max(0, (available.width() - target_width) // 2)
-            top = available.y() + max(0, (available.height() - target_height) // 2)
+            left = safe_rect.x() + max(0, (safe_rect.width() - target_width) // 2)
+            top = safe_rect.y() + max(0, (safe_rect.height() - target_height) // 2)
             self.setGeometry(left, top, target_width, target_height)
         finally:
             self._restoring_from_maximized = False
