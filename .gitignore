@@ -30,3 +30,5 @@ pip-wheel-metadata/
 output/
 tmp-test/
 *.log
+docs/Codex启动文档-.NET8-CSharp-WinUI3重构指南.md
+docs/功能文档-当前项目与WinUI3重构参考.md
