@@ -57,6 +57,7 @@ from qfluentwidgets import (
     TableWidget as QTableWidget,
     Theme,
     ToolButton,
+    qconfig,
 )
 from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from qfluentwidgets.components.widgets.menu import MenuAnimationType
@@ -167,6 +168,15 @@ QAbstractItemView::item:selected {
     color: black;
 }
 """
+DEFAULT_UI_FONT_FAMILIES = [
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "Segoe UI",
+    "Yu Gothic UI",
+    "Meiryo UI",
+    "Meiryo",
+    "PingFang SC",
+]
 
 
 def open_in_explorer(path: Path) -> None:
@@ -200,22 +210,23 @@ def apply_safe_label_metrics(
     label.setMinimumHeight(QFontMetrics(font).height() + top_padding + bottom_padding)
 
 
-def build_lyrics_ui_font(*, point_size: float = 10.5, bold: bool = False) -> QFont:
+def build_app_ui_font(*, point_size: float = 10.5, bold: bool = False) -> QFont:
     font = QFont()
-    font.setFamilies(
-        [
-            "Yu Gothic UI",
-            "Meiryo UI",
-            "Meiryo",
-            "Segoe UI",
-            "Microsoft YaHei UI",
-        ]
-    )
+    font.setFamilies(DEFAULT_UI_FONT_FAMILIES)
     font.setPointSizeF(point_size)
     font.setStyleStrategy(QFont.StyleStrategy.PreferDefault)
+    font.setHintingPreference(QFont.HintingPreference.PreferFullHinting)
     if bold:
         font.setBold(True)
     return font
+
+
+def build_lyrics_ui_font(*, point_size: float = 10.5, bold: bool = False) -> QFont:
+    return build_app_ui_font(point_size=point_size, bold=bold)
+
+
+def sync_fluent_ui_fonts() -> None:
+    qconfig.set(qconfig.fontFamilies, DEFAULT_UI_FONT_FAMILIES, save=False)
 
 
 def format_media_duration(seconds: float | None) -> str:
@@ -492,7 +503,7 @@ class AlignModeCard(QFrame):
             }}
             """
         )
-        self.title_label.setStyleSheet("color: #111827; font-size: 15pt; font-weight: 800; background: transparent;")
+        self.title_label.setStyleSheet("color: #111827; font-size: 15pt; font-weight: 700; background: transparent;")
         self.tag_label.setStyleSheet(
             f"""
             QLabel {{
@@ -502,7 +513,7 @@ class AlignModeCard(QFrame):
                 border-radius: 11px;
                 padding: 3px 9px;
                 font-size: 9pt;
-                font-weight: 600;
+                font-weight: 700;
             }}
             """
         )
@@ -899,7 +910,7 @@ class WorkflowStepButton(QWidget):
             QLabel#WorkflowStepTitle {{
                 color: {title_color};
                 font-size: 14px;
-                font-weight: 600;
+                font-weight: 700;
             }}
             QLabel#WorkflowStepDescription {{
                 color: {desc_color};
@@ -1707,11 +1718,18 @@ class KrokHelperQtApp(QMainWindow):
             QMainWindow, QWidget {
                 background: #f7f3f5;
                 color: #1f2937;
-                font-family: "Microsoft YaHei UI", "Segoe UI";
+                font-family: "Microsoft YaHei UI";
                 font-size: 10.5pt;
             }
-            QLabel {
+            QLabel, BodyLabel, CaptionLabel {
                 background: transparent;
+                font-family: "Microsoft YaHei UI";
+                font-weight: 400;
+            }
+            StrongBodyLabel {
+                background: transparent;
+                font-family: "Microsoft YaHei UI";
+                font-weight: 700;
             }
             QWidget#AppRoot {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #FAF7F8, stop:1 #F7F8FA);
@@ -2573,11 +2591,11 @@ class KrokHelperQtApp(QMainWindow):
         settings_layout.setHorizontalSpacing(14)
         settings_layout.setVerticalSpacing(10)
         output_label = QLabel("输出目录")
-        output_label.setStyleSheet('font-size: 11pt; font-weight: 700;')
+        output_label.setStyleSheet('font-size: 11pt; font-weight: 400; color: #475467;')
         self.output_dir_label = QLabel("跟随字幕视频所在目录")
         self.output_dir_label.setWordWrap(True)
         ffmpeg_title = QLabel("FFmpeg 目录")
-        ffmpeg_title.setStyleSheet('font-size: 11pt; font-weight: 700;')
+        ffmpeg_title.setStyleSheet('font-size: 11pt; font-weight: 400; color: #475467;')
         self.hires_ffmpeg_label = QLabel(FFMPEG_DIR_PLACEHOLDER)
         self.hires_ffmpeg_label.setWordWrap(True)
         settings_button = QPushButton("设置")
@@ -2656,7 +2674,7 @@ class KrokHelperQtApp(QMainWindow):
         self.hires_progress.setFixedWidth(180)
         self.hires_progress.setTextVisible(False)
         self.hires_status_label = QLabel("准备就绪")
-        self.hires_status_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 10pt; font-weight: 700;')
+        self.hires_status_label.setStyleSheet('font-family: "Microsoft YaHei UI"; font-size: 10pt; font-weight: 400;')
         controls.addWidget(self.hires_start_button)
         controls.addWidget(clear_button)
         controls.addWidget(open_output_button)
@@ -2752,7 +2770,7 @@ class KrokHelperQtApp(QMainWindow):
                 file_info_row.setSpacing(10)
 
                 self.file_name_label = BodyLabel("未选择文件")
-                self.file_name_label.setStyleSheet("color: #111827; font-weight: 700;")
+                self.file_name_label.setStyleSheet("color: #111827; font-weight: 400;")
                 self.file_name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
                 file_info_row.addWidget(self.file_name_label, 1)
                 self.file_state_badge = QLabel("已选择")
@@ -2784,7 +2802,7 @@ class KrokHelperQtApp(QMainWindow):
 
                 self.action_label = BodyLabel(self._default_action_text)
                 self.action_label.setCursor(Qt.CursorShape.PointingHandCursor)
-                self.action_label.setStyleSheet("font-weight: 700;")
+                self.action_label.setStyleSheet("font-weight: 400;")
                 self.action_label.mousePressEvent = lambda _event: self.browseRequested.emit()
 
                 action_layout.addStretch(1)
@@ -2953,7 +2971,7 @@ class KrokHelperQtApp(QMainWindow):
                 self.title_label.setStyleSheet("color: #182230; font-size: 16pt; font-weight: 700;")
                 self.hint_label.setStyleSheet("color: #667085; font-size: 11pt;")
                 self.file_name_label.setStyleSheet(
-                    f"color: {'#182230' if is_selected else '#344054'}; font-size: 12pt; font-weight: 800;"
+                    f"color: {'#182230' if is_selected else '#344054'}; font-size: 12pt; font-weight: 400;"
                 )
                 self.file_state_badge.setStyleSheet(
                     f"""
@@ -2968,7 +2986,7 @@ class KrokHelperQtApp(QMainWindow):
                     """
                 )
                 self.detail_label.setStyleSheet(
-                    'color: #98A2B3; font-family: "Microsoft YaHei UI"; font-size: 11pt; font-weight: 700;'
+                    'color: #98A2B3; font-family: "Microsoft YaHei UI"; font-size: 11pt; font-weight: 400;'
                 )
                 self.icon_button.setStyleSheet(
                     f"""
@@ -2991,7 +3009,7 @@ class KrokHelperQtApp(QMainWindow):
                     }}
                     """
                 )
-                self.action_label.setStyleSheet(f"color: {accent}; font-size: 12pt; font-weight: 700;")
+                self.action_label.setStyleSheet(f"color: {accent}; font-size: 12pt; font-weight: 400;")
                 self.setStyleSheet(
                     f"""
                     QFrame#AlignmentDropCard {{
@@ -3404,7 +3422,7 @@ class KrokHelperQtApp(QMainWindow):
         top_row.addStretch(1)
 
         self.align_playhead_label = BodyLabel("播放位置 0.000s")
-        self.align_playhead_label.setStyleSheet("color: #475467; font-weight: 600;")
+        self.align_playhead_label.setStyleSheet("color: #475467; font-weight: 400;")
         top_row.addWidget(self.align_playhead_label)
 
         self.align_reset_view_button = QPushButton("回到开头")
@@ -3435,7 +3453,7 @@ class KrokHelperQtApp(QMainWindow):
         bottom_row.setContentsMargins(0, 0, 0, 0)
         bottom_row.setSpacing(10)
         zoom_label = BodyLabel("缩放视图")
-        zoom_label.setStyleSheet("color: #475467; font-weight: 600;")
+        zoom_label.setStyleSheet("color: #475467; font-weight: 400;")
         bottom_row.addWidget(zoom_label)
 
         self.align_zoom_slider = QSlider(Qt.Orientation.Horizontal)
@@ -3452,7 +3470,7 @@ class KrokHelperQtApp(QMainWindow):
         bottom_row.addWidget(self.align_progress)
 
         self.align_status_label = BodyLabel("准备生成波形")
-        self.align_status_label.setStyleSheet("color: #475467; font-weight: 600;")
+        self.align_status_label.setStyleSheet("color: #475467; font-weight: 400;")
         bottom_row.addWidget(self.align_status_label)
         layout.addLayout(bottom_row)
         return toolbar_card
@@ -3480,7 +3498,7 @@ class KrokHelperQtApp(QMainWindow):
                     border: 1px solid {border};
                     border-radius: 14px;
                     padding: 4px 10px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }}
                 QPushButton:disabled {{
                     background: {background};
@@ -3511,7 +3529,7 @@ class KrokHelperQtApp(QMainWindow):
                     color: {foreground};
                     border-radius: 10px;
                     font-size: 15pt;
-                    font-weight: 800;
+                    font-weight: 700;
                 }}
                 """
             )
@@ -3571,7 +3589,7 @@ class KrokHelperQtApp(QMainWindow):
                 Qt.AlignmentFlag.AlignVCenter,
             )
             title_label = StrongBodyLabel(title)
-            title_label.setStyleSheet("font-size: 17pt; font-weight: 800; color: #111827;")
+            title_label.setStyleSheet("font-size: 17pt; font-weight: 700; color: #111827;")
             header_row.addWidget(title_label, 0, Qt.AlignmentFlag.AlignVCenter)
             header_row.addSpacing(2)
             layout.addLayout(header_row)
@@ -3625,7 +3643,7 @@ class KrokHelperQtApp(QMainWindow):
                 Qt.AlignmentFlag.AlignTop,
             )
             title_label = StrongBodyLabel(title)
-            title_label.setStyleSheet("font-size: 15pt; font-weight: 800; color: #111827;")
+            title_label.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
             title_row.addWidget(title_label, 0, Qt.AlignmentFlag.AlignVCenter)
             title_row.addStretch(1)
             layout.addLayout(title_row)
@@ -3916,7 +3934,7 @@ class KrokHelperQtApp(QMainWindow):
 
         video_export_options_card = CardWidget(radius=12, padding=(20, 20, 20, 20), spacing=14)
         set_expanding(video_export_options_card)
-        video_export_options_card.setStyleSheet("StrongBodyLabel { font-size: 17pt; font-weight: 800; color: #111827; }")
+        video_export_options_card.setStyleSheet("StrongBodyLabel { font-size: 17pt; font-weight: 700; color: #111827; }")
         video_export_options_layout = video_export_options_card.createVBoxLayout()
         video_export_options_layout.addWidget(StrongBodyLabel("视频导出选项"))
         video_export_desc = BodyLabel("这些选项仅在导出字幕视频时生效")
@@ -3979,7 +3997,7 @@ class KrokHelperQtApp(QMainWindow):
         encode_accent.setStyleSheet("background: #ff5a6f; border: 0; border-radius: 3px;")
         encode_title_row.addWidget(encode_accent, 0, Qt.AlignmentFlag.AlignVCenter)
         encode_title = QLabel("编码方式")
-        encode_title.setStyleSheet("font-size: 15pt; font-weight: 800; color: #111827;")
+        encode_title.setStyleSheet("font-size: 15pt; font-weight: 700; color: #111827;")
         encode_title_row.addWidget(encode_title, 0, Qt.AlignmentFlag.AlignVCenter)
         encode_title_row.addStretch(1)
         video_export_options_layout.addLayout(encode_title_row)
@@ -4109,7 +4127,7 @@ class KrokHelperQtApp(QMainWindow):
             " border: none;"
             " border-radius: 6px;"
             " padding: 6px 12px;"
-            " font-weight: 600;"
+            " font-weight: 700;"
             "}"
         )
         unselected_style = (
@@ -5529,7 +5547,9 @@ class KrokHelperQtApp(QMainWindow):
 
 def launch_qt_app() -> int:
     set_explicit_app_user_model_id("KaraokeHelper.Desktop")
+    sync_fluent_ui_fonts()
     app = QApplication.instance() or QApplication([])
+    app.setFont(build_app_ui_font())
     app_icon = load_taskbar_icon()
     if app_icon is not None:
         app.setWindowIcon(app_icon)

@@ -394,7 +394,7 @@ class AvatarLabel(QLabel):
             return
 
         painter.setPen(QColor("#2563eb"))
-        font = QFont("Segoe UI", 24)
+        font = QFont("Microsoft YaHei UI", 24)
         font.setBold(True)
         painter.setFont(font)
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self._fallback_text)
@@ -558,6 +558,8 @@ class VideoDownloadPage(QWidget):
             QLabel, CaptionLabel, BodyLabel {
                 background: transparent;
                 border: 0;
+                font-family: "Microsoft YaHei UI";
+                font-weight: 400;
             }
             TableWidget {
                 background: #ffffff;
@@ -741,11 +743,11 @@ class VideoDownloadPage(QWidget):
             )
         ):
             label = QLabel(f"{title}：")
-            label.setStyleSheet("color: #374151; font-weight: 700;")
+            label.setStyleSheet("color: #475467;")
             value = QLabel("-")
             value.setWordWrap(True)
             value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            value.setStyleSheet("color: #111827;")
+            value.setStyleSheet("color: #111827; font-weight: 400;")
             meta_layout.addWidget(label, row, 0)
             meta_layout.addWidget(value, row, 1)
             self.info_value_labels[key] = value
@@ -802,11 +804,11 @@ class VideoDownloadPage(QWidget):
             )
         ):
             label = QLabel(f"{title}：")
-            label.setStyleSheet("color: #374151; font-weight: 700;")
+            label.setStyleSheet("color: #475467;")
             value = QLabel("-")
             value.setWordWrap(True)
             value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            value.setStyleSheet("color: #111827;")
+            value.setStyleSheet("color: #111827; font-weight: 400;")
             format_summary_layout.addWidget(label, row, 0)
             format_summary_layout.addWidget(value, row, 1)
             self.format_value_labels[key] = value
@@ -934,7 +936,7 @@ class VideoDownloadPage(QWidget):
         self.account_avatar_label = AvatarLabel()
         self.account_name_label = BodyLabel("Bilibili 用户")
         self.account_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.account_name_label.setStyleSheet("color: #111827; font-size: 12pt; font-weight: 700;")
+        self.account_name_label.setStyleSheet("color: #111827; font-size: 12pt; font-weight: 400;")
         self.account_hint_label = CaptionLabel("当前已登录 Bilibili 账号")
         self.account_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.account_hint_label.setStyleSheet("color: #64748b;")
@@ -955,7 +957,7 @@ class VideoDownloadPage(QWidget):
         self.cookie_status_dot.setStyleSheet("background: #dc2626; border-radius: 5px;")
         status_row_layout.addWidget(self.cookie_status_dot, 0, Qt.AlignmentFlag.AlignVCenter)
         self.cookie_status_text_label = BodyLabel("未登录")
-        self.cookie_status_text_label.setStyleSheet("color: #dc2626; font-weight: 700;")
+        self.cookie_status_text_label.setStyleSheet("color: #dc2626; font-weight: 400;")
         status_row_layout.addWidget(self.cookie_status_text_label, 0, Qt.AlignmentFlag.AlignVCenter)
         status_row_layout.addStretch(1)
         cookie_layout.addWidget(status_row)
@@ -1054,7 +1056,7 @@ class VideoDownloadPage(QWidget):
 
     def _set_cookie_status_display(self, text: str, color: str) -> None:
         self.cookie_status_text_label.setText(text)
-        self.cookie_status_text_label.setStyleSheet(f"color: {color}; font-weight: 700;")
+        self.cookie_status_text_label.setStyleSheet(f"color: {color}; font-weight: 400;")
         self.cookie_status_dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
 
     def _apply_account_profile(self, profile: BilibiliAccountProfile | None) -> None:
