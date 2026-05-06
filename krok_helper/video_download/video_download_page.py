@@ -11,6 +11,7 @@ from typing import Callable
 from PyQt6.QtCore import QRectF, QThread, Qt, QTimer, QUrl, pyqtSignal as Signal
 from PyQt6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -589,71 +590,19 @@ class VideoDownloadPage(QWidget):
 
         left_panel = self._build_left_panel()
         center_panel = self._build_center_panel()
-        right_panel = self._build_right_panel()
 
         left_panel.setFixedWidth(320)
-        right_panel.setFixedWidth(320)
 
         root.addWidget(left_panel, 0)
         root.addWidget(center_panel, 1)
-        root.addWidget(right_panel, 0)
 
     def _build_left_panel(self) -> QWidget:
         panel = PanelCard(self, padding=(12, 12, 12, 12), spacing=12)
         panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         layout = panel.create_vbox()
 
-        settings_card = ExpandablePanelCard("下载设置", panel, expanded=True)
-        settings_layout = settings_card.content_layout
-
-        settings_layout.addWidget(CaptionLabel("保存路径"))
-        save_path_row = QHBoxLayout()
-        save_path_row.setContentsMargins(0, 0, 0, 0)
-        save_path_row.setSpacing(8)
-        self.save_dir_edit = LineEdit()
-        self.save_dir_edit.editingFinished.connect(self._persist_settings)
-        self.save_dir_browse_button = ToolButton(FIF.FOLDER)
-        self.save_dir_browse_button.setFixedSize(38, 38)
-        self.save_dir_browse_button.clicked.connect(self._choose_save_dir)
-        save_path_row.addWidget(self.save_dir_edit, 1)
-        save_path_row.addWidget(self.save_dir_browse_button, 0)
-        settings_layout.addLayout(save_path_row)
-
-        settings_layout.addWidget(CaptionLabel("文件命名"))
-        self.naming_rule_combo = StyledComboBox()
-        self.naming_rule_combo.addItems([NAMING_RULE_TITLE, NAMING_RULE_TITLE_UPLOADER, NAMING_RULE_CUSTOM])
-        self.naming_rule_combo.currentTextChanged.connect(self._handle_naming_rule_changed)
-        self._install_single_click_combo_behavior(self.naming_rule_combo)
-        settings_layout.addWidget(self.naming_rule_combo)
-
-        self.custom_template_edit = LineEdit()
-        self.custom_template_edit.setPlaceholderText("自定义模板，例如：{title} - {uploader}")
-        self.custom_template_edit.editingFinished.connect(self._persist_settings)
-        settings_layout.addWidget(self.custom_template_edit)
-
-        settings_layout.addWidget(self._create_section_title("并发下载"))
-        self.concurrent_combo = StyledComboBox()
-        self.concurrent_combo.setMinimumHeight(40)
-        self.concurrent_combo.addItems(CONCURRENT_COUNT_OPTIONS)
-        self.concurrent_combo.currentTextChanged.connect(self._persist_settings)
-        self._install_single_click_combo_behavior(self.concurrent_combo)
-        settings_layout.addWidget(self.concurrent_combo)
-
-        settings_layout.addWidget(self._create_section_title("网络设置"))
-        settings_layout.addWidget(CaptionLabel("超时时间（秒）"))
-        self.timeout_combo = StyledComboBox()
-        self.timeout_combo.setMinimumHeight(40)
-        self.timeout_combo.addItems(TIMEOUT_OPTIONS)
-        self.timeout_combo.currentTextChanged.connect(self._persist_settings)
-        self._install_single_click_combo_behavior(self.timeout_combo)
-        settings_layout.addWidget(self.timeout_combo)
-        settings_layout.addWidget(CaptionLabel("重试次数"))
-        self.retry_combo = StyledComboBox()
-        self.retry_combo.setMinimumHeight(40)
-        self.retry_combo.addItems(RETRY_COUNT_OPTIONS)
-        self.retry_combo.currentTextChanged.connect(self._persist_settings)
-        self._install_single_click_combo_behavior(self.retry_combo)
-        settings_layout.addWidget(self.retry_combo)
+        layout.addWidget(self._build_account_card(panel), 0)
+        layout.addWidget(self._build_download_settings_card(panel), 0)
 
         options_card = PanelCard(panel)
         options_layout = options_card.create_vbox()
@@ -664,7 +613,6 @@ class VideoDownloadPage(QWidget):
             checkbox.stateChanged.connect(self._persist_settings)
             options_layout.addWidget(checkbox)
 
-        layout.addWidget(settings_card, 0)
         layout.addWidget(options_card, 0)
         layout.addStretch(1)
 
@@ -895,12 +843,8 @@ class VideoDownloadPage(QWidget):
         layout.addWidget(download_card, 1)
         return panel
 
-    def _build_right_panel(self) -> QWidget:
-        panel = PanelCard(self, padding=(12, 12, 12, 12), spacing=12)
-        panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
-        layout = panel.create_vbox()
-
-        cookie_card = PanelCard(panel, padding=(16, 16, 16, 14))
+    def _build_account_card(self, parent: QWidget) -> QWidget:
+        cookie_card = PanelCard(parent, padding=(16, 16, 16, 14))
         cookie_layout = cookie_card.create_vbox()
         cookie_layout.addWidget(self._create_panel_title("Bilibili 账号"))
 
@@ -975,16 +919,29 @@ class VideoDownloadPage(QWidget):
         cookie_button_row.addStretch(1)
         cookie_layout.addLayout(cookie_button_row)
 
-        tip_label = CaptionLabel("提示：登录成功后，Cookie 将自动保存到本地，下次无需重新登录。")
-        tip_label.setWordWrap(True)
-        tip_label.setStyleSheet(
-            "background: #fff7f7; border: 1px solid #fde2e4; border-radius: 12px; padding: 10px; color: #7c6470;"
-        )
-        cookie_layout.addWidget(tip_label)
+        return cookie_card
 
-        layout.addWidget(cookie_card, 0)
-        layout.addStretch(1)
-        return panel
+    def _build_download_settings_card(self, parent: QWidget) -> QWidget:
+        card = PanelCard(parent)
+        layout = card.create_vbox()
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_row.addWidget(self._create_panel_title("下载设置"), 1)
+
+        open_button = PushButton(FIF.SETTING, "打开")
+        open_button.clicked.connect(self._open_download_settings_dialog)
+        title_row.addWidget(open_button, 0)
+        layout.addLayout(title_row)
+
+        summary = CaptionLabel("保存路径、命名方式、并发下载和网络参数改为在单独窗口中设置。")
+        summary.setWordWrap(True)
+        summary.setStyleSheet("color: #667085;")
+        layout.addWidget(summary)
+
+        return card
 
     def _install_single_click_combo_behavior(self, combo: ComboBox) -> None:
         popup_view = getattr(combo, "view", None)
@@ -1023,32 +980,16 @@ class VideoDownloadPage(QWidget):
         except (TypeError, ValueError):
             return fallback
 
+    def _settings_int_value(self, name: str, fallback: int) -> int:
+        try:
+            return int(getattr(self.settings, name, fallback) or fallback)
+        except (TypeError, ValueError):
+            return fallback
+
     def _load_settings(self) -> None:
-        save_dir = getattr(self.settings, "video_download_save_dir", "") or str(Path.home() / "Downloads")
-        self.save_dir_edit.setText(save_dir)
-        self.naming_rule_combo.setCurrentText(getattr(self.settings, "video_download_naming_rule", NAMING_RULE_TITLE))
-        self.custom_template_edit.setText(
-            getattr(self.settings, "video_download_custom_template", DEFAULT_CUSTOM_TEMPLATE) or DEFAULT_CUSTOM_TEMPLATE
-        )
         self.merge_checkbox.setChecked(bool(getattr(self.settings, "video_download_merge_video_audio", True)))
         self.thumbnail_checkbox.setChecked(bool(getattr(self.settings, "video_download_download_thumbnail", True)))
-        self._set_combo_text_or_default(
-            self.concurrent_combo,
-            str(int(getattr(self.settings, "video_download_concurrent_count", 3) or 3)),
-            "3",
-        )
-        self._set_combo_text_or_default(
-            self.timeout_combo,
-            str(int(getattr(self.settings, "video_download_timeout", 5) or 5)),
-            "5",
-        )
-        self._set_combo_text_or_default(
-            self.retry_combo,
-            str(int(getattr(self.settings, "video_download_retry_count", 3) or 3)),
-            "3",
-        )
         self._set_source(getattr(self.settings, "video_download_source", SOURCE_YOUTUBE))
-        self._handle_naming_rule_changed(self.naming_rule_combo.currentText())
 
     def _set_source(self, source: str) -> None:
         self.settings.video_download_source = source
@@ -1197,28 +1138,130 @@ class VideoDownloadPage(QWidget):
             return
         QTimer.singleShot(1000, lambda: self._refresh_cookie_status_with_retry(remaining - 1))
 
-    def _choose_save_dir(self) -> None:
-        directory = QFileDialog.getExistingDirectory(self, "选择保存路径", self.save_dir_edit.text().strip() or str(Path.home()))
+    def _choose_save_dir_for(self, target: LineEdit) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "选择保存路径", target.text().strip() or str(Path.home()))
         if not directory:
             return
-        self.save_dir_edit.setText(directory)
-        self._persist_settings()
+        target.setText(directory)
 
-    def _handle_naming_rule_changed(self, text: str) -> None:
-        self.custom_template_edit.setVisible(text == NAMING_RULE_CUSTOM)
-        self._persist_settings()
+    def _sync_naming_rule_edit_visibility(self, naming_rule_combo: ComboBox, custom_template_edit: LineEdit) -> None:
+        custom_template_edit.setVisible(naming_rule_combo.currentText() == NAMING_RULE_CUSTOM)
+
+    def _open_download_settings_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("下载设置")
+        dialog.resize(560, 460)
+
+        shell = QVBoxLayout(dialog)
+        shell.setContentsMargins(16, 16, 16, 16)
+        shell.setSpacing(12)
+
+        form_card = PanelCard(dialog, padding=(16, 16, 16, 16), spacing=12)
+        form_layout = form_card.create_vbox()
+        form_layout.addWidget(CaptionLabel("保存路径"))
+
+        save_path_row = QHBoxLayout()
+        save_path_row.setContentsMargins(0, 0, 0, 0)
+        save_path_row.setSpacing(8)
+        save_dir_edit = LineEdit()
+        save_dir_edit.setText(getattr(self.settings, "video_download_save_dir", "") or str(Path.home() / "Downloads"))
+        browse_button = ToolButton(FIF.FOLDER)
+        browse_button.setFixedSize(38, 38)
+        browse_button.clicked.connect(lambda: self._choose_save_dir_for(save_dir_edit))
+        save_path_row.addWidget(save_dir_edit, 1)
+        save_path_row.addWidget(browse_button, 0)
+        form_layout.addLayout(save_path_row)
+
+        form_layout.addWidget(CaptionLabel("文件命名"))
+        naming_rule_combo = StyledComboBox()
+        naming_rule_combo.addItems([NAMING_RULE_TITLE, NAMING_RULE_TITLE_UPLOADER, NAMING_RULE_CUSTOM])
+        naming_rule_combo.setCurrentText(getattr(self.settings, "video_download_naming_rule", NAMING_RULE_TITLE))
+        self._install_single_click_combo_behavior(naming_rule_combo)
+        form_layout.addWidget(naming_rule_combo)
+
+        custom_template_edit = LineEdit()
+        custom_template_edit.setPlaceholderText("自定义模板，例如：{title} - {uploader}")
+        custom_template_edit.setText(
+            getattr(self.settings, "video_download_custom_template", DEFAULT_CUSTOM_TEMPLATE) or DEFAULT_CUSTOM_TEMPLATE
+        )
+        naming_rule_combo.currentTextChanged.connect(
+            lambda _text: self._sync_naming_rule_edit_visibility(naming_rule_combo, custom_template_edit)
+        )
+        self._sync_naming_rule_edit_visibility(naming_rule_combo, custom_template_edit)
+        form_layout.addWidget(custom_template_edit)
+
+        form_layout.addWidget(self._create_section_title("并发下载"))
+        concurrent_combo = StyledComboBox()
+        concurrent_combo.setMinimumHeight(40)
+        concurrent_combo.addItems(CONCURRENT_COUNT_OPTIONS)
+        self._set_combo_text_or_default(
+            concurrent_combo,
+            str(self._settings_int_value("video_download_concurrent_count", 3)),
+            "3",
+        )
+        self._install_single_click_combo_behavior(concurrent_combo)
+        form_layout.addWidget(concurrent_combo)
+
+        form_layout.addWidget(self._create_section_title("网络设置"))
+        form_layout.addWidget(CaptionLabel("超时时间（秒）"))
+        timeout_combo = StyledComboBox()
+        timeout_combo.setMinimumHeight(40)
+        timeout_combo.addItems(TIMEOUT_OPTIONS)
+        self._set_combo_text_or_default(timeout_combo, str(self._settings_int_value("video_download_timeout", 5)), "5")
+        self._install_single_click_combo_behavior(timeout_combo)
+        form_layout.addWidget(timeout_combo)
+
+        form_layout.addWidget(CaptionLabel("重试次数"))
+        retry_combo = StyledComboBox()
+        retry_combo.setMinimumHeight(40)
+        retry_combo.addItems(RETRY_COUNT_OPTIONS)
+        self._set_combo_text_or_default(retry_combo, str(self._settings_int_value("video_download_retry_count", 3)), "3")
+        self._install_single_click_combo_behavior(retry_combo)
+        form_layout.addWidget(retry_combo)
+
+        shell.addWidget(form_card, 1)
+
+        button_row = QHBoxLayout()
+        button_row.setContentsMargins(0, 0, 0, 0)
+        button_row.setSpacing(10)
+        button_row.addStretch(1)
+        cancel_button = PushButton("取消")
+        save_button = PrimaryPushButton("保存")
+        cancel_button.clicked.connect(dialog.reject)
+
+        def save_settings_from_dialog() -> None:
+            self.settings.video_download_save_dir = save_dir_edit.text().strip() or str(Path.home() / "Downloads")
+            self.settings.video_download_naming_rule = naming_rule_combo.currentText() or NAMING_RULE_TITLE
+            self.settings.video_download_custom_template = (
+                custom_template_edit.text().strip() or DEFAULT_CUSTOM_TEMPLATE
+            )
+            self.settings.video_download_concurrent_count = self._combo_int_value(concurrent_combo, 3)
+            self.settings.video_download_timeout = self._combo_int_value(timeout_combo, 5)
+            self.settings.video_download_retry_count = self._combo_int_value(retry_combo, 3)
+            self._persist_settings()
+            dialog.accept()
+
+        save_button.clicked.connect(save_settings_from_dialog)
+        button_row.addWidget(cancel_button, 0)
+        button_row.addWidget(save_button, 0)
+        shell.addLayout(button_row)
+
+        dialog.exec()
 
     def _persist_settings(self, *args, save: bool = True) -> None:
         del args
-        self.settings.video_download_save_dir = self.save_dir_edit.text().strip()
-        self.settings.video_download_naming_rule = self.naming_rule_combo.currentText() or NAMING_RULE_TITLE
-        self.settings.video_download_custom_template = self.custom_template_edit.text().strip() or DEFAULT_CUSTOM_TEMPLATE
         self.settings.video_download_merge_video_audio = self.merge_checkbox.isChecked()
         self.settings.video_download_download_thumbnail = self.thumbnail_checkbox.isChecked()
         self.settings.video_download_download_subtitle = False
-        self.settings.video_download_concurrent_count = self._combo_int_value(self.concurrent_combo, 3)
-        self.settings.video_download_timeout = self._combo_int_value(self.timeout_combo, 5)
-        self.settings.video_download_retry_count = self._combo_int_value(self.retry_combo, 3)
+        if not getattr(self.settings, "video_download_save_dir", ""):
+            self.settings.video_download_save_dir = str(Path.home() / "Downloads")
+        if not getattr(self.settings, "video_download_naming_rule", ""):
+            self.settings.video_download_naming_rule = NAMING_RULE_TITLE
+        if not getattr(self.settings, "video_download_custom_template", ""):
+            self.settings.video_download_custom_template = DEFAULT_CUSTOM_TEMPLATE
+        self.settings.video_download_concurrent_count = self._settings_int_value("video_download_concurrent_count", 3)
+        self.settings.video_download_timeout = self._settings_int_value("video_download_timeout", 5)
+        self.settings.video_download_retry_count = self._settings_int_value("video_download_retry_count", 3)
         self.settings.video_download_cookie_path = ""
         if save:
             self._save_settings()
@@ -1684,15 +1727,18 @@ class VideoDownloadPage(QWidget):
     def _build_download_options(self) -> DownloadOptions:
         self._persist_settings()
         return DownloadOptions(
-            save_dir=self.save_dir_edit.text().strip() or str(Path.home() / "Downloads"),
-            naming_rule=self.naming_rule_combo.currentText() or NAMING_RULE_TITLE,
-            custom_template=self.custom_template_edit.text().strip() or DEFAULT_CUSTOM_TEMPLATE,
+            save_dir=getattr(self.settings, "video_download_save_dir", "") or str(Path.home() / "Downloads"),
+            naming_rule=getattr(self.settings, "video_download_naming_rule", NAMING_RULE_TITLE) or NAMING_RULE_TITLE,
+            custom_template=(
+                getattr(self.settings, "video_download_custom_template", DEFAULT_CUSTOM_TEMPLATE)
+                or DEFAULT_CUSTOM_TEMPLATE
+            ),
             merge_video_audio=self.merge_checkbox.isChecked(),
             download_thumbnail=self.thumbnail_checkbox.isChecked(),
             download_subtitle=False,
-            concurrent_count=self._combo_int_value(self.concurrent_combo, 3),
-            timeout=self._combo_int_value(self.timeout_combo, 5),
-            retry_count=self._combo_int_value(self.retry_combo, 3),
+            concurrent_count=self._settings_int_value("video_download_concurrent_count", 3),
+            timeout=self._settings_int_value("video_download_timeout", 5),
+            retry_count=self._settings_int_value("video_download_retry_count", 3),
             cookie_file=self.cookie_manager.get_cookie_path() or str(self.cookie_manager.resolved_cookie_path()),
         )
 
@@ -1701,7 +1747,7 @@ class VideoDownloadPage(QWidget):
             self.parse_status_label.setText("请先解析视频链接。")
             return
 
-        if not self.save_dir_edit.text().strip():
+        if not (getattr(self.settings, "video_download_save_dir", "") or "").strip():
             self.parse_status_label.setText("请先选择保存路径。")
             return
 
@@ -1851,7 +1897,7 @@ class VideoDownloadPage(QWidget):
         self.parse_status_label.setText("已发送取消请求。")
 
     def _open_save_folder(self) -> None:
-        open_in_explorer(Path(self.save_dir_edit.text().strip() or str(Path.home() / "Downloads")))
+        open_in_explorer(Path(getattr(self.settings, "video_download_save_dir", "") or str(Path.home() / "Downloads")))
 
     def _open_task_file(self, task_id: str) -> None:
         task = self._task_index.get(task_id)
