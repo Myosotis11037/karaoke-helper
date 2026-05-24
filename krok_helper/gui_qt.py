@@ -3269,7 +3269,7 @@ class KrokHelperQtApp(QMainWindow):
         self._align_volume_refresh_timer.setInterval(120)
         self._align_volume_refresh_timer.timeout.connect(self._apply_alignment_preview_volume)
         self.waveform_view.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.waveform_view.setMinimumHeight(360)
+        self.waveform_view.setMinimumHeight(300)
         self.wave_view = self.waveform_view
 
         self.align_export_button = AlignmentExportProxyButton(self)
@@ -3386,6 +3386,9 @@ class KrokHelperQtApp(QMainWindow):
         waveform_grid.setContentsMargins(16, 16, 16, 16)
         waveform_grid.setVerticalSpacing(8)
         waveform_grid.setHorizontalSpacing(0)
+        waveform_grid.setRowStretch(0, 0)
+        waveform_grid.setRowStretch(1, 1)
+        waveform_grid.setRowStretch(2, 0)
         waveform_header = QLabel("波形工作区")
         waveform_header.setObjectName("PanelTitle")
         waveform_grid.addWidget(waveform_header, 0, 0, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -3422,7 +3425,7 @@ class KrokHelperQtApp(QMainWindow):
             0,
             alignment=Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
         )
-        self.align_nudge_panel = QFrame(waveform_stage)
+        self.align_nudge_panel = QFrame(self.align_waveform_card)
         self.align_nudge_panel.setObjectName("AlignNudgePanel")
         nudge_layout = QHBoxLayout(self.align_nudge_panel)
         nudge_layout.setContentsMargins(8, 8, 8, 8)
@@ -3435,8 +3438,8 @@ class KrokHelperQtApp(QMainWindow):
             else:
                 button.clicked.connect(lambda _checked=False, value=delta: self.waveform_view.nudge_offset(value))
             nudge_layout.addWidget(button)
-        stage_grid.addWidget(self.align_nudge_panel, 0, 0, alignment=Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignRight)
         waveform_grid.addWidget(waveform_stage, 1, 0)
+        waveform_grid.addWidget(self.align_nudge_panel, 2, 0, alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
         main_layout.addWidget(self.align_waveform_card, 1)
 
         right_sidebar = self._build_adjustment_panels()
