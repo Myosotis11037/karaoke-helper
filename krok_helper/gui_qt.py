@@ -2805,6 +2805,7 @@ class KrokHelperQtApp(QMainWindow):
                 self._drag_state = "idle"
                 self._theme = theme
                 self._display_mode = "empty"
+                self._balanced_height: int | None = None
                 self._missing_text = ""
                 self._media_label = media_label
                 self._icon = icon
@@ -2908,6 +2909,7 @@ class KrokHelperQtApp(QMainWindow):
 
                 self.action_label = BodyLabel(self._default_action_text)
                 self.action_label.setCursor(Qt.CursorShape.PointingHandCursor)
+                self.action_label.setMinimumHeight(42)
                 self.action_label.setStyleSheet("font-weight: 400;")
                 self.action_label.mousePressEvent = lambda _event: self.browseRequested.emit()
 
@@ -2972,6 +2974,10 @@ class KrokHelperQtApp(QMainWindow):
             def set_display_mode(self, mode: str, *, missing_text: str = "") -> None:
                 self._display_mode = mode if mode in {"empty", "ready", "chip"} else "empty"
                 self._missing_text = missing_text
+                self._refresh_style()
+
+            def set_balanced_height(self, height: int | None) -> None:
+                self._balanced_height = height
                 self._refresh_style()
 
             def enterEvent(self, event) -> None:  # noqa: N802
@@ -3100,8 +3106,11 @@ class KrokHelperQtApp(QMainWindow):
                 else:
                     self._main_layout.setContentsMargins(16, 16, 16, 16)
                     self._main_layout.setSpacing(8 if is_ready else 12)
-                self.setMinimumHeight(54 if is_chip else (132 if is_ready else 158))
-                self.setMaximumHeight(64 if is_chip else (160 if is_ready else 16777215))
+                self.setMinimumHeight(54 if is_chip else 158)
+                self.setMaximumHeight(64 if is_chip else 16777215)
+                if self._balanced_height is not None:
+                    self.setMinimumHeight(self._balanced_height)
+                    self.setMaximumHeight(self._balanced_height)
                 self.icon_button.setFixedSize(28 if is_chip else (34 if is_ready else 68), 28 if is_chip else (34 if is_ready else 68))
                 self.icon_button.setIconSize(QSize(16 if is_chip else (18 if is_ready else 34), 16 if is_chip else (18 if is_ready else 34)))
                 self.hint_label.setVisible(not is_selected)
@@ -3116,7 +3125,7 @@ class KrokHelperQtApp(QMainWindow):
                 if is_ready:
                     self.action_frame.hide()
                 self.replace_button.setVisible(is_ready or is_chip)
-                self.remove_button.setVisible(is_ready)
+                self.remove_button.setVisible(False)
                 self.detail_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignTop)
                 self.action_label.setText(action_text)
                 self.action_icon.setIcon(
@@ -3314,6 +3323,9 @@ class KrokHelperQtApp(QMainWindow):
         clear_button.clicked.connect(self._clear_alignment_inputs)
         clear_button.setMinimumHeight(36)
         clear_button.setMinimumWidth(84)
+        clear_button_policy = clear_button.sizePolicy()
+        clear_button_policy.setRetainSizeWhenHidden(True)
+        clear_button.setSizePolicy(clear_button_policy)
 
         self.align_stop_export_button = QPushButton("停止导出")
         self.align_stop_export_button.setIcon(FIF.CLOSE.icon())
@@ -3784,15 +3796,21 @@ class KrokHelperQtApp(QMainWindow):
         video_layout.addLayout(tail_row)
         self.align_trim_label = BodyLabel("未设置")
         self.align_trim_label.setStyleSheet("color: #667085;")
-        video_layout.addWidget(self.align_trim_label)
-        self.align_trim_mark_button = QPushButton("将当前位置设为尾裁点")
+        self.align_trim_mark_button = QPushButton("设置尾裁点")
         self.align_trim_clear_button = QPushButton("清除尾裁点")
+        self.align_trim_mark_button.setMinimumHeight(32)
+        self.align_trim_clear_button.setMinimumHeight(32)
         self.align_trim_mark_button.clicked.connect(
             lambda: self.waveform_view.set_trim_end(self.waveform_view.playhead_seconds)
         )
         self.align_trim_clear_button.clicked.connect(self.waveform_view.clear_trim_end)
-        self.align_trim_mark_button.hide()
-        self.align_trim_clear_button.hide()
+        tail_action_row = QHBoxLayout()
+        tail_action_row.setContentsMargins(0, 0, 0, 0)
+        tail_action_row.setSpacing(8)
+        tail_action_row.addWidget(self.align_trim_mark_button)
+        tail_action_row.addWidget(self.align_trim_clear_button)
+        tail_action_row.addWidget(self.align_trim_label, 1)
+        video_layout.addLayout(tail_action_row)
         self.chk_auto_trim = self.align_trim_to_audio_radio
         self.align_trim_none_radio.toggled.connect(
             lambda _checked: self._refresh_align_trim_status(self.waveform_view.trim_end_seconds)
@@ -4439,11 +4457,17 @@ class KrokHelperQtApp(QMainWindow):
         has_video = self.align_video_zone.path is not None
         has_audio = self.align_audio_zone.path is not None
         count = int(has_video) + int(has_audio)
+        self.align_video_zone.set_balanced_height(None)
+        self.align_audio_zone.set_balanced_height(None)
         if count == 0:
             status_text = "① 先导入素材"
             status_style = "background: #FFF1F2; color: #F04452; border: 1px solid #FFD1D8;"
             self.align_video_zone.set_display_mode("empty")
             self.align_audio_zone.set_display_mode("empty")
+            self._align_empty_material_card_height = max(
+                self.align_video_zone.sizeHint().height(),
+                self.align_audio_zone.sizeHint().height(),
+            )
         elif count == 1:
             missing = "原唱音频" if has_video else "字幕视频"
             status_text = f"● 已导入 1/2 · 还差{missing}"
@@ -4455,12 +4479,20 @@ class KrokHelperQtApp(QMainWindow):
             status_style = "background: transparent; color: #667085; border: 0;"
             self.align_video_zone.set_display_mode("chip")
             self.align_audio_zone.set_display_mode("chip")
+        if count == 1:
+            balanced_height = getattr(
+                self,
+                "_align_empty_material_card_height",
+                max(self.align_video_zone.sizeHint().height(), self.align_audio_zone.sizeHint().height()),
+            )
+            self.align_video_zone.set_balanced_height(balanced_height)
+            self.align_audio_zone.set_balanced_height(balanced_height)
         self.align_material_status_label.setText(status_text)
         self.align_material_status_label.setStyleSheet(
-            f"{status_style} border-radius: 7px; padding: 4px 10px; font-weight: 700;"
+            f"{status_style} border-radius: 7px; padding: 2px 10px; font-weight: 700;"
         )
         if self.align_clear_button is not None:
-            self.align_clear_button.setVisible(count == 2)
+            self.align_clear_button.setVisible(count >= 1)
         if hasattr(self, "align_waveform_placeholder"):
             if count == 1:
                 self.align_waveform_placeholder.setText(
@@ -5060,14 +5092,11 @@ class KrokHelperQtApp(QMainWindow):
         self._handle_waveform_offset_changed(self.waveform_view.offset_seconds)
         self.align_drag_offset_radio.setText("移动字幕视频" if is_video_target else "移动原唱音源")
         self.align_export_button.setText("导出对齐视频" if is_video_target else "导出对齐音频")
-        self.align_trim_mark_button.setEnabled(has_waveforms and is_video_target)
-        self.align_trim_clear_button.setEnabled(has_waveforms and is_video_target)
         self.align_force_1080p60_check.setEnabled(has_waveforms and is_video_target)
         self.align_force_1080p60_card.setEnabled(has_waveforms and is_video_target)
-        self.align_trim_none_radio.setEnabled(has_waveforms and is_video_target)
-        self.align_trim_to_audio_radio.setEnabled(has_waveforms and is_video_target)
         self.align_use_video_audio_check.setEnabled(has_waveforms and is_video_target)
         self.align_use_video_audio_card.setEnabled(has_waveforms and is_video_target)
+        self._sync_align_tail_trim_controls()
         if has_waveforms and is_video_target:
             self.align_lead_row_widget.setEnabled(True)
             self.align_encode_row_widget.setEnabled(True)
@@ -5170,6 +5199,20 @@ class KrokHelperQtApp(QMainWindow):
             else:
                 parts.append("自动尾裁已开启")
         self.align_trim_label.setText("；".join(parts) if parts else "未设置")
+        self._sync_align_tail_trim_controls()
+
+    def _sync_align_tail_trim_controls(self) -> None:
+        if not hasattr(self, "align_trim_mark_button"):
+            return
+        has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
+        is_video_target = self._is_align_video_target()
+        base_enabled = has_waveforms and is_video_target
+        has_manual_trim = self.waveform_view.trim_end_seconds is not None
+        auto_trim_enabled = self.align_trim_to_audio_radio.isChecked()
+        self.align_trim_none_radio.setEnabled(base_enabled)
+        self.align_trim_to_audio_radio.setEnabled(base_enabled and not has_manual_trim)
+        self.align_trim_mark_button.setEnabled(base_enabled and not auto_trim_enabled)
+        self.align_trim_clear_button.setEnabled(base_enabled and not auto_trim_enabled and has_manual_trim)
 
     def _compute_video_trim_duration(self) -> float | None:
         if not self._is_align_video_target():
@@ -5191,6 +5234,7 @@ class KrokHelperQtApp(QMainWindow):
 
     def _refresh_alignment_preview_controls(self) -> None:
         has_inputs = self._has_complete_alignment_inputs()
+        has_any_inputs = self.align_video_zone.path is not None or self.align_audio_zone.path is not None
         has_waveforms = self.waveform_view.video_waveform is not None and self.waveform_view.audio_waveform is not None
         is_playing = self.align_preview_process is not None and self.align_preview_process.is_running()
         is_exporting = self._is_align_export_running()
@@ -5208,7 +5252,7 @@ class KrokHelperQtApp(QMainWindow):
         if self.align_open_output_button is not None:
             self.align_open_output_button.setEnabled(has_waveforms)
         if self.align_clear_button is not None:
-            self.align_clear_button.setEnabled(has_inputs and not is_busy)
+            self.align_clear_button.setEnabled(has_any_inputs and not is_busy)
         if self.align_jump_to_end_button is not None:
             self.align_jump_to_end_button.setEnabled(has_waveforms)
         if self.align_reset_view_button is not None:
