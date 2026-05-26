@@ -1703,6 +1703,33 @@ class KrokHelperQtApp(QMainWindow):
         self.preview_timer.setInterval(300)
         self.preview_timer.timeout.connect(self._poll_alignment_preview)
 
+    def _track_background_task(self, attr_name: str, task: BackgroundTask) -> BackgroundTask:
+        task.setObjectName(attr_name)
+        setattr(self, attr_name, task)
+        task.finished.connect(lambda attr_name=attr_name, task=task: self._cleanup_background_task(attr_name, task))
+        task.finished.connect(task.deleteLater)
+        return task
+
+    def _cleanup_background_task(self, attr_name: str, task: BackgroundTask) -> None:
+        if getattr(self, attr_name, None) is task:
+            setattr(self, attr_name, None)
+
+    def _running_background_tasks(self) -> list[BackgroundTask]:
+        task_attrs = (
+            "hires_task",
+            "lyrics_search_task",
+            "lyrics_fetch_task",
+            "align_analysis_task",
+            "align_auto_task",
+            "align_export_task",
+        )
+        tasks: list[BackgroundTask] = []
+        for attr_name in task_attrs:
+            task = getattr(self, attr_name, None)
+            if task is not None and task.isRunning():
+                tasks.append(task)
+        return tasks
+
     def showEvent(self, event) -> None:  # noqa: N802
         if not self._startup_geometry_applied:
             self._startup_geometry_applied = True
@@ -2291,13 +2318,12 @@ class KrokHelperQtApp(QMainWindow):
                 ),
             )
 
-        self.lyrics_search_task = BackgroundTask(runner)
-        self.lyrics_search_task.task_succeeded.connect(self._finish_lyrics_search_success)
-        self.lyrics_search_task.task_failed.connect(self._finish_lyrics_search_failure)
-        self.lyrics_search_task.start()
+        task = self._track_background_task("lyrics_search_task", BackgroundTask(runner))
+        task.task_succeeded.connect(self._finish_lyrics_search_success)
+        task.task_failed.connect(self._finish_lyrics_search_failure)
+        task.start()
 
     def _finish_lyrics_search_success(self, results: object) -> None:
-        self.lyrics_search_task = None
         self.lyrics_search_button.setEnabled(True)
         load_more = False
         payload = results
@@ -2343,7 +2369,6 @@ class KrokHelperQtApp(QMainWindow):
         self._render_lyrics_results_table(selected_key=selected_key if load_more else "")
 
     def _finish_lyrics_search_failure(self, message: str) -> None:
-        self.lyrics_search_task = None
         self.lyrics_search_button.setEnabled(True)
         self._lyrics_loading_more = False
         if not self.lyrics_search_results:
@@ -2601,13 +2626,12 @@ class KrokHelperQtApp(QMainWindow):
             _ = logger
             return self.lyrics_search_service.fetch_lyrics(candidate)
 
-        self.lyrics_fetch_task = BackgroundTask(runner)
-        self.lyrics_fetch_task.task_succeeded.connect(self._finish_lyrics_fetch_success)
-        self.lyrics_fetch_task.task_failed.connect(self._finish_lyrics_fetch_failure)
-        self.lyrics_fetch_task.start()
+        task = self._track_background_task("lyrics_fetch_task", BackgroundTask(runner))
+        task.task_succeeded.connect(self._finish_lyrics_fetch_success)
+        task.task_failed.connect(self._finish_lyrics_fetch_failure)
+        task.start()
 
     def _finish_lyrics_fetch_success(self, result: object) -> None:
-        self.lyrics_fetch_task = None
         self._lyrics_loading_key = ""
         loaded_candidate = result if isinstance(result, LyricsSearchCandidate) else None
         if loaded_candidate is not None:
@@ -2619,10 +2643,9 @@ class KrokHelperQtApp(QMainWindow):
                     break
         self._refresh_lyrics_preview()
         if self.lyrics_selected_candidate is not None and not self.lyrics_selected_candidate.lyrics_loaded:
-            self._ensure_selected_lyrics_loaded()
+            QTimer.singleShot(0, self._ensure_selected_lyrics_loaded)
 
     def _finish_lyrics_fetch_failure(self, message: str) -> None:
-        self.lyrics_fetch_task = None
         failed_key = self._lyrics_loading_key
         self._lyrics_loading_key = ""
         for candidate in self.lyrics_search_results:
@@ -2633,7 +2656,7 @@ class KrokHelperQtApp(QMainWindow):
                 break
         self._refresh_lyrics_preview()
         if self.lyrics_selected_candidate is not None and not self.lyrics_selected_candidate.lyrics_loaded and not self.lyrics_selected_candidate.load_error:
-            self._ensure_selected_lyrics_loaded()
+            QTimer.singleShot(0, self._ensure_selected_lyrics_loaded)
 
     def _clear_lyrics_results(self) -> None:
         self.lyrics_search_results = []
@@ -4887,11 +4910,11 @@ class KrokHelperQtApp(QMainWindow):
                 logger=logger,
             )
 
-        self.hires_task = BackgroundTask(runner)
-        self.hires_task.log_message.connect(self._append_hires_log)
-        self.hires_task.task_succeeded.connect(self._finish_hires_success)
-        self.hires_task.task_failed.connect(self._finish_hires_failure)
-        self.hires_task.start()
+        task = self._track_background_task("hires_task", BackgroundTask(runner))
+        task.log_message.connect(self._append_hires_log)
+        task.task_succeeded.connect(self._finish_hires_success)
+        task.task_failed.connect(self._finish_hires_failure)
+        task.start()
 
     def _append_hires_log(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
@@ -4991,11 +5014,11 @@ class KrokHelperQtApp(QMainWindow):
             audio_waveform = extract_waveform(audio_path, ffmpeg_dir, logger, label="原唱音源")
             return video_waveform, audio_waveform
 
-        self.align_analysis_task = BackgroundTask(runner)
-        self.align_analysis_task.log_message.connect(self._append_align_log)
-        self.align_analysis_task.task_succeeded.connect(self._finish_alignment_analysis_success)
-        self.align_analysis_task.task_failed.connect(self._finish_alignment_analysis_failure)
-        self.align_analysis_task.start()
+        task = self._track_background_task("align_analysis_task", BackgroundTask(runner))
+        task.log_message.connect(self._append_align_log)
+        task.task_succeeded.connect(self._finish_alignment_analysis_success)
+        task.task_failed.connect(self._finish_alignment_analysis_failure)
+        task.start()
 
     def _finish_alignment_analysis_success(self, payload: object) -> None:
         self.align_progress.setRange(0, 1)
@@ -5053,10 +5076,10 @@ class KrokHelperQtApp(QMainWindow):
                 audio_start_seconds=audio_start_seconds,
             )
 
-        self.align_auto_task = BackgroundTask(runner)
-        self.align_auto_task.task_succeeded.connect(self._finish_auto_align_success)
-        self.align_auto_task.task_failed.connect(self._finish_auto_align_failure)
-        self.align_auto_task.start()
+        task = self._track_background_task("align_auto_task", BackgroundTask(runner))
+        task.task_succeeded.connect(self._finish_auto_align_success)
+        task.task_failed.connect(self._finish_auto_align_failure)
+        task.start()
 
     def _finish_auto_align_success(self, payload: object) -> None:
         self.align_progress.setRange(0, 1)
@@ -5559,11 +5582,11 @@ class KrokHelperQtApp(QMainWindow):
                 self._align_export_completed_outputs.append(outputs[-1])
             return outputs
 
-        self.align_export_task = BackgroundTask(runner)
-        self.align_export_task.log_message.connect(self._append_align_log)
-        self.align_export_task.task_succeeded.connect(lambda outputs: self._finish_aligned_export(True, "", outputs, output_kind))
-        self.align_export_task.task_failed.connect(lambda message: self._finish_aligned_export(False, message, None, output_kind))
-        self.align_export_task.start()
+        task = self._track_background_task("align_export_task", BackgroundTask(runner))
+        task.log_message.connect(self._append_align_log)
+        task.task_succeeded.connect(lambda outputs: self._finish_aligned_export(True, "", outputs, output_kind))
+        task.task_failed.connect(lambda message: self._finish_aligned_export(False, message, None, output_kind))
+        task.start()
         self._refresh_alignment_preview_controls()
 
     def _finish_aligned_export(
@@ -5622,6 +5645,10 @@ class KrokHelperQtApp(QMainWindow):
         open_in_explorer(output_dir)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        if self._running_background_tasks():
+            QMessageBox.information(self, APP_TITLE, "当前后台任务仍在运行，请等待完成后再关闭窗口。")
+            event.ignore()
+            return
         self._stop_alignment_preview(log_message=False)
         super().closeEvent(event)
 
