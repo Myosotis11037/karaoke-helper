@@ -97,7 +97,7 @@ DOWNLOAD_TABLE_FIXED_WIDTHS = {
     3: 108,
     4: 84,
     5: 118,
-    6: 92,
+    6: 124,
 }
 COMBO_BOX_VIEW_QSS = """
 QAbstractItemView {
@@ -806,7 +806,20 @@ class VideoDownloadPage(QWidget):
         info_card.setFixedHeight(VIDEO_DETAILS_CARD_HEIGHT)
         info_card.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         info_layout = info_card.create_vbox()
-        info_layout.addWidget(self._create_panel_title("视频信息与下载设置"))
+        info_title_row = QHBoxLayout()
+        info_title_row.setContentsMargins(0, 0, 0, 0)
+        info_title_row.setSpacing(8)
+        info_title_row.addWidget(self._create_panel_title("视频信息与下载设置"), 1)
+        self.delete_current_task_button = ToolButton(FIF.DELETE)
+        self.delete_current_task_button.setFixedSize(30, 30)
+        self.delete_current_task_button.setToolTip("从列表删除当前视频")
+        self.delete_current_task_button.setStyleSheet(
+            "QToolButton { background: transparent; border: 1px solid #e5e7eb; border-radius: 8px; }"
+            "QToolButton:hover { background: #fff1f2; border-color: #fda4af; }"
+        )
+        self.delete_current_task_button.clicked.connect(self._delete_current_task)
+        info_title_row.addWidget(self.delete_current_task_button, 0)
+        info_layout.addLayout(info_title_row)
 
         self.video_details_stack = QStackedWidget(info_card)
         self.video_details_stack.setStyleSheet("background: transparent; border: 0;")
@@ -2115,6 +2128,7 @@ class VideoDownloadPage(QWidget):
         task = self._current_task()
         if task is None or task.info is None:
             self.video_details_stack.setCurrentIndex(0)
+            self.delete_current_task_button.setEnabled(False)
             self.thumbnail_label.setText("暂无视频信息")
             self.thumbnail_label.setPixmap(QPixmap())
             for label in self.info_value_labels.values():
@@ -2126,6 +2140,7 @@ class VideoDownloadPage(QWidget):
             return
 
         self.video_details_stack.setCurrentIndex(1)
+        self.delete_current_task_button.setEnabled(True)
         info = task.info
         if info.thumbnail_bytes:
             pixmap = QPixmap()
@@ -2397,11 +2412,12 @@ class VideoDownloadPage(QWidget):
         container.setStyleSheet("background: transparent; border: 0;")
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 4, 0, 4)
+        layout.setSpacing(6)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         button = PushButton("取消" if task.status in (TASK_STATUS_WAITING, TASK_STATUS_DOWNLOADING) else "重试")
         button.setProperty("compact", True)
-        button.setFixedSize(72, 30)
+        button.setFixedSize(64, 30)
         if task.status == TASK_STATUS_COMPLETED:
             button.setText("打开")
             button.clicked.connect(lambda: self._open_task_file(task.task_id))
@@ -2410,6 +2426,16 @@ class VideoDownloadPage(QWidget):
         else:
             button.clicked.connect(lambda: self._retry_task(task.task_id))
         layout.addWidget(button, 0, Qt.AlignmentFlag.AlignCenter)
+
+        delete_button = ToolButton(FIF.DELETE)
+        delete_button.setFixedSize(30, 30)
+        delete_button.setToolTip("从列表删除此视频")
+        delete_button.setStyleSheet(
+            "QToolButton { background: transparent; border: 1px solid #e5e7eb; border-radius: 8px; }"
+            "QToolButton:hover { background: #fff1f2; border-color: #fda4af; }"
+        )
+        delete_button.clicked.connect(lambda: self._delete_task(task.task_id))
+        layout.addWidget(delete_button, 0, Qt.AlignmentFlag.AlignCenter)
         return container
 
     def _reset_task_progress_tracking(self, task: DownloadTask) -> None:
@@ -2733,6 +2759,45 @@ class VideoDownloadPage(QWidget):
             task.speed_samples.clear()
             self.parse_status_label.setText(f"已取消：{task.title}")
             self._refresh_download_table()
+
+    def _delete_current_task(self) -> None:
+        task = self._current_task()
+        if task is None:
+            return
+        self._delete_task(task.task_id)
+
+    def _delete_task(self, task_id: str) -> None:
+        task = self._task_index.get(task_id)
+        if task is None:
+            return
+        if task.status == TASK_STATUS_DOWNLOADING:
+            result = QMessageBox.question(
+                self,
+                "删除下载任务",
+                "该视频正在下载，删除会取消下载并清理临时文件。确定要删除吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if result != QMessageBox.StandardButton.Yes:
+                return
+            task.cancel_requested = True
+
+        row = next((index for index, item in enumerate(self._tasks) if item.task_id == task_id), -1)
+        if row < 0:
+            return
+
+        was_current = self._current_task_id == task_id
+        self._tasks.pop(row)
+        self._task_index.pop(task_id, None)
+        if was_current:
+            if self._tasks:
+                next_row = min(row, len(self._tasks) - 1)
+                self._current_task_id = self._tasks[next_row].task_id
+            else:
+                self._current_task_id = ""
+        self.parse_status_label.setText(f"已从下载列表删除：{task.title}")
+        self._refresh_preview()
+        self._refresh_download_table()
 
     def _retry_task(self, task_id: str) -> None:
         task = self._task_index.get(task_id)
