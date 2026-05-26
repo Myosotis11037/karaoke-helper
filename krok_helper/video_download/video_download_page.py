@@ -1418,8 +1418,6 @@ class VideoDownloadPage(QWidget):
         self.cookie_status_text_label.setText(text)
         self.cookie_status_text_label.setStyleSheet(f"color: {color}; font-weight: 400;")
         self.cookie_status_dot.setStyleSheet(f"background: {color}; border-radius: 5px;")
-        if text != "已登录":
-            self._bilibili_profile = None
         self._refresh_account_status_rows()
 
     def _apply_account_profile(self, profile: BilibiliAccountProfile | None) -> None:
@@ -1547,8 +1545,11 @@ class VideoDownloadPage(QWidget):
             status_code = -1
             message = str(status_payload or "")
 
+        if self._bilibili_profile is not None and status_code in (86090, 86101):
+            return
         if status_code == 86090 or "确认" in message:
             self._set_cookie_status_display("等待确认", PLATFORM_STATUS_PENDING)
+            self.qr_placeholder.set_message("已扫码，请在手机上确认登录")
             return
         if status_code == 86038 or "过期" in message:
             self._set_cookie_status_display("二维码已过期", PLATFORM_STATUS_PENDING)
@@ -1581,6 +1582,12 @@ class VideoDownloadPage(QWidget):
 
     def _handle_qr_worker_finished(self) -> None:
         self._qr_login_worker = None
+        if (
+            self._bilibili_profile is not None
+            or self.cookie_manager.has_cookie()
+            or time.monotonic() < self._recent_bilibili_login_deadline
+        ):
+            self._refresh_cookie_status()
 
     def _refresh_cookie_status(self) -> None:
         profile = self.cookie_manager.get_account_profile()
