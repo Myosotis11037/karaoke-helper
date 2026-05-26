@@ -2332,7 +2332,12 @@ class VideoDownloadPage(QWidget):
 
         for row, task in enumerate(self._tasks):
             resolution = task.selected_format.resolution if task.selected_format else "-"
-            progress_text = "100%" if task.status == TASK_STATUS_COMPLETED else f"{task.progress:.0f}%"
+            if task.status == TASK_STATUS_COMPLETED:
+                progress_text = "100%"
+            elif task.progress_merge_active:
+                progress_text = "合并中"
+            else:
+                progress_text = f"{task.progress:.0f}%"
 
             status_item = QTableWidgetItem(task.status)
             status_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
@@ -2353,8 +2358,9 @@ class VideoDownloadPage(QWidget):
 
             progress_item = QTableWidgetItem(progress_text)
             progress_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
-            if task.speed_text:
-                progress_item.setToolTip(task.speed_text)
+            progress_tooltip = " / ".join(part for part in (task.progress_phase_name, task.speed_text) if part)
+            if progress_tooltip:
+                progress_item.setToolTip(progress_tooltip)
 
             size_item = QTableWidgetItem(format_bytes(task.filesize))
             size_item.setTextAlignment(int(Qt.AlignmentFlag.AlignCenter))
@@ -2411,47 +2417,172 @@ class VideoDownloadPage(QWidget):
         task.speed_text = ""
         task.downloaded_bytes = 0
         task.filesize = self._preferred_task_filesize(task)
-        task.progress_total_phases = 2 if task.selected_format and task.selected_format.requires_merge else 1
+        requires_merge = bool(task.selected_format and task.selected_format.requires_merge)
+        download_phase_count = 2 if requires_merge else 1
+        task.progress_total_phases = download_phase_count + (1 if requires_merge else 0)
         task.progress_phase_index = 0
         task.progress_phase_bytes = 0
-        task.progress_phase_name = ""
+        task.progress_phase_name = "正在下载视频…" if requires_merge else ""
+        task.progress_phase_source_name = ""
+        task.progress_phase_totals = [0] * download_phase_count
+        task.progress_phase_downloaded = [0] * download_phase_count
+        task.progress_merge_active = False
+        task.speed_samples.clear()
 
     def _update_task_download_phase(self, task: DownloadTask, payload: dict) -> None:
-        if task.progress_total_phases <= 1:
-            task.progress_phase_bytes = max(task.progress_phase_bytes, int(payload.get("downloaded_bytes") or 0))
+        self._ensure_progress_phase_storage(task)
+        status = str(payload.get("status") or "")
+        if status == "merging":
+            self._enter_merge_phase(task)
             return
 
         filename = str(payload.get("filename") or "")
         downloaded_bytes = int(payload.get("downloaded_bytes") or 0)
-        current_phase_limit = ((task.progress_phase_index + 1) * 100 / task.progress_total_phases) - 2
+        total_bytes = int(payload.get("total_bytes") or payload.get("total_bytes_estimate") or 0)
+        fragment_index = int(payload.get("fragment_index") or 0)
+        fragment_count = int(payload.get("fragment_count") or 0)
+        download_phase_count = len(task.progress_phase_downloaded)
+        phase_index = min(task.progress_phase_index, download_phase_count - 1)
 
-        if filename:
-            if not task.progress_phase_name:
-                task.progress_phase_name = filename
-            elif filename != task.progress_phase_name:
-                task.progress_phase_index = min(task.progress_phase_index + 1, task.progress_total_phases - 1)
-                task.progress_phase_name = filename
-                task.progress_phase_bytes = 0
-        elif (
-            task.progress_phase_index < task.progress_total_phases - 1
-            and task.progress_phase_bytes > 0
-            and downloaded_bytes > 0
-            and downloaded_bytes < max(1, int(task.progress_phase_bytes * 0.25))
-            and task.progress >= current_phase_limit
-        ):
-            task.progress_phase_index = min(task.progress_phase_index + 1, task.progress_total_phases - 1)
+        if self._should_advance_download_phase(task, filename, downloaded_bytes):
+            self._lock_current_download_phase(task)
+            task.progress_phase_index = min(task.progress_phase_index + 1, download_phase_count - 1)
             task.progress_phase_bytes = 0
+            task.progress_phase_source_name = filename
+            self._set_download_phase_label(task)
+            phase_index = task.progress_phase_index
+        elif filename and not task.progress_phase_source_name:
+            task.progress_phase_source_name = filename
 
-        task.progress_phase_bytes = max(task.progress_phase_bytes, downloaded_bytes)
+        if total_bytes > 0:
+            task.progress_phase_totals[phase_index] = max(task.progress_phase_totals[phase_index], total_bytes)
+        elif fragment_count > 0:
+            task.progress_phase_totals[phase_index] = max(task.progress_phase_totals[phase_index], fragment_count)
 
-    def _compose_task_progress(self, task: DownloadTask, phase_progress: float) -> float:
-        phase_total = max(1, task.progress_total_phases)
-        if phase_total == 1:
-            return max(0.0, min(99.0, phase_progress))
+        if downloaded_bytes > 0:
+            task.progress_phase_downloaded[phase_index] = max(
+                task.progress_phase_downloaded[phase_index],
+                downloaded_bytes,
+            )
+        elif fragment_count > 0 and fragment_index > 0:
+            task.progress_phase_downloaded[phase_index] = max(
+                task.progress_phase_downloaded[phase_index],
+                fragment_index,
+            )
 
-        phase_index = min(task.progress_phase_index, phase_total - 1)
-        overall_progress = (phase_index * 100 / phase_total) + (phase_progress / phase_total)
+        if status == "finished":
+            self._lock_current_download_phase(task)
+
+        task.progress_phase_bytes = task.progress_phase_downloaded[phase_index]
+
+    def _ensure_progress_phase_storage(self, task: DownloadTask) -> None:
+        requires_merge = task.progress_total_phases > 1
+        expected_download_phases = 2 if requires_merge else 1
+        if len(task.progress_phase_totals) != expected_download_phases:
+            task.progress_phase_totals = [0] * expected_download_phases
+        if len(task.progress_phase_downloaded) != expected_download_phases:
+            task.progress_phase_downloaded = [0] * expected_download_phases
+
+    def _should_advance_download_phase(self, task: DownloadTask, filename: str, downloaded_bytes: int) -> bool:
+        download_phase_count = len(task.progress_phase_downloaded)
+        if task.progress_phase_index >= download_phase_count - 1:
+            return False
+        if filename and task.progress_phase_source_name and filename != task.progress_phase_source_name:
+            return True
+
+        previous_downloaded = task.progress_phase_downloaded[task.progress_phase_index]
+        previous_total = task.progress_phase_totals[task.progress_phase_index]
+        if previous_downloaded <= 0 or downloaded_bytes <= 0:
+            return False
+        if downloaded_bytes >= max(1, int(previous_downloaded * 0.25)):
+            return False
+        if previous_total > 0:
+            return previous_downloaded >= int(previous_total * 0.8)
+        return previous_downloaded > 10 * 1024 * 1024
+
+    def _lock_current_download_phase(self, task: DownloadTask) -> None:
+        if not task.progress_phase_downloaded:
+            return
+        phase_index = min(task.progress_phase_index, len(task.progress_phase_downloaded) - 1)
+        phase_total = max(task.progress_phase_totals[phase_index], task.progress_phase_downloaded[phase_index])
+        task.progress_phase_totals[phase_index] = phase_total
+        task.progress_phase_downloaded[phase_index] = phase_total
+
+    def _set_download_phase_label(self, task: DownloadTask) -> None:
+        if task.progress_total_phases <= 1:
+            task.progress_phase_name = ""
+        elif task.progress_phase_index == 0:
+            task.progress_phase_name = "正在下载视频…"
+        else:
+            task.progress_phase_name = "正在下载音频…"
+
+    def _enter_merge_phase(self, task: DownloadTask) -> None:
+        for index in range(len(task.progress_phase_downloaded)):
+            phase_total = max(task.progress_phase_totals[index], task.progress_phase_downloaded[index])
+            task.progress_phase_totals[index] = phase_total
+            task.progress_phase_downloaded[index] = phase_total
+        task.progress_merge_active = True
+        task.progress_phase_index = max(0, task.progress_total_phases - 1)
+        task.progress_phase_bytes = 0
+        task.progress_phase_name = "正在合并…"
+
+    def _compose_task_progress(self, task: DownloadTask) -> float:
+        self._ensure_progress_phase_storage(task)
+        download_total = self._estimated_download_total(task)
+        if download_total <= 0:
+            return max(0.0, min(99.0, task.progress))
+        merge_weight = self._merge_progress_weight(task, download_total)
+        cumulative_downloaded = self._cumulative_downloaded_bytes(task)
+        if task.progress_merge_active:
+            cumulative_downloaded = download_total
+        overall_progress = cumulative_downloaded * 100 / (download_total + merge_weight)
         return max(0.0, min(99.0, overall_progress))
+
+    def _estimated_download_total(self, task: DownloadTask) -> int:
+        totals = task.progress_phase_totals
+        downloaded = task.progress_phase_downloaded
+        known_total = sum(total for total in totals if total > 0)
+        unknown_indexes = [index for index, total in enumerate(totals) if total <= 0]
+        if not unknown_indexes:
+            return known_total
+
+        selected_total = task.filesize or (task.selected_format.filesize if task.selected_format else 0) or 0
+        remaining_from_selected = max(0, selected_total - known_total)
+        if remaining_from_selected > 0:
+            return known_total + remaining_from_selected
+
+        first_basis = totals[0] if totals and totals[0] > 0 else (downloaded[0] if downloaded else 0)
+        future_estimate = max(1, int(first_basis * 0.3)) if first_basis > 0 else 0
+        return known_total + future_estimate * len(unknown_indexes)
+
+    def _merge_progress_weight(self, task: DownloadTask, download_total: int) -> int:
+        if task.progress_total_phases <= len(task.progress_phase_totals):
+            return 0
+        return max(1, int(download_total * 0.05))
+
+    def _cumulative_downloaded_bytes(self, task: DownloadTask) -> int:
+        if not task.progress_phase_downloaded:
+            return task.downloaded_bytes
+        current_index = min(task.progress_phase_index, len(task.progress_phase_downloaded) - 1)
+        completed = sum(task.progress_phase_totals[:current_index])
+        return completed + task.progress_phase_downloaded[current_index]
+
+    def _update_task_speed_text(self, task: DownloadTask, payload: dict) -> None:
+        if task.progress_merge_active:
+            task.speed_text = "正在合并…"
+            return
+        now = time.monotonic()
+        cumulative_bytes = self._cumulative_downloaded_bytes(task)
+        task.speed_samples.append((now, cumulative_bytes))
+        while task.speed_samples and now - task.speed_samples[0][0] > 8:
+            task.speed_samples.popleft()
+        if len(task.speed_samples) >= 2:
+            first_time, first_bytes = task.speed_samples[0]
+            elapsed = now - first_time
+            if elapsed > 0 and cumulative_bytes >= first_bytes:
+                task.speed_text = format_speed((cumulative_bytes - first_bytes) / elapsed)
+                return
+        task.speed_text = format_speed(payload.get("speed"))
 
     def _handle_task_selection_changed(self) -> None:
         if self._selection_syncing:
@@ -2535,39 +2666,14 @@ class VideoDownloadPage(QWidget):
         task = self._task_index.get(task_id)
         if task is None:
             return
-        total_bytes = int(payload.get("total_bytes") or 0)
-        estimated_bytes = int(payload.get("total_bytes_estimate") or 0)
-        downloaded_bytes = int(payload.get("downloaded_bytes") or 0)
-        fragment_index = int(payload.get("fragment_index") or 0)
-        fragment_count = int(payload.get("fragment_count") or 0)
         self._update_task_download_phase(task, payload)
-        task.downloaded_bytes = downloaded_bytes
-        phase_progress = 0.0
+        task.downloaded_bytes = self._cumulative_downloaded_bytes(task)
         preferred_filesize = self._preferred_task_filesize(task)
-        if total_bytes > 0:
-            phase_progress = downloaded_bytes * 100 / total_bytes
-            if preferred_filesize is None:
-                task.filesize = total_bytes
-        elif estimated_bytes > 0 and downloaded_bytes > 0:
-            phase_progress = downloaded_bytes * 100 / estimated_bytes
-            if preferred_filesize is None:
-                task.filesize = estimated_bytes
-        elif fragment_count > 0 and fragment_index > 0:
-            phase_progress = fragment_index * 100 / fragment_count
-        elif downloaded_bytes > 0:
-            phase_progress = 1.0
-
-        if payload.get("status") == "finished":
-            if task.progress_total_phases > 1 and task.progress_phase_index < task.progress_total_phases - 1:
-                task.progress = max(
-                    task.progress,
-                    ((task.progress_phase_index + 1) * 100 / task.progress_total_phases) - 1,
-                )
-            else:
-                task.progress = max(task.progress, 99.0)
-        elif phase_progress > 0:
-            task.progress = max(task.progress, self._compose_task_progress(task, phase_progress))
-        task.speed_text = format_speed(payload.get("speed"))
+        learned_total = self._estimated_download_total(task)
+        if preferred_filesize is None and learned_total > 0:
+            task.filesize = learned_total
+        task.progress = max(task.progress, self._compose_task_progress(task))
+        self._update_task_speed_text(task, payload)
         self._refresh_download_table()
 
     def _handle_download_success(self, task_id: str) -> None:
@@ -2577,6 +2683,7 @@ class VideoDownloadPage(QWidget):
         task.status = TASK_STATUS_COMPLETED
         task.progress = 100.0
         task.speed_text = ""
+        task.speed_samples.clear()
         if task.local_file and task.local_file.exists():
             try:
                 task.filesize = task.local_file.stat().st_size
@@ -2592,6 +2699,7 @@ class VideoDownloadPage(QWidget):
             return
         task.status = TASK_STATUS_FAILED
         task.speed_text = ""
+        task.speed_samples.clear()
         task.error_message = message
         self.parse_status_label.setText(f"下载失败：{task.title}，{message}")
         self._refresh_download_table()
@@ -2603,6 +2711,7 @@ class VideoDownloadPage(QWidget):
             return
         task.status = TASK_STATUS_CANCELLED
         task.speed_text = ""
+        task.speed_samples.clear()
         task.progress = 0.0
         self.parse_status_label.setText(f"已取消：{task.title}")
         self._refresh_download_table()
@@ -2618,8 +2727,11 @@ class VideoDownloadPage(QWidget):
         if task is None:
             return
         task.cancel_requested = True
-        if task.status == TASK_STATUS_WAITING:
+        if task.status in (TASK_STATUS_WAITING, TASK_STATUS_DOWNLOADING):
             task.status = TASK_STATUS_CANCELLED
+            task.speed_text = ""
+            task.speed_samples.clear()
+            self.parse_status_label.setText(f"已取消：{task.title}")
             self._refresh_download_table()
 
     def _retry_task(self, task_id: str) -> None:

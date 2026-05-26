@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable
@@ -422,6 +423,9 @@ class YtDlpService:
         if options.cookie_file and Path(options.cookie_file).is_file():
             ydl_opts["cookiefile"] = options.cookie_file
 
+        before_pids = self._snapshot_child_pids()
+        done_event = threading.Event()
+        watcher = self._start_cancel_watcher(task, done_event, before_pids)
         try:
             with youtube_dl(ydl_opts) as ydl:
                 result = ydl.extract_info(task.url, download=True)
@@ -430,7 +434,12 @@ class YtDlpService:
         except DownloadCancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            if task.cancel_requested:
+                raise DownloadCancelledError("下载已取消。") from exc
             raise VideoDownloadError(self._normalize_error_message(exc)) from exc
+        finally:
+            done_event.set()
+            watcher.join(timeout=1)
 
     def _download_with_cli_retry(
         self,
@@ -518,6 +527,7 @@ class YtDlpService:
             command.extend(["--cookies", options.cookie_file])
         command.append(task.url)
 
+        before_pids = self._snapshot_child_pids()
         process = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -527,6 +537,8 @@ class YtDlpService:
             errors="ignore",
             creationflags=self._subprocess_creationflags(),
         )
+        done_event = threading.Event()
+        watcher = self._start_cancel_watcher(task, done_event, before_pids, process=process)
         output_lines: list[str] = []
 
         try:
@@ -536,6 +548,8 @@ class YtDlpService:
                 if not line:
                     continue
                 output_lines.append(line)
+                if self._is_cli_merge_line(line):
+                    self._emit_merge_progress(progress_callback=progress_callback)
                 if task.cancel_requested and process.poll() is None:
                     process.terminate()
                     raise DownloadCancelledError("下载已取消。")
@@ -544,14 +558,23 @@ class YtDlpService:
                     self._emit_cli_progress(line[marker_index:], progress_callback=progress_callback)
 
             return_code = process.wait()
+            if task.cancel_requested:
+                raise DownloadCancelledError("下载已取消。")
         except DownloadCancelledError:
             self._terminate_process(process)
             raise
         except Exception as exc:  # noqa: BLE001
             self._terminate_process(process)
+            if task.cancel_requested:
+                raise DownloadCancelledError("下载已取消。") from exc
             raise VideoDownloadError(self._normalize_error_message(exc)) from exc
+        finally:
+            done_event.set()
+            watcher.join(timeout=1)
 
         if return_code != 0:
+            if task.cancel_requested:
+                raise DownloadCancelledError("下载已取消。")
             resolved_file = self._resolve_output_file(save_dir, output_stem, {}, task, options)
             if resolved_file is not None and resolved_file.is_file() and resolved_file.stat().st_size > 0:
                 task.local_file = resolved_file
@@ -784,6 +807,25 @@ class YtDlpService:
         }
         progress_callback(payload)
 
+    def _is_cli_merge_line(self, line: str) -> bool:
+        lower = line.lower()
+        return "[merger]" in lower and "merg" in lower
+
+    def _emit_merge_progress(self, *, progress_callback: Callable[[dict[str, Any]], None]) -> None:
+        progress_callback(
+            {
+                "status": "merging",
+                "downloaded_bytes": 0,
+                "total_bytes": 0,
+                "total_bytes_estimate": 0,
+                "speed": 0.0,
+                "eta": None,
+                "fragment_index": 0,
+                "fragment_count": 0,
+                "filename": "",
+            }
+        )
+
     def _parse_int(self, value: str | None) -> int:
         try:
             return int(float(value or 0))
@@ -823,6 +865,72 @@ class YtDlpService:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+
+    def _snapshot_child_pids(self) -> set[int]:
+        try:
+            import psutil
+
+            return {child.pid for child in psutil.Process().children(recursive=True)}
+        except Exception:
+            return set()
+
+    def _start_cancel_watcher(
+        self,
+        task: DownloadTask,
+        done_event: threading.Event,
+        before_pids: set[int],
+        *,
+        process: subprocess.Popen[str] | None = None,
+    ) -> threading.Thread:
+        def watch() -> None:
+            while not done_event.wait(0.1):
+                if not task.cancel_requested:
+                    continue
+                if process is not None and process.poll() is None:
+                    process.terminate()
+                self._terminate_new_media_children(before_pids)
+                return
+
+        thread = threading.Thread(target=watch, name="krok-download-cancel-watcher", daemon=True)
+        thread.start()
+        return thread
+
+    def _terminate_new_media_children(self, before_pids: set[int]) -> None:
+        try:
+            import psutil
+        except Exception:
+            return
+
+        targets = []
+        try:
+            children = psutil.Process().children(recursive=True)
+        except Exception:
+            return
+
+        for child in children:
+            if child.pid in before_pids:
+                continue
+            try:
+                name = child.name().lower()
+            except Exception:
+                name = ""
+            if "ffmpeg" in name or "yt-dlp" in name:
+                targets.append(child)
+
+        for child in targets:
+            try:
+                child.terminate()
+            except Exception:
+                pass
+        try:
+            _, alive = psutil.wait_procs(targets, timeout=1)
+        except Exception:
+            alive = targets
+        for child in alive:
+            try:
+                child.kill()
+            except Exception:
+                pass
 
     def _subprocess_creationflags(self) -> int:
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)

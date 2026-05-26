@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -77,6 +78,11 @@ class DownloadTask:
     progress_phase_index: int = 0
     progress_phase_bytes: int = 0
     progress_phase_name: str = ""
+    progress_phase_source_name: str = ""
+    progress_phase_totals: list[int] = field(default_factory=list)
+    progress_phase_downloaded: list[int] = field(default_factory=list)
+    progress_merge_active: bool = False
+    speed_samples: deque[tuple[float, int]] = field(default_factory=lambda: deque(maxlen=120))
     naming_rule: str = NAMING_RULE_TITLE
     custom_template: str = "{title}"
     merge_video_audio: bool = True
