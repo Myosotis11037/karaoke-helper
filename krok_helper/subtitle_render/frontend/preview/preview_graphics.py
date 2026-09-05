@@ -371,6 +371,7 @@ class PreviewGraphicsView(QGraphicsView):
         self._render_busy_badge = _RenderBusyBadge(self)
         self._render_pending_since: Optional[float] = None
         self._render_progress_text: Optional[str] = None
+        self._render_progress_label: Optional[str] = None
         self._render_progress_at: Optional[float] = None
         self._render_duration_history: list[float] = []
         self._render_busy_timer = QTimer(self)
@@ -551,6 +552,7 @@ class PreviewGraphicsView(QGraphicsView):
         if self._render_pending_since is None:
             self._render_pending_since = time.monotonic()
             self._render_progress_text = None
+            self._render_progress_label = None
             self._render_progress_at = None
         if not self._render_busy_timer.isActive():
             self._render_busy_timer.start()
@@ -567,6 +569,7 @@ class PreviewGraphicsView(QGraphicsView):
                 del self._render_duration_history[:-_RENDER_DURATION_HISTORY_MAX]
         self._render_pending_since = None
         self._render_progress_text = None
+        self._render_progress_label = None
         self._render_progress_at = None
         self._render_busy_badge.setVisible(False)
         self._render_busy_timer.stop()
@@ -575,6 +578,7 @@ class PreviewGraphicsView(QGraphicsView):
         if self._render_pending_since is None:
             return
         self._render_progress_text = f"字幕渲染 · {label} {int(percent)}%"
+        self._render_progress_label = label
         self._render_progress_at = time.monotonic()
         if self._render_busy_badge.isVisible():
             self._update_render_busy_badge()
@@ -598,14 +602,15 @@ class PreviewGraphicsView(QGraphicsView):
         if elapsed < _RENDER_BUSY_DELAY_S and not self._render_busy_badge.isVisible():
             return
         # 进度事件停驻超阈值 = 进入无 Python 刻度的等待段（sidecar 场景构建 /
-        # 首帧实现）：撤掉冻结的「阶段 xx%」，避免百分比长时间不动损害可信度。
+        # 首帧实现）：撤掉冻结的百分比，但保留阶段名，让用户看得出卡在哪一段。
         stalled = (
             self._render_progress_text is not None
             and self._render_progress_at is not None
             and now - self._render_progress_at > _RENDER_PROGRESS_STALL_S
         )
         if stalled:
-            text = "字幕渲染"
+            label = self._render_progress_label
+            text = f"字幕渲染 · {label}中" if label else "字幕渲染"
         else:
             text = self._render_progress_text or "字幕渲染中"
         # 尾缀优先「预计还需」（按历史慢渲染时长估算），超出预估或尚无样本时

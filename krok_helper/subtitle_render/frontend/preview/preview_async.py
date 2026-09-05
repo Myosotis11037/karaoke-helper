@@ -956,6 +956,9 @@ class GpuAsyncSubtitleRenderer(QObject):
                                 defer_followers=True,
                                 defer_realizations_until_first_frame=True,
                                 relayout_scope=relayout_scope,
+                                progress=lambda: self.renderProgress.emit(
+                                    80, "场景构建"
+                                ),
                             )
                             self._active_worker_count = max(
                                 1, min(int(configured.get("worker_count", 1)), 8)
@@ -988,6 +991,9 @@ class GpuAsyncSubtitleRenderer(QObject):
                                     worker_count=1,
                                     defer_followers=True,
                                     defer_realizations_until_first_frame=True,
+                                    progress=lambda: self.renderProgress.emit(
+                                        80, "场景构建"
+                                    ),
                                 )
                                 self._active_worker_count = 1
                             with self._stats_lock:

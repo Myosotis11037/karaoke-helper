@@ -2559,10 +2559,10 @@ def test_preview_graphics_render_badge_tracks_progress(qapp, monkeypatch):
         graphics._update_render_busy_badge()
         assert badge._text.startswith("字幕渲染 · 逐行排版 43% · ")
 
-        # 进度停驻超阈值（sidecar 无刻度等待）→ 撤掉冻结的百分比。
+        # 进度停驻超阈值（sidecar 无刻度等待）→ 撤掉冻结的百分比、保留阶段名。
         graphics._render_progress_at = time.monotonic() - 2.0
         graphics._update_render_busy_badge()
-        assert badge._text.startswith("字幕渲染 · ")
+        assert badge._text.startswith("字幕渲染 · 逐行排版中 · ")
 
         # 历史样本给出「预计还需」尾缀。
         graphics._render_duration_history = [3.0, 4.0, 5.0]
