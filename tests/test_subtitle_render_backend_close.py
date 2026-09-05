@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 
 import pytest
@@ -115,3 +116,27 @@ def test_close_swallows_dead_pipe_handle_errors(tmp_path):
     # 收尸流程不能被死句柄异常打断。
     renderer.close()
     assert renderer.is_running is False
+
+
+def test_close_does_not_leak_reader_thread_exceptions(tmp_path, monkeypatch):
+    """close() 关闭管道以解除读取线程阻塞时，线程必须静默退出。
+
+    未捕获的线程异常会送去 ``threading.excepthook``；测试进程里 SUG crash
+    guard 接管该钩子后把报告弹成模态错误框，offscreen 下无人能关，全量
+    回归直接卡死（2026-09-06 干净节点实测卡在 native_export 之后首个
+    处理 Qt 事件的测试上）。
+    """
+    sidecar = _write_min_sidecar(tmp_path)
+    renderer = NativeRendererProcess(
+        sidecar, response_timeout_s=2.0, close_timeout_s=1.0
+    )
+    raised: list[object] = []
+    monkeypatch.setattr(threading, "excepthook", lambda args: raised.append(args))
+
+    renderer.start()
+    pipe_threads = list(renderer._pipe_threads)  # noqa: SLF001 — close() 会清空列表
+    renderer.close()
+    for thread in pipe_threads:
+        thread.join(timeout=2.0)
+
+    assert not raised

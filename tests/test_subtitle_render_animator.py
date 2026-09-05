@@ -198,7 +198,11 @@ def test_max_line_animation_excursion_none_for_shear_effects():
 def test_max_line_animation_excursion_bounded_for_travel_effects():
     from krok_helper.subtitle_render.engine.render.core.animator import max_line_animation_excursion
 
-    rise = Style(font_size_px=48, entry_anim="rise", entry_lead_ms=300)
+    # 唱字动画默认 utopia（legacy 兼容），纵向包络会叠加 h/15+1.5em；
+    # 这里显式关掉唱字，隔离 rise 行程本身的上界。
+    rise = Style(
+        font_size_px=48, entry_anim="rise", entry_lead_ms=300, karaoke_anim="none"
+    )
     assert max_line_animation_excursion(rise, 1080) == pytest.approx(
         max(48 * 0.35, 18.0)
     )
@@ -206,7 +210,11 @@ def test_max_line_animation_excursion_bounded_for_travel_effects():
     assert max_line_animation_excursion(utopia, 2160) == pytest.approx(
         2160 / 15.0 + 48 * 1.5
     )
-    assert max_line_animation_excursion(Style(), 1080) == 0.0
+    assert max_line_animation_excursion(Style(karaoke_anim="none"), 1080) == 0.0
+    # 默认唱字 utopia：没有任何入退场动画的样式也带 h/15+1.5×字号的纵向行程。
+    assert max_line_animation_excursion(Style(), 1080) == pytest.approx(
+        1080 / 15.0 + 100 * 1.5
+    )
 
 
 def test_max_line_animation_excursion_honors_project_max_font():
@@ -220,7 +228,10 @@ def test_max_line_animation_excursion_honors_project_max_font():
     big = max_line_animation_excursion(style, 2160, font_size_px=4096)
     assert big == pytest.approx(2160 / 15.0 + 4096 * 1.5)
 
-    rise = Style(font_size_px=48, entry_anim="rise", entry_lead_ms=300)
+    # 同上：关掉默认的 utopia 唱字，rise 行程才能单独成为上界。
+    rise = Style(
+        font_size_px=48, entry_anim="rise", entry_lead_ms=300, karaoke_anim="none"
+    )
     assert max_line_animation_excursion(rise, 1080, font_size_px=300) == pytest.approx(
         max(300 * 0.35, 18.0)
     )

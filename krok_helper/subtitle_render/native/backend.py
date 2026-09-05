@@ -20,7 +20,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from krok_helper.subtitle_render.engine.render.render_ir import build_render_ir
 from krok_helper.subtitle_render.domain.timing import TimingTrack
@@ -868,6 +868,7 @@ class NativeRendererProcess:
         extra_tracks: list[TimingTrack] | None = None,
         duration_ms: int | None = None,
         relayout_scope: str | None = None,
+        progress: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         ir_kwargs: dict[str, Any] = {
             "width": width,
@@ -883,6 +884,9 @@ class NativeRendererProcess:
             # 变化，歌词布局计划按签名复用（见 build_render_ir）。
             ir_kwargs["relayout_scope"] = relayout_scope
         ir = build_render_ir(track, style, **ir_kwargs)
+        if progress is not None:
+            # IR（Python 侧整轨重排）完成、即将进入 sidecar 场景构建等待。
+            progress()
         self._send({"cmd": "configure", "ir": ir})
         return self._expect_ok(
             self._read_until_event("configured", timeout_s=self.configure_timeout_s)
@@ -917,6 +921,7 @@ class NativeRendererProcess:
         export_crop_height: int = 0,
         export_bands: list[tuple[int, int]] | None = None,
         relayout_scope: str | None = None,
+        progress: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Configure the G1 DirectWrite scene without enabling the product path."""
         self.configure(
@@ -929,6 +934,7 @@ class NativeRendererProcess:
             extra_tracks=extra_tracks,
             duration_ms=duration_ms,
             relayout_scope=relayout_scope,
+            progress=progress,
         )
         payload: dict[str, Any] = {
             "cmd": "gpu_configure",
@@ -1331,13 +1337,23 @@ class NativeRendererProcess:
         try:
             for line in iter(stream.readline, ""):
                 self._stdout_queue.put(line)
+        except (ValueError, OSError):
+            # close() 在 join 超时后会直接关闭管道以解除 readline 阻塞；
+            # 此刻读到的是已关闭的文件对象。必须就地吞掉：未捕获的线程异常
+            # 会送去 threading.excepthook，测试进程里 SUG crash guard 把它
+            # 弹成模态错误框，无人点掉就卡死整个套件。
+            pass
         finally:
             self._stdout_queue.put(None)
 
     def _drain_stderr(self, stream: Any) -> None:
-        for line in iter(stream.readline, ""):
-            with self._stderr_lock:
-                self._stderr_tail.append(line.rstrip())
+        try:
+            for line in iter(stream.readline, ""):
+                with self._stderr_lock:
+                    self._stderr_tail.append(line.rstrip())
+        except (ValueError, OSError):
+            # 同 _enqueue_stdout：管道被 close() 关闭时静默退出。
+            pass
 
     def _remember_stdout_noise(self, line: str) -> None:
         with self._stdout_noise_lock:

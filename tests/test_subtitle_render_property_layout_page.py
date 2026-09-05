@@ -184,7 +184,9 @@ def test_layout_row_builder_preserves_schematic_slots_and_ranges(qapp) -> None:
     assert host._layout_schematic.width() == round(150 * 16 / 9)
     assert host._vertical_margin_label.text() == "下余白"
     assert host._vertical_margin_field.sizePolicy().retainSizeWhenHidden()
-    assert host._schematic_board.slots["bottom_right"] is host._allow_biting_check
+    # 右下槽位放的是「强制顶底/启用咬合」勾选框容器 _page_anchor_checks，
+    # 而不是裸的咬合勾选框。
+    assert host._schematic_board.slots["bottom_right"] is host._page_anchor_checks
 
 
 def test_layout_row_builder_routes_margin_and_biting_changes(qapp) -> None:

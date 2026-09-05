@@ -330,7 +330,16 @@ def test_the_preferences_survive_a_save_load_round_trip(window) -> None:
     window._auto_chorus_end_chars = "]}"
     window._auto_chorus_overwrite = True
     saved: dict = {}
-    window._settings_provider = type("P", (), {"save": lambda _s, data: saved.update(data)})()
+    # 窗口在构造时把 provider 包进了 SubtitleRenderSettingsStore，
+    # 事后替换 _settings_provider 不会生效；持久化走的是 _settings_store。
+    window._settings_store = type(
+        "Store",
+        (),
+        {
+            "load": staticmethod(lambda: {}),
+            "save": lambda _s, data: saved.update(data),
+        },
+    )()
 
     window._save_persisted_state()
 

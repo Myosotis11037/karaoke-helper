@@ -70,9 +70,10 @@ def test_property_page_registry_builds_each_host_page_once_in_order() -> None:
     assert pages == tuple(f"page:{index}" for index in range(1, 7))
     assert calls.count("stretch:1") == 6
     assert calls.index("_make_animation_section") < calls.index("_make_lit_section")
-    assert calls.index("_make_title_text_section") < calls.index(
-        "_make_title_style_section"
-    ) < calls.index("_make_title_time_section")
+    # 标题页自多标题列表改造后由单一入口 _make_title_page 构建。
+    assert calls.index("_make_title_page") < calls.index(
+        "_make_background_source_section"
+    )
     assert calls.index("_make_background_source_section") < calls.index(
         "_make_screen_size_section"
     )
