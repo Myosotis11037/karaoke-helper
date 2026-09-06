@@ -268,6 +268,7 @@ from krok_helper.subtitle_render.engine.layout.plan.page_offsets import (
 )
 from krok_helper.subtitle_render.engine.layout.display.schedule import (
     DisplayScheduleResolvers,
+    collision_time_window_name as _collision_time_window_name,
     extend_page_display_boundary as _extend_page_display_boundary,
     resolve_display_schedule,
     resolve_visible_display_lines,
@@ -1539,8 +1540,15 @@ def _measure_page_offset_lines(
                 if line_layout is not None
                 else baselines.get(display_line.lane)
             )
+        # 空间避让的判碰时间窗与 ②（时间压缩/守卫）同口径：关「允许出入场
+        # 动画重叠」时用完整显示窗，时间压不动的残余重叠（常落在动画边距
+        # 里）也能触发挪页；开时用稳定段窗，动画互相穿越不算冲突、不挪页。
         collision_window = (
-            _display_line_static_collision_window(display_line, style)
+            _display_line_collision_time_window(
+                display_line,
+                style,
+                time_window=_collision_time_window_name(style),
+            )
             if axis_bounds is not None
             else None
         )

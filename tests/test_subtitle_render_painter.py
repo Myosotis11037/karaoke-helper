@@ -9904,6 +9904,49 @@ def test_cross_page_placement_is_rigid_and_does_not_rewrite_time(qapp):
     assert any("最终整页偏移" in item.detail for item in shifts)
 
 
+def test_protect_time_residual_overlap_still_triggers_page_placement(qapp):
+    """保护时间挡住时间压缩后，残余的显示窗重叠仍要触发空间避让（挪页）。
+
+    场景：同段两个双行页，下行走字间隙仅 800ms、保护时间 500ms、默认
+    fade 300/300 动画。② 在 display 判碰窗口下把下行的重叠压到只剩
+    [下一句入场, 上一句消失) 的一小段——两侧余量都已被保护时间锁死，
+    时间上压不动，这正是空间避让该接手的时刻。③ 的判碰窗口必须与 ②
+    同口径（含动画、尊重「允许出入场动画重叠」开关），否则残余重叠
+    恰好落在动画边距里，③ 永远看不见、永不挪页。
+    """
+
+    lines = [
+        TimingLine(chars=[TimingChar(text, start)], end_ms=end)
+        for text, start, end in (
+            ("あ", 1_000, 1_500),
+            ("い", 2_000, 2_500),
+            ("う", 2_700, 3_200),
+            ("え", 3_300, 3_800),
+        )
+    ]
+    track = TimingTrack(
+        lines=lines,
+        page_plan=TrackPagePlan(
+            [TrackSection([TrackPage(2, "default"), TrackPage(2, "default")])]
+        ),
+    )
+    style = replace(Style(), line_protect_ms=500)
+
+    windows = subtitle_painter.display_windows_for_style(track, style)
+    # 前置：② 确实留下了下行走字的跨页显示窗重叠（第 4 句早于第 2 句消失）。
+    assert windows[3][0] < windows[1][1]
+
+    offsets = subtitle_painter.resolved_page_offsets_for_style(
+        1280, 720, track, style
+    )
+    assert offsets[0] == offsets[1] == (0.0, 0.0)
+    assert offsets[2] == offsets[3]
+    assert offsets[2] != (0.0, 0.0)
+
+    # 挪页只改位置不改时间：offsets 计算前后显示窗逐字节不变。
+    assert subtitle_painter.display_windows_for_style(track, style) == windows
+
+
 def test_section_ending_clear_caps_animation_restore_at_section_end(qapp):
     """段末清屏是输出不变量：守卫的动画恢复也不能把结尾拉过本段结束点。"""
 
@@ -9936,6 +9979,36 @@ def test_section_ending_clear_caps_animation_restore_at_section_end(qapp):
     # 第二段（结束点 20_500+1_000 = 21_500）同样被钳制。
     assert hold[2][1] == 22_000
     assert clear[2][1] == 21_500
+
+
+def test_animation_overlap_switch_keeps_placement_on_stable_windows(qapp):
+    """开「允许出入场动画重叠」时，动画边距里的重叠不触发挪页（维持原语义）。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar(text, start)], end_ms=end)
+        for text, start, end in (
+            ("あ", 1_000, 1_500),
+            ("い", 2_000, 2_500),
+            ("う", 2_700, 3_200),
+            ("え", 3_300, 3_800),
+        )
+    ]
+    track = TimingTrack(
+        lines=lines,
+        page_plan=TrackPagePlan(
+            [TrackSection([TrackPage(2, "default"), TrackPage(2, "default")])]
+        ),
+    )
+    style = replace(
+        Style(),
+        line_protect_ms=500,
+        allow_entry_exit_animation_overlap=True,
+    )
+
+    offsets = subtitle_painter.resolved_page_offsets_for_style(
+        1280, 720, track, style
+    )
+    assert all(offset == (0.0, 0.0) for offset in offsets.values())
 
 
 def test_cross_page_line_ink_height_excludes_layout_line_gap(qapp):
