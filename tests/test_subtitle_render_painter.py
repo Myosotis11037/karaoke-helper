@@ -9904,6 +9904,40 @@ def test_cross_page_placement_is_rigid_and_does_not_rewrite_time(qapp):
     assert any("最终整页偏移" in item.detail for item in shifts)
 
 
+def test_section_ending_clear_caps_animation_restore_at_section_end(qapp):
+    """段末清屏是输出不变量：守卫的动画恢复也不能把结尾拉过本段结束点。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("あ", 1_000)], end_ms=1_500),
+        TimingLine(chars=[TimingChar("い", 1_800)], end_ms=2_000),
+        # 间奏 18s > 默认分段阈值 → 第二段，用于隔离第一段的清屏行为。
+        TimingLine(chars=[TimingChar("う", 20_000)], end_ms=20_500),
+    ]
+    track = TimingTrack(lines=lines)
+    base = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        exit_anim="fade",
+        exit_fade_ms=1_500,
+    )
+
+    hold = subtitle_painter.display_windows_for_style(
+        track, replace(base, section_ending_mode="hold")
+    )
+    clear = subtitle_painter.display_windows_for_style(
+        track, replace(base, section_ending_mode="clear")
+    )
+
+    # 第一段结束点 = 段内最晚唱完 2_000 + 延迟退场 1_000 = 3_000。
+    # hold 下守卫恢复 1_500ms 退场动画：上句拉到自身 1_500+1_500 = 3_000，
+    # 下句拉到 2_000+1_500 = 3_500；clear 把下句钳回 3_000。
+    assert hold[0][1] == 3_000
+    assert hold[1][1] == 3_500
+    assert clear[0][1] == clear[1][1] == 3_000
+    # 第二段（结束点 20_500+1_000 = 21_500）同样被钳制。
+    assert hold[2][1] == 22_000
+    assert clear[2][1] == 21_500
+
+
 def test_cross_page_line_ink_height_excludes_layout_line_gap(qapp):
     line = TimingLine(chars=[TimingChar("Ag", 1_000)], end_ms=2_000)
     track = TimingTrack(lines=[line])
@@ -11480,9 +11514,12 @@ def test_animation_overlap_switch_changes_collision_time_window(qapp):
         (500, 2_550),
         (2_350, 4_250),
     ]
+    # 关闭开关后用完整显示窗判碰，动画可压缩到下限：前句退场余量 550ms
+    # 压到 100ms 下限（消失 2_100），剩余 50ms 由后句入场吸收（上屏
+    # 2_400，入场余量 450ms 仍高于 250ms 下限）。
     assert [(item.display_start_ms, item.display_end_ms) for item in forbidden] == [
-        (500, 2_250),
-        (2_550, 4_250),
+        (500, 2_100),
+        (2_400, 4_250),
     ]
 
 
@@ -11607,6 +11644,116 @@ def test_animation_guard_spills_only_remaining_overlap_to_incoming(qapp):
     assert guarded[1].display_start_ms == 2_050
     assert guarded[0].display_end_ms - lines[0].end_ms == 250
     assert lines[1].chars[0].start_ms - guarded[1].display_start_ms > 250
+
+
+def test_animation_guard_compresses_exit_animation_to_minimum_in_display_window(qapp):
+    """display 判碰窗口下，退场动画可被压缩到 100ms 下限而不是整段保留。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("前句", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("后句", 4_000)], end_ms=5_000),
+    ]
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        entry_anim="fade",
+        entry_lead_ms=900,
+        exit_anim="fade",
+        exit_fade_ms=900,
+    )
+    display_lines = [
+        DisplayLine(lines[0], 0, 100, 2_900, 0, 1, 1),
+        DisplayLine(lines[1], 0, 3_100, 6_000, 0, 2, 1),
+    ]
+
+    guarded = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        style,
+        display_lines,
+        enforce_inter_page_gap=True,
+    )
+
+    # 同轨间隔 300：需要的起点 = 2_900 + 300 = 3_200，重叠 100ms 全部由
+    # 前句的退场余量吸收（900ms 退场动画压到 800ms，仍高于 100ms 下限），
+    # 后句的 900ms 入场动画原样保留。
+    assert guarded[0].display_end_ms == 2_800
+    assert guarded[1].display_start_ms == 3_100
+
+
+def test_animation_guard_compresses_entry_animation_to_minimum_in_display_window(qapp):
+    """display 判碰窗口下，入场动画可被压缩到 250ms 下限而不是整段保留。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("前句", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("后句", 4_000)], end_ms=5_000),
+    ]
+    # 前句消失时刻手工锁定：退场侧不参与自动压缩，冲突只能由后句入场吸收。
+    lines[0].display_end_override_ms = 2_900
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        entry_anim="fade",
+        entry_lead_ms=900,
+        exit_anim="fade",
+        exit_fade_ms=900,
+    )
+    display_lines = [
+        DisplayLine(lines[0], 0, 100, 2_900, 0, 1, 1),
+        DisplayLine(lines[1], 0, 3_100, 6_000, 0, 2, 1),
+    ]
+
+    guarded = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        style,
+        display_lines,
+        enforce_inter_page_gap=True,
+    )
+
+    # 重叠 100ms 由后句入场吸收：900ms 入场动画压到 800ms，仍高于 250ms
+    # 下限；前句的手动消失时刻原样保留。
+    assert guarded[0].display_end_ms == 2_900
+    assert guarded[1].display_start_ms == 3_200
+
+
+def test_animation_guard_keeps_protect_floor_when_compressing_animations(qapp):
+    """动画可压缩但保护时间不可压缩：退场余量停在保护时间上。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("前句", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("后句", 4_000)], end_ms=5_000),
+    ]
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        entry_anim="fade",
+        entry_lead_ms=900,
+        exit_anim="fade",
+        exit_fade_ms=900,
+        line_protect_ms=500,
+    )
+    display_lines = [
+        DisplayLine(lines[0], 0, 100, 2_900, 0, 1, 1),
+        DisplayLine(lines[1], 0, 2_700, 6_000, 0, 2, 1),
+    ]
+
+    guarded = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        style,
+        display_lines,
+        enforce_inter_page_gap=True,
+    )
+
+    # 退场侧可压容量 = 2_900 − 2_000 − max(100, 500) = 400：前句消失停在
+    # 唱完 + 500（保护时间），剩余 100ms 重叠由后句入场吸收。
+    assert guarded[0].display_end_ms == 2_500
+    assert guarded[1].display_start_ms == 2_800
+    assert guarded[0].display_end_ms - lines[0].end_ms == 500
 
 
 def test_force_bottom_waits_for_automatic_time_avoidance(qapp, monkeypatch):

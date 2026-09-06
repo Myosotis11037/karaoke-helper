@@ -3180,15 +3180,14 @@ def test_build_render_ir_preserves_animation_windows_around_stable_compression()
         "lines"
     ]
 
-    # Only stable text is compressed; the complete exit animation may overlap
-    # the incoming page and remains untouched.
-    assert lines[0]["display_end_ms"] == ends[0] + 800
-    assert lines[0]["exit_duration_ms"] == 800
-    # Pixel-gated compression changes only the A/C conflict pair.  C moves by
-    # only the amount needed for the stable 300 ms gap and keeps its complete
-    # 900 ms entry.
-    assert lines[2]["display_start_ms"] == 11_200
-    assert lines[2]["entry_duration_ms"] == 900
+    # display 判碰窗口（默认关「允许出入场动画重叠」）下动画可压缩到下限：
+    # A/C 同行冲突先吃 A 的退场余量（800ms 退场压到 100ms 下限），再推迟
+    # C 的提前入场（900ms 入场压到 250ms 下限）；渲染端按窗口加速播放
+    # 整段动画。压缩不越过唱字两侧的 max(动画下限, 保护时间) 底线。
+    assert lines[0]["display_end_ms"] == ends[0] + 100
+    assert lines[0]["exit_duration_ms"] == 100
+    assert lines[2]["display_start_ms"] == 11_850
+    assert lines[2]["entry_duration_ms"] == 250
 
 
 def test_build_render_ir_resolves_independent_karaoke_animation():

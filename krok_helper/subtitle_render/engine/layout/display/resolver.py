@@ -48,6 +48,8 @@ from krok_helper.subtitle_render.engine.layout.display.signal import (
 )
 from krok_helper.subtitle_render.engine.timing.timeline import DisplayLine
 from krok_helper.subtitle_render.engine.timing.show_time import (
+    MIN_AUTO_ENTRY_ANIMATION_MS,
+    MIN_AUTO_EXIT_ANIMATION_MS,
     compression_floor_ms,
     protect_time_ms,
 )
@@ -564,7 +566,9 @@ class DisplayResolutionPorts:
     """Concrete geometry and timing operations required by the resolver."""
 
     compute: Callable[..., DisplayLines]
-    resolve_timing: Callable[[DisplayLines, bool], DisplayLines]
+    resolve_timing: Callable[..., DisplayLines]
+    """接受 ``(items, enforce_gap, fill_section_time=...)``；填充回调在
+    同步之后、守卫之前执行（预期时间阶段的一部分）。"""
     collision_pairs: Callable[[DisplayLines], CollisionPairs]
     secondary_collision_pairs: Callable[[DisplayLines], CollisionPairs]
     fill_section_time: Callable[[DisplayLines], DisplayLines]
@@ -645,6 +649,41 @@ class AnimationGuardPorts:
     ]
 
 
+def _clamp_section_ending_clear(
+    style: Style,
+    display_lines: DisplayLines,
+) -> DisplayLines:
+    """「段末清屏」钳制：自动消失不越过本段结束点。
+
+    段结束点 = 段内最晚演唱结束 + ``line_tail_ms``（与 timeline 计算口径
+    一致）。该钳制是不变量：同步延长、段内填充和守卫的动画恢复都可能把
+    结尾拉出去，因此每次守卫返回前都要重新施加。手工拖过消失时刻的句子
+    不受限制；钳制后消失不早于自身上屏时刻。
+    """
+
+    if style.section_ending_mode != "clear" or not display_lines:
+        return display_lines
+    tail = max(int(style.line_tail_ms), 0)
+    section_ends: dict[int, int] = {}
+    for item in display_lines:
+        section_index = int(item.section_index)
+        end = line_end_ms(item.line) + tail
+        section_ends[section_index] = max(section_ends.get(section_index, end), end)
+    changed = False
+    clamped = list(display_lines)
+    for index, item in enumerate(clamped):
+        if item.line.display_end_override_ms is not None:
+            continue
+        limit = section_ends.get(int(item.section_index))
+        if limit is None:
+            continue
+        capped = max(min(int(item.display_end_ms), limit), int(item.display_start_ms))
+        if capped != item.display_end_ms:
+            clamped[index] = replace(item, display_end_ms=capped)
+            changed = True
+    return clamped if changed else display_lines
+
+
 def apply_animation_time_guard(
     style: Style,
     display_lines: DisplayLines,
@@ -663,12 +702,14 @@ def apply_animation_time_guard(
     # 「保护时间」：自动压缩不得越过走字两侧的这个余量。
     floor_ms = style_compression_floor_ms(style)
     entry_durations: list[int] = []
+    exit_durations: list[int] = []
     line_starts: list[int] = []
     line_ends: list[int] = []
     for index, item in enumerate(guarded):
         entry_duration = ports.entry_animation_ms(item.line)
         exit_duration = ports.exit_animation_ms(item.line)
         entry_durations.append(entry_duration)
+        exit_durations.append(exit_duration)
         line_start = line_start_ms(item.line)
         line_end = line_end_ms(item.line)
         line_starts.append(line_start)
@@ -688,8 +729,23 @@ def apply_animation_time_guard(
             )
             changed = True
 
+    # 唱字两侧自动压缩必须留下的余量 = max(出入场动画下限, 保护时间)。
+    # 动画时长可被压缩到下限（入场 250 / 退场 100，渲染端按窗口加速播放
+    # 整段动画）；保护时间不可压缩。与 ``_reserve_with_floor`` 送进求解器
+    # 的储备同源，守卫与求解器因此遵守同一条底线。
+    entry_floors = [
+        max(min(entry_durations[index], MIN_AUTO_ENTRY_ANIMATION_MS), floor_ms)
+        for index in range(len(guarded))
+    ]
+    exit_floors = [
+        max(min(exit_durations[index], MIN_AUTO_EXIT_ANIMATION_MS), floor_ms)
+        for index in range(len(guarded))
+    ]
+
     if not enforce_inter_page_gap or style.allow_inter_page_line_overlap:
-        return guarded if changed else display_lines
+        return _clamp_section_ending_clear(
+            style, guarded if changed else display_lines
+        )
 
     time_window = (
         "stable" if style.allow_entry_exit_animation_overlap else "display"
@@ -730,21 +786,22 @@ def apply_animation_time_guard(
                 overlap_ms = required_start - int(incoming_band.display_start_ms)
 
                 if previous.line.display_end_override_ms is None:
-                    if time_window == "stable":
-                        stable_tail = max(
-                            int(previous_band.display_end_ms)
-                            - line_ends[previous_index]
-                            - floor_ms,
-                            0,
-                        )
-                    else:
-                        stable_tail = max(
-                            int(previous.display_end_ms)
-                            - ports.exit_animation_ms(previous.line)
-                            - line_ends[previous_index]
-                            - floor_ms,
-                            0,
-                        )
+                    # 退场侧容量：从完整 display_end 起算。display 判碰窗口下
+                    # 压缩动画能直接消解判定的重叠，动画可压到下限；stable
+                    # 判碰窗口下稳定段端点在余量 ≤ 动画时长后就不再移动，
+                    # 继续压动画只是白白缩短可见动画，因此下限抬到完整动画。
+                    exit_stop = max(
+                        exit_floors[previous_index],
+                        exit_durations[previous_index]
+                        if time_window == "stable"
+                        else 0,
+                    )
+                    stable_tail = max(
+                        int(previous.display_end_ms)
+                        - line_ends[previous_index]
+                        - exit_stop,
+                        0,
+                    )
                     delta = min(overlap_ms, stable_tail)
                     new_end = int(previous.display_end_ms) - delta
                     if new_end < previous.display_end_ms:
@@ -770,27 +827,26 @@ def apply_animation_time_guard(
                         changed = True
                         break
 
-                if time_window == "stable":
-                    stable_lead = max(
-                        line_starts[incoming_index]
-                        - int(incoming_band.display_start_ms)
-                        - floor_ms,
-                        0,
-                    )
-                else:
-                    stable_lead = max(
-                        line_starts[incoming_index]
-                        - entry_durations[incoming_index]
-                        - int(incoming.display_start_ms)
-                        - floor_ms,
-                        0,
-                    )
                 if incoming.line.display_start_override_ms is None:
+                    # 入场侧与退场侧同构：stable 判碰窗口下推迟到余量 =
+                    # 动画时长后稳定段起点已贴住唱字开始，再推迟只是
+                    # 白白缩短可见动画，下限同样抬到完整动画时长。
+                    entry_stop = max(
+                        entry_floors[incoming_index],
+                        entry_durations[incoming_index]
+                        if time_window == "stable"
+                        else 0,
+                    )
+                    stable_lead = max(
+                        line_starts[incoming_index]
+                        - int(incoming.display_start_ms)
+                        - entry_stop,
+                        0,
+                    )
                     delta = min(overlap_ms, stable_lead)
                     new_start = int(incoming.display_start_ms) + delta
                     latest_entry_start = max(
-                        line_starts[incoming_index]
-                        - max(entry_durations[incoming_index], floor_ms),
+                        line_starts[incoming_index] - entry_stop,
                         0,
                     )
                     new_start = min(new_start, latest_entry_start)
@@ -829,7 +885,9 @@ def apply_animation_time_guard(
                 if retimed is not None
                 else ports.measure(guarded, time_window)
             )
-    return guarded if changed else display_lines
+    return _clamp_section_ending_clear(
+        style, guarded if changed else display_lines
+    )
 
 
 def _sync_collision_bands(
@@ -871,8 +929,15 @@ def resolve_display_timing(
     *,
     enforce_inter_page_gap: bool,
     adjustments: list[TimingCollisionAdjustment] | None = None,
+    fill_section_time: Callable[[DisplayLines], DisplayLines] | None = None,
 ) -> DisplayLines:
-    """Apply page synchronization before measured animation-window guarding."""
+    """Compute expected times (sync + section fill) before the collision guard.
+
+    顺序即契约：同步入场/退场 → 自动填充段内时间 → ② 守卫压缩。填充属于
+    「预期时间」阶段，必须在解冲突**之前**落进窗口——守卫看到的就是填充
+    后的窗口，填充造出的重叠当场被解掉，不存在「填完再兜一遍」的第二轮。
+    段末清屏钳制由守卫在返回前统一施加。
+    """
 
     synchronized = apply_constrained_page_sync(
         display_lines,
@@ -885,6 +950,8 @@ def resolve_display_timing(
         ),
         enforce_inter_page_gap=enforce_inter_page_gap,
     )
+    if fill_section_time is not None:
+        synchronized = fill_section_time(synchronized)
     return apply_animation_time_guard(
         style,
         synchronized,
@@ -897,7 +964,6 @@ def resolve_display_timing(
 def resolve_display_lines(
     *,
     avoid_collisions: bool,
-    auto_fill_section_time: bool,
     ports: DisplayResolutionPorts,
 ) -> DisplayLines:
     """Run the stable multi-pass display-line resolution policy.
@@ -906,10 +972,23 @@ def resolve_display_lines(
     owns only the ordering and data flow between those operations, so layout
     policy no longer depends on the Painter implementation.
 
+    每一轮 ``resolve_timing`` 都是完整的「预期时间 → 解冲突」：同步 →
+    填充 → 守卫（守卫永远最后跑）。段内填充由此从“全部解完后再补、再
+    兜一遍守卫”的末尾步骤，提前为冲突发现与压缩始终可见的预期值。
+    管线最后还有一个与填充无关的无条件收尾守卫：守卫内循环有趟数上限，
+    密集冲突时最后一轮可能未完全收敛，输出前统一再兜一次底。
+
     每个多趟步骤完成后按 ``display`` 阶段上报进度（步骤即真实工作量：
     逐趟碰撞测量占整轨重排的大头）。步骤开始前还会登记当前槽位，供
     ``measure_collision_bands`` 的逐行回调把进度折算进槽位内连续推进。
     """
+
+    def timing(items: DisplayLines, enforce_gap: bool) -> DisplayLines:
+        return ports.resolve_timing(
+            items,
+            enforce_gap,
+            fill_section_time=ports.fill_section_time,
+        )
 
     try:
         set_display_phase_head(0, _DISPLAY_RESOLUTION_PHASES)
@@ -926,7 +1005,7 @@ def resolve_display_lines(
             # separated pages; measuring the raw lead/tail windows latches stale
             # spatial reflow decisions.
             set_display_phase_head(1, _DISPLAY_RESOLUTION_PHASES)
-            resolved = ports.resolve_timing(resolved, True)
+            resolved = timing(resolved, True)
             timing_resolved = True
             report_render_progress("display", 2, _DISPLAY_RESOLUTION_PHASES)
             set_display_phase_head(2, _DISPLAY_RESOLUTION_PHASES)
@@ -938,7 +1017,7 @@ def resolve_display_lines(
                     dynamic_single_page_reflow=True,
                     independent_line_entry=True,
                 )
-                resolved = ports.resolve_timing(resolved, True)
+                resolved = timing(resolved, True)
             report_render_progress("display", 3, _DISPLAY_RESOLUTION_PHASES)
             set_display_phase_head(3, _DISPLAY_RESOLUTION_PHASES)
             squeeze_pairs = ports.collision_pairs(resolved)
@@ -950,7 +1029,7 @@ def resolve_display_lines(
                     dynamic_single_page_reflow=True,
                     independent_line_entry=True,
                 )
-                resolved = ports.resolve_timing(resolved, True)
+                resolved = timing(resolved, True)
             report_render_progress("display", 4, _DISPLAY_RESOLUTION_PHASES)
             set_display_phase_head(4, _DISPLAY_RESOLUTION_PHASES)
             secondary_pairs = ports.secondary_collision_pairs(resolved)
@@ -967,15 +1046,10 @@ def resolve_display_lines(
             report_render_progress("display", 5, _DISPLAY_RESOLUTION_PHASES)
         if not timing_resolved:
             set_display_phase_head(5, _DISPLAY_RESOLUTION_PHASES)
-            resolved = ports.resolve_timing(resolved, avoid_collisions)
+            resolved = timing(resolved, avoid_collisions)
         report_render_progress("display", 6, _DISPLAY_RESOLUTION_PHASES)
-        # Geometry-dependent section filling is the final layout pass.  It may
-        # extend windows, so restore the animation guard without changing geometry.
         set_display_phase_head(6, _DISPLAY_RESOLUTION_PHASES)
-        if auto_fill_section_time:
-            filled = ports.fill_section_time(resolved)
-            if filled != resolved:
-                resolved = ports.apply_animation_guard(filled, avoid_collisions)
+        resolved = ports.apply_animation_guard(resolved, avoid_collisions)
         report_render_progress("display", 7, _DISPLAY_RESOLUTION_PHASES)
         return resolved
     finally:
@@ -1025,7 +1099,6 @@ def resolve_display_lines_for_style(
         return cached
     resolved = resolve_display_lines(
         avoid_collisions=not style.allow_inter_page_line_overlap,
-        auto_fill_section_time=style.auto_fill_section_time,
         ports=ports.build(logical_w, logical_h, base_kwargs),
     )
     store_display_line_resolution(cache_key, track, resolved)
