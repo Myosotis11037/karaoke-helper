@@ -111,7 +111,10 @@ def test_layout_vertical_builder_preserves_ranges_and_compact_controls(qapp) -> 
     assert host._vertical_check.text() == "竖排"
     assert host._rtl_check.text() == "从右到左"
     assert host._allow_inter_page_line_overlap_check.text() == "启用行间重叠"
-    assert "250 ms" in host._allow_inter_page_line_overlap_check.toolTip()
+    # c86b54c 起压缩下限是「时间设置」里的可调项，tooltip 指向设置名。
+    tooltip = host._allow_inter_page_line_overlap_check.toolTip()
+    assert "「入场动画保护时间」" in tooltip
+    assert "「出场动画保护时间」" in tooltip
 
 
 def test_layout_vertical_builder_routes_layout_and_style_fields(qapp) -> None:
