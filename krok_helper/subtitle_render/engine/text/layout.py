@@ -14,7 +14,6 @@ from krok_helper.subtitle_render.engine.text.metrics import (
     build_latin_font,
     char_layout_width,
     char_path_left_offset,
-    is_emoji_text,
     is_n3_latin_text,
     letter_spacing,
     make_font_for,
@@ -225,10 +224,11 @@ def build_text_layout(
             if font_for is not None
             else font
         )
+        # Emoji outlines draw through the Symbol face, but face-level
+        # vertical metrics (lane box, ruby anchor, per-char pivots) stay on
+        # the requested role/main font, matching the Direct2D backend.
         glyph_metrics = (
-            QFontMetrics(glyph_font)
-            if not is_guide and is_emoji_text(char.text)
-            else latin_metrics
+            latin_metrics
             if not is_guide and font_for is not None and is_n3_latin_text(char.text)
             else metrics
         )
