@@ -134,7 +134,19 @@ Microsoft::WRL::ComPtr<ID2D1Geometry> outsideStrokeGeometry(
     );
     Microsoft::WRL::ComPtr<ID2D1GeometrySink> widenedSink;
     checkHr(widened->Open(widenedSink.ReleaseAndGetAddressOf()), "Open protected widened geometry", device);
-    checkHr(body->Widen(width, strokeStyle.Get(), nullptr, widenedSink.Get()), "Widen protected body stroke", device);
+    // D2D's 0.25 DIP default makes Widen + EXCLUDE dominate configure time
+    // for complex Japanese outlines. Half-pixel flattening keeps the outside
+    // mask within the renderer's antialiasing fringe while substantially
+    // reducing the number of curve segments fed into the boolean operation.
+    constexpr float protectionFlatteningTolerance = 0.5f;
+    checkHr(
+        body->Widen(
+            width, strokeStyle.Get(), nullptr,
+            protectionFlatteningTolerance, widenedSink.Get()
+        ),
+        "Widen protected body stroke",
+        device
+    );
     checkHr(widenedSink->Close(), "Close protected widened geometry", device);
 
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> outside;
@@ -147,7 +159,8 @@ Microsoft::WRL::ComPtr<ID2D1Geometry> outsideStrokeGeometry(
     checkHr(outside->Open(outsideSink.ReleaseAndGetAddressOf()), "Open protected outside geometry", device);
     checkHr(
         widened->CombineWithGeometry(
-            body, D2D1_COMBINE_MODE_EXCLUDE, nullptr, outsideSink.Get()
+            body, D2D1_COMBINE_MODE_EXCLUDE, nullptr,
+            protectionFlatteningTolerance, outsideSink.Get()
         ),
         "Subtract protected glyph body",
         device
