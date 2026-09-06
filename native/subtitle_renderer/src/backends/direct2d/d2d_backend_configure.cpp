@@ -975,22 +975,24 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                             ? std::max(charStyle.strokeWidth, 0.0f)
                                 + charStyle.stroke2Width
                             : 0.0f;
-                    cached.chars.back().strokeGeometry = cachedWidenedStroke(
-                        glyphResource->strokeGeometries,
-                        path.Get(),
-                        charStyle.strokeWidth,
-                        strokeDx,
-                        0.0f,
-                        "ID2D1Factory::CreateTransformedGeometry(position vector stroke)"
-                    );
-                    cached.chars.back().stroke2Geometry = cachedWidenedStroke(
-                        glyphResource->stroke2Geometries,
-                        path.Get(),
-                        stroke2Width,
-                        strokeDx,
-                        0.0f,
-                        "ID2D1Factory::CreateTransformedGeometry(position vector stroke2)"
-                    );
+                    if (!impl_->dynamicDirectStrokeEnabled) {
+                        cached.chars.back().strokeGeometry = cachedWidenedStroke(
+                            glyphResource->strokeGeometries,
+                            path.Get(),
+                            charStyle.strokeWidth,
+                            strokeDx,
+                            0.0f,
+                            "ID2D1Factory::CreateTransformedGeometry(position vector stroke)"
+                        );
+                        cached.chars.back().stroke2Geometry = cachedWidenedStroke(
+                            glyphResource->stroke2Geometries,
+                            path.Get(),
+                            stroke2Width,
+                            strokeDx,
+                            0.0f,
+                            "ID2D1Factory::CreateTransformedGeometry(position vector stroke2)"
+                        );
+                    }
                     if (charStyle.strokeWidth > 0.0f
                         && (paintNeedsBodyProtection(charStyle.beforeFillPaint)
                             || paintNeedsBodyProtection(charStyle.afterFillPaint))) {
@@ -1027,21 +1029,23 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                         cached.chars.back().protectedStrokeGeometry = protectedStroke;
                     }
                 } else {
-                    cached.chars.back().strokeGeometry = widenedStrokeGeometry(
-                        device_.d2dFactory(),
-                        cached.chars.back().geometry.Get(),
-                        charStyle.strokeWidth,
-                        device_
-                    );
-                    cached.chars.back().stroke2Geometry = widenedStrokeGeometry(
-                        device_.d2dFactory(),
-                        cached.chars.back().geometry.Get(),
-                        charStyle.stroke2Width > 0.0f
-                            ? std::max(charStyle.strokeWidth, 0.0f)
-                                + charStyle.stroke2Width
-                            : 0.0f,
-                        device_
-                    );
+                    if (!impl_->dynamicDirectStrokeEnabled) {
+                        cached.chars.back().strokeGeometry = widenedStrokeGeometry(
+                            device_.d2dFactory(),
+                            cached.chars.back().geometry.Get(),
+                            charStyle.strokeWidth,
+                            device_
+                        );
+                        cached.chars.back().stroke2Geometry = widenedStrokeGeometry(
+                            device_.d2dFactory(),
+                            cached.chars.back().geometry.Get(),
+                            charStyle.stroke2Width > 0.0f
+                                ? std::max(charStyle.strokeWidth, 0.0f)
+                                    + charStyle.stroke2Width
+                                : 0.0f,
+                            device_
+                        );
+                    }
                     if (charStyle.strokeWidth > 0.0f
                         && (paintNeedsBodyProtection(charStyle.beforeFillPaint)
                             || paintNeedsBodyProtection(charStyle.afterFillPaint))) {
@@ -1595,22 +1599,30 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                         extendBounds(ruby.bounds, rubyHasBounds, positionedBounds);
                     }
                     ruby.geometries.push_back(positioned);
-                    ruby.strokeGeometries.push_back(cachedWidenedStroke(
-                        glyph.resource->strokeGeometries,
-                        glyph.geometry.Get(), rubyStyle.rubyStrokeWidth,
-                        positionDx, positionDy,
-                        "ID2D1Factory::CreateTransformedGeometry(position ruby stroke)"
-                    ));
+                    ruby.strokeGeometries.push_back(
+                        !impl_->dynamicDirectStrokeEnabled
+                            ? cachedWidenedStroke(
+                                glyph.resource->strokeGeometries,
+                                glyph.geometry.Get(), rubyStyle.rubyStrokeWidth,
+                                positionDx, positionDy,
+                                "ID2D1Factory::CreateTransformedGeometry(position ruby stroke)"
+                            )
+                            : nullptr
+                    );
                     const float stroke2Width = rubyStyle.rubyStroke2Width > 0.0f
                         ? std::max(rubyStyle.rubyStrokeWidth, 0.0f)
                             + rubyStyle.rubyStroke2Width
                         : 0.0f;
-                    ruby.stroke2Geometries.push_back(cachedWidenedStroke(
-                        glyph.resource->stroke2Geometries,
-                        glyph.geometry.Get(), stroke2Width,
-                        positionDx, positionDy,
-                        "ID2D1Factory::CreateTransformedGeometry(position ruby stroke2)"
-                    ));
+                    ruby.stroke2Geometries.push_back(
+                        !impl_->dynamicDirectStrokeEnabled
+                            ? cachedWidenedStroke(
+                                glyph.resource->stroke2Geometries,
+                                glyph.geometry.Get(), stroke2Width,
+                                positionDx, positionDy,
+                                "ID2D1Factory::CreateTransformedGeometry(position ruby stroke2)"
+                            )
+                            : nullptr
+                    );
                     if (rubyStyle.rubyStrokeWidth > 0.0f
                         && (paintNeedsBodyProtection(rubyStyle.rubyBeforeFillPaint)
                             || paintNeedsBodyProtection(rubyStyle.rubyAfterFillPaint))) {

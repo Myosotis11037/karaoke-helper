@@ -2171,6 +2171,7 @@ def test_gpu_g1_repeated_configure_hits_geometry_layout_cache(monkeypatch) -> No
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_configure_shares_repeated_text_glyph_and_stroke_geometry(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_DYNAMIC_DIRECT_STROKE", "0")
     track = TimingTrack(
         lines=[
             TimingLine(
@@ -2210,6 +2211,39 @@ def test_gpu_configure_shares_repeated_text_glyph_and_stroke_geometry(monkeypatc
     assert configured["glyph_geometry_build_ms"] >= 0.0
     assert configured["glyph_stroke_build_ms"] >= 0.0
     assert frame["event"] == "gpu_frame_ready"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_configure_skips_unused_widened_stroke_geometry(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_DYNAMIC_DIRECT_STROKE", "1")
+    track = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("歌", 0)], end_ms=500)]
+    )
+    style = _g1_style(
+        stroke_width_px=10,
+        stroke2_enabled=True,
+        stroke2_width_px=5,
+        decoration_kind="none",
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        configured = renderer.configure_gpu(
+            track,
+            style,
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        frame = renderer.render_gpu_frame(250, force_warp=True)
+
+    assert configured["glyph_geometry_cache_misses"] == 1
+    assert configured["glyph_stroke_cache_misses"] == 0
+    assert configured["glyph_stroke_build_ms"] == 0.0
+    assert frame["event"] == "gpu_frame_ready"
+    assert frame["stroke_draw"] > 0
+    assert frame["stroke2_draw"] > 0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
