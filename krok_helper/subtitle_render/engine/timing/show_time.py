@@ -32,12 +32,6 @@ from typing import Optional, Sequence
 MAX_SHOW_TIME_MS = 5_999_990
 """N3 的时刻上限哨兵（``Nkm3Constants``：5999990 ms）。"""
 
-MIN_AUTO_ENTRY_ANIMATION_MS = 250
-"""自动压缩非零入场动画时采用的人类视觉反应时间下限。"""
-
-MIN_AUTO_EXIT_ANIMATION_MS = 100
-"""自动压缩非零退场动画时保留的最小可见时长。"""
-
 
 @dataclass(frozen=True)
 class ShowTimePage:

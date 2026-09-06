@@ -8979,6 +8979,23 @@ def test_auto_entry_reserve_preserves_user_configured_short_duration(qapp):
         Style(entry_anim="none", entry_lead_ms=900),
         line,
     ) == 0
+    # 「入场动画保护时间」抬升储备下限；0 = 不设下限（动画可完全压掉）。
+    assert auto_entry_reserve_ms(
+        Style(
+            entry_anim="fade",
+            entry_lead_ms=900,
+            entry_anim_protect_ms=600,
+        ),
+        line,
+    ) == 600
+    assert auto_entry_reserve_ms(
+        Style(
+            entry_anim="fade",
+            entry_lead_ms=900,
+            entry_anim_protect_ms=0,
+        ),
+        line,
+    ) == 0
 
 
 def test_auto_exit_reserve_preserves_user_configured_short_duration(qapp):
@@ -8994,6 +9011,22 @@ def test_auto_exit_reserve_preserves_user_configured_short_duration(qapp):
     ) == 60
     assert auto_exit_reserve_ms(
         Style(exit_anim="none", exit_fade_ms=900),
+        line,
+    ) == 0
+    assert auto_exit_reserve_ms(
+        Style(
+            exit_anim="fade",
+            exit_fade_ms=900,
+            exit_anim_protect_ms=140,
+        ),
+        line,
+    ) == 140
+    assert auto_exit_reserve_ms(
+        Style(
+            exit_anim="fade",
+            exit_fade_ms=900,
+            exit_anim_protect_ms=0,
+        ),
         line,
     ) == 0
 
@@ -11827,6 +11860,44 @@ def test_animation_guard_keeps_protect_floor_when_compressing_animations(qapp):
     assert guarded[0].display_end_ms == 2_500
     assert guarded[1].display_start_ms == 2_800
     assert guarded[0].display_end_ms - lines[0].end_ms == 500
+
+
+def test_animation_guard_honours_custom_animation_protect_times(qapp):
+    """「入场/出场动画保护时间」抬升压缩底线：入场最多推迟到唱前该值。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("前句", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("后句", 4_000)], end_ms=5_000),
+    ]
+    # 前句消失时刻手工锁定：冲突只能由后句入场吸收。
+    lines[0].display_end_override_ms = 3_500
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        entry_anim="fade",
+        entry_lead_ms=900,
+        exit_anim="fade",
+        exit_fade_ms=900,
+        entry_anim_protect_ms=600,
+    )
+    display_lines = [
+        DisplayLine(lines[0], 0, 100, 3_500, 0, 1, 1),
+        DisplayLine(lines[1], 0, 3_100, 6_000, 0, 2, 1),
+    ]
+
+    guarded = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        style,
+        display_lines,
+        enforce_inter_page_gap=True,
+    )
+
+    # 需要 3_500 + 300 = 3_800，但入场底线 = 4_000 − 600 = 3_400：
+    # 后句最多推迟到 3_400（默认 250ms 下限时是 3_750），前句手动值不动。
+    assert guarded[0].display_end_ms == 3_500
+    assert guarded[1].display_start_ms == 3_400
 
 
 def test_force_bottom_waits_for_automatic_time_avoidance(qapp, monkeypatch):

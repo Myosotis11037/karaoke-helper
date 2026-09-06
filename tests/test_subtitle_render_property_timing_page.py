@@ -41,6 +41,10 @@ def test_timing_property_builder_preserves_section_and_control_contracts(qapp) -
     assert host._section_ending_combo.itemData(0) == "hold"
     assert host._section_ending_combo.itemData(1) == "clear"
     assert host._lane_gap_spin.maximum() == 5_000
+    assert host._entry_anim_protect_spin.minimum() == 0
+    assert host._entry_anim_protect_spin.maximum() == 10_000
+    assert host._exit_anim_protect_spin.minimum() == 0
+    assert host._exit_anim_protect_spin.maximum() == 10_000
     assert not host._sync_each_page_check.isEnabled()
     assert len(tooltip_calls) == 6
     assert {delay for _widget, delay in tooltip_calls} == {300}
@@ -56,6 +60,8 @@ def test_timing_property_builder_routes_controls_to_style_fields(qapp) -> None:
 
     host._line_lead_spin.setValue(250)
     host._line_offset_spin.setValue(-120)
+    host._entry_anim_protect_spin.setValue(600)
+    host._exit_anim_protect_spin.setValue(140)
     host._section_ending_combo.setCurrentIndex(1)
     host._sync_entry_check.setChecked(True)
     host._ruby_main_reading_units_check.setChecked(True)
@@ -65,6 +71,8 @@ def test_timing_property_builder_routes_controls_to_style_fields(qapp) -> None:
     assert host.updates == [
         {"line_lead_in_ms": 250},
         {"timing_offset_ms": -120},
+        {"entry_anim_protect_ms": 600},
+        {"exit_anim_protect_ms": 140},
         {"section_ending_mode": "clear"},
         {"sync_entry": True},
         {"ruby_main_progress_mode": "reading_units"},

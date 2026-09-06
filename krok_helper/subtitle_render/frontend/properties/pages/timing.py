@@ -119,6 +119,34 @@ class TimingPropertyPageBuilder:
             "「提前入场」与「延迟退场」中较小的那个。\n"
             "手工拖动过上屏 / 消失时间的句子不受此限制。"
         )
+        host._entry_anim_protect_spin = self._add_spin(
+            grid,
+            "入场动画保护时间",
+            0,
+            10_000,
+            "entry_anim_protect_ms",
+        )
+        host._entry_anim_protect_spin.setToolTip(
+            "自动避让压缩显示时间时，入场动画最多被压到这么短"
+            "（整段动画按窗口加速播放，不会被截断）。\n"
+            "默认 250ms；0 = 不设下限，入场动画可以被完全压掉。\n"
+            "实际压缩底线为 max(本值, 保护时间)；关「允许出入场动画重叠」时"
+            "动画才参与压缩，开启时动画互相穿越、不压缩。"
+        )
+        host._exit_anim_protect_spin = self._add_spin(
+            grid,
+            "出场动画保护时间",
+            0,
+            10_000,
+            "exit_anim_protect_ms",
+        )
+        host._exit_anim_protect_spin.setToolTip(
+            "自动避让压缩显示时间时，退场动画至少保留的可见时长"
+            "（整段动画按窗口加速播放，不会被截断）。\n"
+            "默认 100ms；0 = 不设下限，退场动画可以被完全压掉。\n"
+            "实际压缩底线为 max(本值, 保护时间)；关「允许出入场动画重叠」时"
+            "动画才参与压缩，开启时动画互相穿越、不压缩。"
+        )
         layout.addWidget(grid)
 
         sync_row = QHBoxLayout()

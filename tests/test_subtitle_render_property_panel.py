@@ -429,9 +429,11 @@ def test_property_panel_uses_fluent_checkboxes(qapp):
     assert len({id(item) for item in tooltip_filters}) == len(tooltip_filters)
     overlap_tip = panel._allow_inter_page_line_overlap_check.toolTip()
     assert "不会截断任何走字区间" in overlap_tip
-    assert "不会把非零入场动画自动压到 250 ms 以下" in overlap_tip
+    assert "不会把非零入场动画自动压到时间设置中的" in overlap_tip
+    assert "「入场动画保护时间」以下" in overlap_tip
     assert "动画时长或上屏时间由用户手工设定" in overlap_tip
-    assert "非零退场动画自动压缩时至少保留 100 ms" in overlap_tip
+    assert "非零退场动画自动压缩时至少保留" in overlap_tip
+    assert "「出场动画保护时间」" in overlap_tip
     assert "保持位置直到本页播放完毕" in overlap_tip
     assert "采用被重叠页面布局的行间距" in overlap_tip
     assert "放不下时改向反方向寻找" in overlap_tip
@@ -4204,6 +4206,8 @@ def test_style_serialization_preserves_complex_fills_and_schemes(tmp_path):
         exit_anim="char_fade",
         exit_fade_ms=700,
         line_protect_ms=450,
+        entry_anim_protect_ms=600,
+        exit_anim_protect_ms=140,
         lit_enabled=True,
         lit_style="square",
         lit_number=2,
@@ -4258,6 +4262,8 @@ def test_style_serialization_preserves_complex_fills_and_schemes(tmp_path):
     assert restored.entry_anim == "utopia"
     assert restored.exit_anim == "char_fade"
     assert restored.line_protect_ms == 450
+    assert restored.entry_anim_protect_ms == 600
+    assert restored.exit_anim_protect_ms == 140
     assert restored.lit_enabled is True
     assert restored.lit_style == "square"
     assert restored.lit_number == 2

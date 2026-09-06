@@ -10,10 +10,6 @@ from krok_helper.subtitle_render.engine.layout.display.section_edges import (
     apply_section_edge_animation,
     line_section_edge_flags,
 )
-from krok_helper.subtitle_render.engine.timing.show_time import (
-    MIN_AUTO_ENTRY_ANIMATION_MS,
-    MIN_AUTO_EXIT_ANIMATION_MS,
-)
 from krok_helper.subtitle_render.engine.style.style_semantics import style_scheme_changes
 from krok_helper.subtitle_render.domain.models import (
     LYRICS_LAYOUT_FIELDS,
@@ -98,7 +94,7 @@ def auto_entry_reserve_ms(style: Style, line: TimingLine) -> int:
     duration = max(int(line_style.entry_lead_ms), 0)
     if line_style.entry_anim == "none" or duration <= 0:
         return 0
-    return min(duration, MIN_AUTO_ENTRY_ANIMATION_MS)
+    return min(duration, max(int(line_style.entry_anim_protect_ms), 0))
 
 
 def auto_entry_reserve_resolver(style: Style) -> Callable[[TimingLine], int]:
@@ -112,7 +108,7 @@ def auto_exit_reserve_ms(style: Style, line: TimingLine) -> int:
     duration = max(int(line_style.exit_fade_ms), 0)
     if line_style.exit_anim == "none" or duration <= 0:
         return 0
-    return min(duration, MIN_AUTO_EXIT_ANIMATION_MS)
+    return min(duration, max(int(line_style.exit_anim_protect_ms), 0))
 
 
 def auto_exit_reserve_resolver(style: Style) -> Callable[[TimingLine], int]:

@@ -48,8 +48,6 @@ from krok_helper.subtitle_render.engine.layout.display.signal import (
 )
 from krok_helper.subtitle_render.engine.timing.timeline import DisplayLine
 from krok_helper.subtitle_render.engine.timing.show_time import (
-    MIN_AUTO_ENTRY_ANIMATION_MS,
-    MIN_AUTO_EXIT_ANIMATION_MS,
     compression_floor_ms,
     protect_time_ms,
 )
@@ -729,16 +727,18 @@ def apply_animation_time_guard(
             )
             changed = True
 
-    # 唱字两侧自动压缩必须留下的余量 = max(出入场动画下限, 保护时间)。
-    # 动画时长可被压缩到下限（入场 250 / 退场 100，渲染端按窗口加速播放
-    # 整段动画）；保护时间不可压缩。与 ``_reserve_with_floor`` 送进求解器
-    # 的储备同源，守卫与求解器因此遵守同一条底线。
+    # 唱字两侧自动压缩必须留下的余量 = max(出入场动画保护时间, 保护时间)。
+    # 动画时长本身可被压缩到该下限（渲染端按窗口加速播放整段动画）；
+    # 保护时间不可压缩。与 ``_reserve_with_floor`` 送进求解器的储备
+    # 同源，守卫与求解器因此遵守同一条底线。
+    entry_protect_ms = max(int(style.entry_anim_protect_ms), 0)
+    exit_protect_ms = max(int(style.exit_anim_protect_ms), 0)
     entry_floors = [
-        max(min(entry_durations[index], MIN_AUTO_ENTRY_ANIMATION_MS), floor_ms)
+        max(min(entry_durations[index], entry_protect_ms), floor_ms)
         for index in range(len(guarded))
     ]
     exit_floors = [
-        max(min(exit_durations[index], MIN_AUTO_EXIT_ANIMATION_MS), floor_ms)
+        max(min(exit_durations[index], exit_protect_ms), floor_ms)
         for index in range(len(guarded))
     ]
 

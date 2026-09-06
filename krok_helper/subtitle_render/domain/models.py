@@ -687,6 +687,8 @@ class StyleTimingConfig:
     line_lead_in_ms: int
     line_tail_ms: int
     line_protect_ms: int
+    entry_anim_protect_ms: int
+    exit_anim_protect_ms: int
     timing_offset_ms: int
     ruby_main_progress_mode: RubyMainProgressMode
     line_lane_gap_ms: int
@@ -948,6 +950,15 @@ class Style:
 
     line_protect_ms: int = 0
     """同 lane 冲突挤压时保留的显示时间；0 表示按 lead/tail 与退场动画自动计算。"""
+
+    entry_anim_protect_ms: int = 250
+    """「入场动画保护时间」：自动压缩时入场动画最多被压到这么短（渲染端
+    按窗口加速播放整段动画）；0 = 不设下限，入场动画可以被完全压掉。
+    实际压缩底线为 max(本值, ``line_protect_ms``)。"""
+
+    exit_anim_protect_ms: int = 100
+    """「出场动画保护时间」：自动压缩时退场动画至少保留的可见时长；
+    0 = 不设下限。实际压缩底线为 max(本值, ``line_protect_ms``)。"""
 
     timing_offset_ms: int = 0
     """字幕整体时间偏移。正值延后显示，负值提前显示。"""
@@ -1513,6 +1524,8 @@ def style_from_dict(payload: object) -> Style:
             "line_lead_in_ms",
             "line_tail_ms",
             "line_protect_ms",
+            "entry_anim_protect_ms",
+            "exit_anim_protect_ms",
             "timing_offset_ms",
             "line_lane_gap_ms",
             "section_gap_ms",
