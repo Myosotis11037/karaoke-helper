@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 
 from krok_helper.subtitle_render.domain.models import (
     Style,
+    TRACK_TIMING_FIELDS,
     style_from_dict,
 )
 from krok_helper.subtitle_render.domain.timing import (
@@ -79,10 +80,74 @@ def apply_track_project_data(
     _apply_display_overrides(track, data.get("line_display_overrides"))
     _apply_animation_overrides(track, data.get("line_animation_overrides"))
     _apply_wipe_reverse_overrides(track, data.get("line_wipe_reverse_overrides"))
+    _apply_display_timing(track, data.get("display_timing"))
     return AppliedTrackProjectState(
         char_role_labels_changed=roles_changed,
         guide_symbol_mismatches=tuple(guide_mismatches),
     )
+
+
+_TIMING_OVERRIDE_INT_FIELDS = frozenset({
+    "line_lead_in_ms",
+    "line_tail_ms",
+    "timing_offset_ms",
+    "line_lane_gap_ms",
+    "line_protect_ms",
+    "entry_anim_protect_ms",
+    "exit_anim_protect_ms",
+})
+_TIMING_OVERRIDE_BOOL_FIELDS = frozenset({
+    "sync_entry",
+    "sync_ending",
+    "sync_each_page",
+    "allow_entry_exit_animation_overlap",
+    "auto_fill_section_time",
+})
+_TIMING_OVERRIDE_ENUM_FIELDS = {
+    "section_ending_mode": frozenset({"hold", "clear"}),
+    "ruby_main_progress_mode": frozenset({"checkpoint_segments", "reading_units"}),
+}
+
+
+def _parse_timing_override_value(field: str, value: object) -> object:
+    """防御解析单个按轴时间覆盖值；不合法返回 ``None``（丢弃该项）。"""
+
+    if field in _TIMING_OVERRIDE_INT_FIELDS:
+        try:
+            return max(int(value), 0) if field != "timing_offset_ms" else int(value)
+        except (TypeError, ValueError):
+            return None
+    if field in _TIMING_OVERRIDE_BOOL_FIELDS:
+        return value if isinstance(value, bool) else None
+    allowed = _TIMING_OVERRIDE_ENUM_FIELDS.get(field)
+    if allowed is not None:
+        return value if value in allowed else None
+    return None
+
+
+def _apply_display_timing(track: TimingTrack, payload: object) -> None:
+    """恢复按轴时间策略；旧工程缺失/为空键一律回落默认（跟随主轴）。"""
+
+    timing = track.display_timing
+    if not isinstance(payload, dict):
+        timing.follow_main = True
+        timing.overrides.clear()
+        return
+    follow = payload.get("follow_main", True)
+    timing.follow_main = (
+        bool(follow) if isinstance(follow, (bool, int)) else True
+    )
+    raw_overrides = payload.get("overrides")
+    overrides: dict[str, object] = {}
+    if isinstance(raw_overrides, dict):
+        for field, value in raw_overrides.items():
+            if field not in TRACK_TIMING_FIELDS:
+                continue
+            parsed = _parse_timing_override_value(str(field), value)
+            if parsed is not None:
+                overrides[str(field)] = parsed
+    timing.overrides.clear()
+    timing.overrides.update(overrides)
 
 
 def _guide_symbol_row_resolver(data: dict) -> Callable[[object], object]:

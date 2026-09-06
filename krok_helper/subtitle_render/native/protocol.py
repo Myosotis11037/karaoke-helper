@@ -380,7 +380,16 @@ def track_to_ir(
     *,
     layout_plan: TrackLayoutPlan | None = None,
     glyph_table: VectorGlyphTable | None = None,
+    time_offset_delta_ms: int = 0,
 ) -> dict[str, Any]:
+    """Serialize one track; ``time_offset_delta_ms`` folds a per-track style
+    timing offset into the per-source ``meta.offset_ms`` channel.
+
+    C++ 侧每行窗口偏移 = 全局 ``style.timing_offset_ms`` + 每源
+    ``meta.offset_ms``（gpu_scene_projection.cpp:483）。主轨/跟随副轨
+    传 0（IR 逐字节不变）；非跟随副轴传 ``轴偏移 − 全局偏移``，使 GPU
+    的有效偏移与 CPU painter 的 ``meta + 轴偏移`` 一致。协议零改动。
+    """
     schedule: dict[int, tuple[int, int, int]] = {}
     if style is not None:
         if layout_plan is None:
@@ -439,7 +448,7 @@ def track_to_ir(
             "album": track.meta.album,
             "tagging_by": track.meta.tagging_by,
             "silence_ms": int(track.meta.silence_ms),
-            "offset_ms": int(track.meta.offset_ms),
+            "offset_ms": int(track.meta.offset_ms) + int(time_offset_delta_ms),
             "custom": list(track.meta.custom),
         },
         "lines": [

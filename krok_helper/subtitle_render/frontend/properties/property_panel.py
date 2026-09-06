@@ -175,9 +175,11 @@ from krok_helper.subtitle_render.domain.models import (
     StylePreset,
     SubtitleStyleScheme,
     Style,
+    StyleTimingConfig,
     TITLE_SCHEME_NAME,
     TitleOverlay,
     TitleTimeWindow,
+    TRACK_TIMING_FIELDS,
     effective_karaoke_animation,
     layout_display_name,
     rescale_scheme_font_sizes,
@@ -621,11 +623,23 @@ class PropertyPanel(QWidget):
     audioClearRequested = Signal()
     screenSizeChanged = Signal()
     """面板内宽 / 高 / 帧率被用户改动（宿主回写导出页与预览）。"""
+    trackTimingChanged = Signal(int, dict)
+    """时间卡片按轴编辑：参数为轴 scope index（0=主字幕，i=第 i-1 个副字幕源）
+    与变更字典。字段编辑时键为 ``TRACK_TIMING_FIELDS`` 字段；跟随开关变更用
+    ``{"__follow_main__": bool}`` 标记。主轴（scope 0）不走本信号，仍走
+    ``styleChanged``。"""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._style = Style()
         self._syncing = False
+        # 时间卡片按轴上下文：names[0] 恒为「主字幕」；follows/override_views
+        # 与副字幕源一一对应。宿主经 set_timing_context 推送；源增删/重排后
+        # scope 重置为 0，杜绝把 A 轴的编辑写进 B 轴。
+        self._timing_scope_names: list[str] = ["主字幕"]
+        self._timing_follows: list[bool] = [True]
+        self._timing_override_views: list[Optional[dict]] = [None]
+        self._timing_scope_index: int = 0
         # 最近一次样式变更的局部重排 scope（None = 全量）：
         # _update_title 置 "titles"，_update_style / set_style 全量同步路径置
         # None；主窗口防抖刷新时经 take_style_relayout_scope() 取走并透传给
@@ -973,6 +987,9 @@ class PropertyPanel(QWidget):
             self._line_protect_spin.setValue(timing.line_protect_ms)
             self._entry_anim_protect_spin.setValue(timing.entry_anim_protect_ms)
             self._exit_anim_protect_spin.setValue(timing.exit_anim_protect_ms)
+            # 时间卡片显示值按当前轴 scope 刷新（跟随副轴显示主轴值，
+            # 非跟随副轴显示叠加 overrides 后的值）。
+            self._sync_timing_scope_values()
             self._section_ending_combo.setCurrentIndex(
                 max(0, self._section_ending_combo.findData(timing.section_ending_mode))
             )
@@ -986,6 +1003,7 @@ class PropertyPanel(QWidget):
                 timing.auto_fill_section_time
             )
             self._sync_sync_each_page_enabled()
+            self._apply_timing_scope_controls_state()
             self._entry_anim_combo.setCurrentIndex(
                 max(0, self._entry_anim_combo.findData(timing.entry_anim))
             )
@@ -2564,6 +2582,180 @@ class PropertyPanel(QWidget):
             or self._sync_ending_check.isChecked()
         )
 
+    # -- 时间卡片按轴（scope）------------------------------------------------
+
+    def set_timing_context(
+        self,
+        names: list[str],
+        follows: list[bool],
+        override_views: list[Optional[dict]],
+    ) -> None:
+        """宿主推送时间卡片的轴上下文（源列表 / 跟随开关 / 各轴覆盖值）。
+
+        ``names[0]`` 恒为「主字幕」；``follows`` / ``override_views`` 与之名目
+        对齐（主轴恒 True / None）。源增删或重排后 scope 越界自动重置为 0。
+        """
+
+        safe_names = [str(name) for name in names] or ["主字幕"]
+        self._timing_scope_names = safe_names
+        safe_follows = [bool(item) for item in follows] or [True]
+        while len(safe_follows) < len(safe_names):
+            safe_follows.append(True)
+        self._timing_follows = safe_follows[: len(safe_names)]
+        views: list[Optional[dict]] = []
+        for index in range(len(safe_names)):
+            raw = (
+                override_views[index]
+                if index < len(override_views or [])
+                else None
+            )
+            views.append(dict(raw) if raw else None)
+        self._timing_override_views = views
+        if self._timing_scope_index >= len(safe_names):
+            self._timing_scope_index = 0
+        combo = getattr(self, "_timing_scope_combo", None)
+        if combo is not None:
+            combo.blockSignals(True)
+            try:
+                combo.clear()
+                combo.addItems(safe_names)
+                combo.setCurrentIndex(self._timing_scope_index)
+            finally:
+                combo.blockSignals(False)
+        self._syncing = True
+        try:
+            self._sync_timing_scope_values()
+        finally:
+            self._syncing = False
+        self._apply_timing_scope_controls_state()
+
+    def _on_timing_scope_selected(self, index: int) -> None:
+        index = max(0, int(index))
+        if index == self._timing_scope_index:
+            return
+        self._timing_scope_index = index
+        self._syncing = True
+        try:
+            self._sync_timing_scope_values()
+        finally:
+            self._syncing = False
+        self._apply_timing_scope_controls_state()
+
+    def _update_track_timing_follow(self, follow: bool) -> None:
+        if self._syncing:
+            return
+        index = self._timing_scope_index
+        if index <= 0 or index >= len(self._timing_follows):
+            return
+        follow = bool(follow)
+        if self._timing_follows[index] == follow:
+            return
+        self._timing_follows[index] = follow
+        if follow:
+            self._timing_override_views[index] = None
+        self.trackTimingChanged.emit(index, {"__follow_main__": follow})
+        self._apply_timing_scope_controls_state()
+        self._syncing = True
+        try:
+            self._sync_timing_scope_values()
+        finally:
+            self._syncing = False
+
+    def _timing_scope_timing_view(self) -> StyleTimingConfig:
+        """当前 scope 的显示值：主轴 / 跟随 → 全局 timing，否则叠加 overrides。"""
+
+        index = self._timing_scope_index
+        if (
+            index <= 0
+            or index >= len(self._timing_override_views)
+            or self._timing_follows[index]
+            or not self._timing_override_views[index]
+        ):
+            return self._style.timing
+        return self._style.with_timing(
+            **self._timing_override_views[index]
+        ).timing
+
+    def _sync_timing_scope_values(self) -> None:
+        """按当前 scope 刷新时间卡片控件显示值（调用方负责 _syncing 门）。"""
+
+        combo = getattr(self, "_timing_scope_combo", None)
+        if combo is None:
+            return
+        timing = self._timing_scope_timing_view()
+        self._line_lead_spin.setValue(timing.line_lead_in_ms)
+        self._line_tail_spin.setValue(timing.line_tail_ms)
+        self._line_offset_spin.setValue(timing.timing_offset_ms)
+        self._section_ending_combo.setCurrentIndex(
+            max(
+                0,
+                self._section_ending_combo.findData(timing.section_ending_mode),
+            )
+        )
+        self._lane_gap_spin.setValue(timing.line_lane_gap_ms)
+        self._line_protect_spin.setValue(timing.line_protect_ms)
+        self._entry_anim_protect_spin.setValue(timing.entry_anim_protect_ms)
+        self._exit_anim_protect_spin.setValue(timing.exit_anim_protect_ms)
+        self._sync_entry_check.setChecked(timing.sync_entry)
+        self._sync_ending_check.setChecked(timing.sync_ending)
+        self._sync_each_page_check.setChecked(timing.sync_each_page)
+        self._ruby_main_reading_units_check.setChecked(
+            timing.ruby_main_progress_mode == "reading_units"
+        )
+        self._allow_animation_overlap_check.setChecked(
+            timing.allow_entry_exit_animation_overlap
+        )
+        self._auto_fill_section_time_check.setChecked(
+            timing.auto_fill_section_time
+        )
+        self._sync_sync_each_page_enabled()
+
+    def _apply_timing_scope_controls_state(self) -> None:
+        """跟随主字幕的副轴：卡片整体只读；跟随开关仅副轴可见。"""
+
+        index = self._timing_scope_index
+        follow = (
+            bool(self._timing_follows[index])
+            if 0 <= index < len(self._timing_follows)
+            else True
+        )
+        read_only = index > 0 and follow
+        for control in getattr(self, "_timing_scope_managed_controls", ()) or ():
+            control.setEnabled(not read_only)
+        follow_check = getattr(self, "_timing_follow_check", None)
+        if follow_check is not None:
+            follow_check.blockSignals(True)
+            try:
+                follow_check.setVisible(index > 0)
+                follow_check.setChecked(follow)
+            finally:
+                follow_check.blockSignals(False)
+        # 只读恢复时，每句同步子开关的可用性要重新按同步开关计算。
+        if not read_only:
+            self._sync_sync_each_page_enabled()
+
+    def _route_timing_scope_changes(self, changes: dict) -> bool:
+        """scope>0 时拦截时间字段编辑：非跟随改道发信号，跟随直接忽略。
+
+        跟随中的副轴卡片只读（正常情况下控件已禁用）；这里把任何漏网
+        编辑整个吞掉而不是回落全局流，杜绝把副轴操作泄漏进主轴样式。
+        """
+
+        index = self._timing_scope_index
+        if index <= 0 or index >= len(self._timing_override_views):
+            return False
+        if not changes or not set(changes).issubset(TRACK_TIMING_FIELDS):
+            return False
+        if self._timing_follows[index]:
+            return True
+        view = self._timing_override_views[index]
+        if view is None:
+            view = {}
+            self._timing_override_views[index] = view
+        view.update(changes)
+        self.trackTimingChanged.emit(index, dict(changes))
+        return True
+
     def _color_button(self, field_name: str, color: str) -> ColorButton:
         button = ColorButton(color)
         self._wire_color_edit_session(button)
@@ -3674,6 +3866,8 @@ class PropertyPanel(QWidget):
 
     def _update_style(self, _force_global: bool = False, **changes) -> None:
         if self._syncing:
+            return
+        if self._route_timing_scope_changes(changes):
             return
         # 常规样式编辑不再属于「仅标题变化」，复位局部重排 scope。
         self._pending_style_relayout_scope = None

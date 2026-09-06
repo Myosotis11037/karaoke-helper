@@ -661,6 +661,7 @@ from krok_helper.subtitle_render.domain.models import (
     Style,
     TitleOverlay,
     effective_karaoke_animation,
+    style_for_track,
 )
 
 
@@ -700,7 +701,13 @@ def _resolve_visible_content_with_plan(
     logical_w: int | None = None,
     logical_h: int | None = None,
 ):
-    """Resolve visible content and retain its shared dual-line layout plan."""
+    """Resolve visible content and retain its shared dual-line layout plan.
+
+    每轨入口的按轴样式解析点：主轨 / 跟随副轨拿到原全局 style 对象，
+    非跟随副轨拿到 ``with_timing`` 叠加后的 effective style；本函数内
+    之后的全部阶段（偏移、显示窗、布局计划、信号、绘制样式）只用这一份。
+    """
+    style = style_for_track(style, track)
     track_t_ms = _effective_track_time_ms(track, t_ms, style)
     display_style = _display_style_for_signal_window(style)
     layout_plan: TrackLayoutPlan | None = None
@@ -800,11 +807,15 @@ def _register_section_edge_contexts(
     style: Style,
     extra_tracks: Optional[list[TimingTrack]],
 ) -> None:
-    """为帧分析涉及的全部轨道注册段边缘页标记（含副字幕源）。"""
+    """为帧分析涉及的全部轨道注册段边缘页标记（含副字幕源）。
+
+    每轨用各自的按轴样式注册，段边缘页判定与该轨实际生效的时间字段
+    保持一致（防止主轴时间策略经标记泄漏到副轴）。
+    """
 
     for entry in (track, *(extra_tracks or ())):
         if entry is not None:
-            _section_edge_context(entry, style)
+            _section_edge_context(entry, style_for_track(style, entry))
 
 
 def frame_has_content(
@@ -2582,8 +2593,14 @@ def display_lines_for_style(
     the inter-page animation gap.  Lead-in, tail, lane gap and page sync are user
     settings computed by the identical passes either way, so the two modes can
     only differ on windows that avoidance would actually have consumed.
+
+    入口按轴解析（幂等兜底）：主轨/跟随副轨拿到原全局 style；非跟随副轨
+    叠加该轴 overrides。轨道视图、诊断等外部调用方因此自动获得按轴窗口，
+    绘制路径（已在 ``_resolve_visible_content_with_plan`` 解析过）再次进入
+    时结果不变。
     """
 
+    style = style_for_track(style, track)
     return resolve_display_lines_for_style(
         track,
         style,

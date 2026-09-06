@@ -220,6 +220,88 @@ def test_wipe_reverse_overrides_round_trip_through_project_data() -> None:
     assert restored.lines[0].wipe_reverse_override is True
 
 
+def test_display_timing_round_trips_through_project_data() -> None:
+    from krok_helper.subtitle_render.project.session import _track_project_data
+
+    track = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("甲", 1000)], end_ms=2000)]
+    )
+    # 全默认（跟随、无覆盖）不写键——旧工程字段面保持逐字节不变。
+    assert "display_timing" not in _track_project_data(track)
+
+    track.display_timing.follow_main = False
+    track.display_timing.overrides.update(
+        {"line_lead_in_ms": 900, "sync_entry": False}
+    )
+    data = _track_project_data(track)
+    assert data["display_timing"] == {
+        "follow_main": False,
+        "overrides": {"line_lead_in_ms": 900, "sync_entry": False},
+    }
+
+    restored = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("甲", 1000)], end_ms=2000)]
+    )
+    apply_track_project_data(restored, Style(), data)
+    assert restored.display_timing.follow_main is False
+    assert restored.display_timing.overrides == {
+        "line_lead_in_ms": 900,
+        "sync_entry": False,
+    }
+
+
+def test_display_timing_defaults_for_missing_or_broken_payloads() -> None:
+    """旧工程缺失 / 空键 / 损坏负载一律回落默认：副轴跟随主轴。"""
+
+    def fresh() -> TimingTrack:
+        track = TimingTrack(
+            lines=[TimingLine(chars=[TimingChar("甲", 1000)], end_ms=2000)]
+        )
+        track.display_timing.follow_main = False
+        track.display_timing.overrides["line_lead_in_ms"] = 900
+        return track
+
+    for payload in (
+        None,  # 旧 .yurika：无 display_timing 键
+        {},
+        {"follow_main": None, "overrides": None},
+        "garbage",
+        42,
+    ):
+        track = fresh()
+        apply_track_project_data(track, Style(), {"display_timing": payload})
+        assert track.display_timing.follow_main is True
+        assert track.display_timing.overrides == {}
+
+    # 防御解析：未知字段 / 类型不合法 / 非法枚举丢弃，负数钳为 0，合法项保留。
+    track = fresh()
+    apply_track_project_data(
+        track,
+        Style(),
+        {
+            "display_timing": {
+                "follow_main": False,
+                "overrides": {
+                    "line_tail_ms": 1500,
+                    "bogus_field": 5,
+                    "sync_entry": "yes",
+                    "line_protect_ms": -3,
+                    "section_ending_mode": "explode",
+                    "auto_fill_section_time": False,
+                    "ruby_main_progress_mode": "reading_units",
+                },
+            }
+        },
+    )
+    assert track.display_timing.follow_main is False
+    assert track.display_timing.overrides == {
+        "line_tail_ms": 1500,
+        "line_protect_ms": 0,
+        "auto_fill_section_time": False,
+        "ruby_main_progress_mode": "reading_units",
+    }
+
+
 def test_guide_symbol_table_round_trips_through_project_data() -> None:
     """同一符号应用到多行时，.yurika 只存一份轮廓 + 行数据引用 ID。"""
     from krok_helper.subtitle_render.domain.timing import GuideSymbol

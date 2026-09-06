@@ -9874,6 +9874,66 @@ def test_display_windows_for_style_maps_line_indices_and_overrides():
     assert windows_single[2][1] == 30000
 
 
+def _timing_scope_track(text: str, start: int) -> TimingTrack:
+    return TimingTrack(
+        lines=[TimingLine(chars=[TimingChar(text, start)], end_ms=start + 1000)]
+    )
+
+
+def test_display_windows_apply_per_track_timing_overrides(qapp):
+    """副轴时间 overrides 只作用于该轴；默认跟随与全局逐字节一致。"""
+
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        line_lead_in_ms=1000,
+        line_tail_ms=1000,
+    )
+    main = _timing_scope_track("あ", 10_000)
+    following = _timing_scope_track("い", 10_000)
+    custom = _timing_scope_track("う", 10_000)
+    custom.display_timing.follow_main = False
+    custom.display_timing.overrides.update(
+        {"line_lead_in_ms": 400, "line_tail_ms": 200}
+    )
+
+    main_windows = subtitle_painter.display_windows_for_style(main, style)
+    follow_windows = subtitle_painter.display_windows_for_style(following, style)
+    custom_windows = subtitle_painter.display_windows_for_style(custom, style)
+
+    # 默认跟随：副轴与主轴同内容同窗口（旧工程行为逐字节不变）。
+    assert follow_windows == main_windows == {0: (9_000, 12_000)}
+    # 非跟随副轴按自己的 lead/tail 开窗；退场动画恢复按完整时长延长
+    # （默认 fade 300 > tail 200 → 消失 = 唱完 + 300）。
+    assert custom_windows == {0: (9_600, 11_300)}
+
+
+def test_per_track_timing_overrides_do_not_leak_across_tracks(qapp):
+    """防泄露回归：交替解析主轴与两个不同 overrides 的副轴，窗口互不影响。"""
+
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        line_lead_in_ms=1000,
+        line_tail_ms=1000,
+    )
+    main = _timing_scope_track("あ", 10_000)
+    narrow = _timing_scope_track("い", 10_000)
+    narrow.display_timing.follow_main = False
+    narrow.display_timing.overrides["line_lead_in_ms"] = 400
+    wide = _timing_scope_track("う", 10_000)
+    wide.display_timing.follow_main = False
+    wide.display_timing.overrides["line_lead_in_ms"] = 1600
+
+    def windows(track):
+        return subtitle_painter.display_windows_for_style(
+            track, style, logical_w=1280, logical_h=720
+        )
+
+    for _round in range(3):
+        assert windows(main) == {0: (9_000, 12_000)}
+        assert windows(narrow) == {0: (9_600, 12_000)}
+        assert windows(wide) == {0: (8_400, 12_000)}
+
+
 def test_cross_page_placement_is_rigid_and_does_not_rewrite_time(qapp):
     lines = [
         TimingLine(

@@ -45,6 +45,12 @@ def test_timing_property_builder_preserves_section_and_control_contracts(qapp) -
     assert host._entry_anim_protect_spin.maximum() == 10_000
     assert host._exit_anim_protect_spin.minimum() == 0
     assert host._exit_anim_protect_spin.maximum() == 10_000
+    # 轴下拉初始只有「主字幕」；跟随开关默认隐藏交给宿主 scope 状态控制。
+    assert host._timing_scope_combo.count() == 1
+    assert host._timing_scope_combo.itemText(0) == "主字幕"
+    assert host._timing_follow_check.text() == "跟随主字幕时间策略"
+    # 受跟随开关只读管控的控件共 14 个（下拉与跟随开关不在此列）。
+    assert len(host._timing_scope_managed_controls) == 14
     assert not host._sync_each_page_check.isEnabled()
     assert len(tooltip_calls) == 6
     assert {delay for _widget, delay in tooltip_calls} == {300}

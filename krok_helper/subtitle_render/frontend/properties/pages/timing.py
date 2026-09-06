@@ -53,6 +53,34 @@ class TimingPropertyPageBuilder:
     def make_section(self) -> QFrame:
         host = self._host
         section, layout = property_section("时间")
+
+        scope_row = QHBoxLayout()
+        scope_row.setContentsMargins(0, 0, 0, 0)
+        host._timing_scope_combo = WheelFocusedComboBox(section)
+        compact_property_control(host._timing_scope_combo)
+        host._timing_scope_combo.setToolTip(
+            "选择要编辑时间的字幕轴（主字幕 / 副字幕源）；标题轴不参与。"
+        )
+        # 初始项在构造期静默加入：宿主的 scope 处理器此时可能尚未就绪。
+        host._timing_scope_combo.blockSignals(True)
+        host._timing_scope_combo.addItem("主字幕")
+        host._timing_scope_combo.blockSignals(False)
+        host._timing_scope_combo.currentIndexChanged.connect(
+            lambda index: host._on_timing_scope_selected(index)
+        )
+        scope_row.addWidget(host._timing_scope_combo, 1)
+        host._timing_follow_check = CheckBox("跟随主字幕时间策略", section)
+        host._timing_follow_check.setToolTip(
+            "开启时该轴的时间数值由主字幕轴推送、不可编辑；\n"
+            "关闭时快照主轴当前值，此后该轴独立设置、不受主轴影响；\n"
+            "重新开启会清空该轴自定义值，回到跟随。"
+        )
+        host._timing_follow_check.toggled.connect(
+            lambda checked: host._update_track_timing_follow(checked)
+        )
+        scope_row.addWidget(host._timing_follow_check)
+        layout.addLayout(scope_row)
+
         grid = ResponsiveFieldGrid(section, min_column_width=130, max_columns=4)
 
         host._line_lead_spin = self._add_spin(
@@ -254,6 +282,23 @@ class TimingPropertyPageBuilder:
             self._tooltip_installer(tooltip_button, show_delay=300)
         host._n3_style_row.addStretch(1)
         layout.addLayout(host._n3_style_row)
+        # 跟随主字幕时整体只读的控件清单（轴下拉与跟随开关不在此列）。
+        host._timing_scope_managed_controls = (
+            host._line_lead_spin,
+            host._line_tail_spin,
+            host._line_offset_spin,
+            host._section_ending_combo,
+            host._lane_gap_spin,
+            host._line_protect_spin,
+            host._entry_anim_protect_spin,
+            host._exit_anim_protect_spin,
+            host._sync_entry_check,
+            host._sync_ending_check,
+            host._sync_each_page_check,
+            host._ruby_main_reading_units_check,
+            host._allow_animation_overlap_check,
+            host._auto_fill_section_time_check,
+        )
         return section
 
     def _add_spin(

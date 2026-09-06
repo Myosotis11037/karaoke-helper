@@ -18,6 +18,7 @@ from krok_helper.subtitle_render.domain.timing import (
 )
 from krok_helper.subtitle_render.domain.models import (
     Style,
+    TRACK_TIMING_FIELDS,
     style_to_dict,
 )
 from krok_helper.subtitle_render.project.store import (
@@ -309,6 +310,22 @@ def _merge_preserved_project_data(source: dict, current: dict) -> dict:
     return merged
 
 
+def _track_display_timing_dict(track: Optional[TimingTrack]) -> Optional[dict]:
+    """序列化按轴时间策略；全默认（跟随、无覆盖）返回 ``None`` 不写键。"""
+
+    timing = getattr(track, "display_timing", None) if track is not None else None
+    if timing is None:
+        return None
+    overrides = {
+        str(field): value
+        for field, value in (timing.overrides or {}).items()
+        if field in TRACK_TIMING_FIELDS
+    }
+    if timing.follow_main and not overrides:
+        return None
+    return {"follow_main": bool(timing.follow_main), "overrides": overrides}
+
+
 def _track_project_data(track: Optional[TimingTrack]) -> dict:
     """Return the stable ``.yurika`` projection of one timing track."""
     if track is None:
@@ -351,6 +368,9 @@ def _track_project_data(track: Optional[TimingTrack]) -> dict:
             track.loading_settings_snapshot
         ),
     }
+    display_timing_data = _track_display_timing_dict(track)
+    if display_timing_data is not None:
+        data["display_timing"] = display_timing_data
     if table_payload:
         data["guide_symbol_table"] = table_payload
     return data

@@ -3190,6 +3190,41 @@ def test_build_render_ir_preserves_animation_windows_around_stable_compression()
     assert lines[2]["entry_duration_ms"] == 250
 
 
+def test_build_render_ir_folds_per_track_offset_into_source_meta():
+    """副轴自定义偏移经每源 meta.offset_ms 折算；主轨/跟随副轨逐字节不变。"""
+
+    track = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("あ", 1_000)], end_ms=2_000)]
+    )
+    following = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("い", 1_000)], end_ms=2_000)]
+    )
+    following.meta.offset_ms = 40
+    custom = TimingTrack(
+        lines=[TimingLine(chars=[TimingChar("う", 1_000)], end_ms=2_000)]
+    )
+    custom.meta.offset_ms = 40
+    custom.display_timing.follow_main = False
+    custom.display_timing.overrides["timing_offset_ms"] = 700
+    style = Style(timing_offset_ms=100)
+
+    ir = build_render_ir(
+        track,
+        style,
+        width=640,
+        height=360,
+        fps=60,
+        extra_tracks=[following, custom],
+    )
+
+    # 主轨与跟随副轨：delta = 0，meta 原样（旧 IR 逐字节不变）。
+    assert ir["track"]["meta"]["offset_ms"] == 0
+    assert ir["extra_tracks"][0]["meta"]["offset_ms"] == 40
+    # 非跟随副轴：C++ 总偏移 = 全局 100 + meta → 折算 meta = 40 + (700-100)，
+    # GPU 有效偏移与 CPU painter 的 meta + 轴偏移 = 740 一致。
+    assert ir["extra_tracks"][1]["meta"]["offset_ms"] == 640
+
+
 def test_build_render_ir_resolves_independent_karaoke_animation():
     track = TimingTrack(
         lines=[TimingLine(chars=[TimingChar("A", 1_000)], end_ms=2_000)]

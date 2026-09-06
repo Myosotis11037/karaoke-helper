@@ -93,6 +93,7 @@ from krok_helper.subtitle_render.domain.timing import (
 from krok_helper.subtitle_render.domain.models import (
     TITLE_SCHEME_NAME,
     Style,
+    style_for_track,
     style_with_line_animation,
 )
 from krok_helper.subtitle_render.native.backend import NativeRendererError, resolve_native_renderer_path
@@ -681,20 +682,24 @@ def _paint_overlay_strip(
 def _strip_sample_times(
     tracks: list[TimingTrack], style: Style, duration_ms: int, total_frames: int
 ) -> list[int]:
-    """纵向并集预扫的采样时刻：均匀网格 + 每轨每行起止（含 lead-in/tail 动画极值）。"""
+    """纵向并集预扫的采样时刻：均匀网格 + 每轨每行起止（含 lead-in/tail 动画极值）。
+
+    lead-in / tail 按轨解析（副轴时间 overrides 不被全局值漏采）。"""
     times: set[int] = set()
     grid = min(total_frames, _STRIP_MAX_SAMPLES)
     for i in range(grid):
         times.add(int(round(i * duration_ms / max(grid - 1, 1))))
-    lead = max(getattr(style, "line_lead_in_ms", 0) or 0, 0)
-    tail = max(getattr(style, "line_tail_ms", 0) or 0, 0)
-    for line in [line for track in tracks for line in track.lines]:
-        if not line.chars:
-            continue
-        start = timing_line_start_ms(line)
-        end = line.end_ms or start
-        for tt in (start - lead, start, end, end + tail):
-            times.add(tt)
+    for track in tracks:
+        track_style = style_for_track(style, track)
+        lead = max(getattr(track_style, "line_lead_in_ms", 0) or 0, 0)
+        tail = max(getattr(track_style, "line_tail_ms", 0) or 0, 0)
+        for line in track.lines:
+            if not line.chars:
+                continue
+            start = timing_line_start_ms(line)
+            end = line.end_ms or start
+            for tt in (start - lead, start, end, end + tail):
+                times.add(tt)
     return sorted(t for t in times if 0 <= t <= duration_ms)
 
 

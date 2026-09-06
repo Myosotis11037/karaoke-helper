@@ -714,6 +714,28 @@ class StyleTimingConfig:
 _STYLE_TIMING_FIELDS = tuple(field.name for field in fields(StyleTimingConfig))
 
 
+TRACK_TIMING_FIELDS: tuple[str, ...] = (
+    "line_lead_in_ms",
+    "line_tail_ms",
+    "timing_offset_ms",
+    "section_ending_mode",
+    "line_lane_gap_ms",
+    "line_protect_ms",
+    "entry_anim_protect_ms",
+    "exit_anim_protect_ms",
+    "sync_entry",
+    "sync_ending",
+    "sync_each_page",
+    "allow_entry_exit_animation_overlap",
+    "auto_fill_section_time",
+    "ruby_main_progress_mode",
+)
+"""时间卡片可按字幕轴覆盖的字段（``_STYLE_TIMING_FIELDS`` 子集）。
+
+UI 路由、主轴值快照与 ``display_timing.overrides`` 的持久化校验共用这一
+份清单；分段阈值（``section_gap_ms``）归每源加载设置，不在此列。"""
+
+
 @dataclass
 class Style:
     """字幕样式（A4 / A5 / A6 实装的纯色 + 横书き子集）。
@@ -1393,6 +1415,29 @@ def normalize_glow_concentration_level(value: object, fallback: int = 0) -> int:
         return max(-1, min(2, int(value)))  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return max(-1, min(2, int(fallback)))
+
+
+def style_for_track(style: Style, track: object) -> Style:
+    """Resolve the per-track display timing into an effective style.
+
+    防泄露契约（每轴在整条显示时间管线里只用它自己的样式）：
+
+    - 主轨 / 跟随主字幕的副轨 / ``overrides`` 为空 → 原样返回全局
+      ``style`` 对象（副轴默认与旧工程行为逐字节一致）；
+    - 非跟随副轨 → ``style.with_timing(**overrides)``，overrides 是
+      **绝对值**，因此本函数幂等——对已解析的样式再解析一次结果不变，
+      入口兜底调用不会重复叠加。
+
+    ``track.display_timing`` 按鸭子类型读取，缺省视为跟随。
+    """
+
+    display_timing = getattr(track, "display_timing", None)
+    if display_timing is None:
+        return style
+    overrides = getattr(display_timing, "overrides", None) or {}
+    if getattr(display_timing, "follow_main", True) or not overrides:
+        return style
+    return style.with_timing(**overrides)
 
 
 def style_to_dict(style: Style) -> dict:

@@ -444,6 +444,109 @@ def test_property_panel_uses_fluent_checkboxes(qapp):
     assert "开启后不执行跨页时间压缩或空间避让" in overlap_tip
 
 
+def test_timing_scope_routes_secondary_edits_to_track_signal(qapp):
+    panel = PropertyPanel()
+    emitted: list[tuple[int, dict]] = []
+    panel.trackTimingChanged.connect(
+        lambda index, changes: emitted.append((index, dict(changes)))
+    )
+    global_emitted: list[Style] = []
+    panel.styleChanged.connect(global_emitted.append)
+
+    # 跟随副轴（默认）：卡片整体只读、显示主轴值、跟随开关未隐藏且勾选。
+    panel.set_timing_context(["主字幕", "和声"], [True, True], [None, None])
+    assert panel._timing_scope_combo.count() == 2
+    assert panel._timing_scope_combo.itemText(1) == "和声"
+    panel._timing_scope_combo.setCurrentIndex(1)
+    assert not panel._line_lead_spin.isEnabled()
+    assert not panel._sync_entry_check.isEnabled()
+    assert not panel._section_ending_combo.isEnabled()
+    assert not panel._timing_follow_check.isHidden()
+    assert panel._timing_follow_check.isChecked() is True
+    assert panel._line_lead_spin.value() == Style().line_lead_in_ms
+    # 跟随态下的漏网编辑被整体忽略：不改道、也不泄漏进全局样式。
+    panel._line_lead_spin.setValue(2_000)
+    assert emitted == []
+    assert global_emitted == []
+    assert panel._style.line_lead_in_ms == Style().line_lead_in_ms
+
+    # 关闭跟随：发标记信号，控件恢复可编辑。
+    panel._timing_follow_check.setChecked(False)
+    assert emitted == [(1, {"__follow_main__": False})]
+    assert panel._line_lead_spin.isEnabled()
+    panel._line_tail_spin.setValue(2_400)
+    assert emitted[-1] == (1, {"line_tail_ms": 2_400})
+    assert panel._style.line_tail_ms == Style().line_tail_ms
+    assert len(global_emitted) == 0
+
+    # 重新开启跟随：清空本地视图、回到只读并显示主轴值。
+    panel._timing_follow_check.setChecked(True)
+    assert emitted[-1] == (1, {"__follow_main__": True})
+    assert not panel._line_lead_spin.isEnabled()
+    assert panel._line_tail_spin.value() == Style().line_tail_ms
+
+
+def test_timing_scope_custom_edits_leave_global_style_untouched(qapp):
+    panel = PropertyPanel()
+    emitted: list[tuple[int, dict]] = []
+    panel.trackTimingChanged.connect(
+        lambda index, changes: emitted.append((index, dict(changes)))
+    )
+    panel.set_timing_context(
+        ["主字幕", "和声"], [True, False], [None, {"line_lead_in_ms": 1_500}]
+    )
+    panel._timing_scope_combo.setCurrentIndex(1)
+
+    panel._line_tail_spin.setValue(2_400)
+    panel._section_ending_combo.setCurrentIndex(1)
+
+    assert emitted == [
+        (1, {"line_tail_ms": 2_400}),
+        (1, {"section_ending_mode": "clear"}),
+    ]
+    # 全局样式保持主轴值：副轴编辑不泄漏回全局。
+    assert panel._style.line_tail_ms == Style().line_tail_ms
+    assert panel._style.section_ending_mode == "hold"
+    # 叠加视图随编辑更新。
+    assert panel._line_tail_spin.value() == 2_400
+
+    # 切回主轴 scope：走既有全局流。
+    panel._timing_scope_combo.setCurrentIndex(0)
+    assert panel._line_tail_spin.value() == Style().line_tail_ms
+    panel._lane_gap_spin.setValue(444)
+    assert panel._style.line_lane_gap_ms == 444
+    assert emitted == [
+        (1, {"line_tail_ms": 2_400}),
+        (1, {"section_ending_mode": "clear"}),
+    ]
+
+
+def test_timing_context_reset_clamps_stale_scope(qapp):
+    """源列表缩短后 scope 越界自动重置主轴，杜绝写错轴。"""
+
+    panel = PropertyPanel()
+    emitted: list[tuple[int, dict]] = []
+    panel.trackTimingChanged.connect(
+        lambda index, changes: emitted.append((index, dict(changes)))
+    )
+    panel.set_timing_context(
+        ["主字幕", "和声", "合唱"], [True, False, False], [None, {}, {}]
+    )
+    panel._timing_scope_combo.setCurrentIndex(2)
+    assert panel._timing_scope_combo.currentIndex() == 2
+
+    # 源被删到只剩一个：上下文重推，scope 钳回主轴。
+    panel.set_timing_context(["主字幕", "和声"], [True, False], [None, {}])
+    assert panel._timing_scope_combo.count() == 2
+    assert panel._timing_scope_combo.currentIndex() == 0
+    assert not panel._timing_follow_check.isVisibleTo(panel)
+    assert panel._line_lead_spin.isEnabled()
+
+    panel._line_lead_spin.setValue(3_000)
+    assert panel._style.line_lead_in_ms == 3_000
+    assert emitted == []
+
+
 def test_sync_each_page_is_enabled_only_for_active_sync_parent(qapp):
     panel = PropertyPanel()
     # 出厂预设默认全开；本测试验证 enable 只跟随同步父开关，先显式归零。

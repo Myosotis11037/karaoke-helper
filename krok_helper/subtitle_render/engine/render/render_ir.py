@@ -20,6 +20,7 @@ from krok_helper.subtitle_render.domain.models import (
     Style,
     TitleOverlay,
     normalize_title_char_role_labels,
+    style_for_track,
     style_to_dict,
 )
 from krok_helper.subtitle_render.native.protocol import (
@@ -120,23 +121,30 @@ def build_render_ir(
     with layout_pass():
         # 主轨与附加轨共用一张轮廓表：同一 SVG 导唱符全片只序列化一次。
         glyph_table = VectorGlyphTable()
+        # 按轴样式：主轨恒为全局 style；非跟随副轨叠加该轴时间 overrides。
+        # 每源布局计划与 IR 序列化只用该源自己的 effective style；偏移差值
+        # 经每源 meta.offset_ms 通道折算（C++ 侧窗口偏移 = 全局
+        # timing_offset_ms + meta.offset_ms，见 gpu_scene_projection.cpp:483），
+        # 使 GPU 的每轴有效偏移与 CPU painter 的 meta + 轴偏移一致。
+        primary_style = style_for_track(style, track)
         primary_plan = build_track_layout_plan(
             track,
-            style,
+            primary_style,
             logical_w=width,
             logical_h=height,
             use_cache=use_plan_cache,
         )
         extra_sources = list(extra_tracks or ())
+        extra_styles = [style_for_track(style, source) for source in extra_sources]
         extra_plans = [
             build_track_layout_plan(
                 source,
-                style,
+                source_style,
                 logical_w=width,
                 logical_h=height,
                 use_cache=use_plan_cache,
             )
-            for source in extra_sources
+            for source, source_style in zip(extra_sources, extra_styles, strict=True)
         ]
         ir = {
             "schema": RENDER_IR_SCHEMA,
@@ -147,12 +155,30 @@ def build_render_ir(
                 "dpr": max(float(dpr or 1.0), 0.01),
             },
             "style": style_to_dict(style),
-            "track": track_to_ir(track, style, layout_plan=primary_plan, glyph_table=glyph_table),
+            "track": track_to_ir(
+                track,
+                primary_style,
+                layout_plan=primary_plan,
+                glyph_table=glyph_table,
+                time_offset_delta_ms=(
+                    primary_style.timing_offset_ms - style.timing_offset_ms
+                ),
+            ),
             # Each source retains independent page/lane scheduling before the
             # renderer composites primary then extras.
             "extra_tracks": [
-                track_to_ir(source, style, layout_plan=plan, glyph_table=glyph_table)
-                for source, plan in zip(extra_sources, extra_plans, strict=True)
+                track_to_ir(
+                    source,
+                    source_style,
+                    layout_plan=plan,
+                    glyph_table=glyph_table,
+                    time_offset_delta_ms=(
+                        source_style.timing_offset_ms - style.timing_offset_ms
+                    ),
+                )
+                for source, source_style, plan in zip(
+                    extra_sources, extra_styles, extra_plans, strict=True
+                )
             ],
             "titles": titles_to_ir(track, style, duration_ms=duration_ms),
         }

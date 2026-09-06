@@ -312,6 +312,7 @@ from krok_helper.subtitle_render.domain.models import (
     rescale_scheme_font_sizes,
     style_from_dict,
     style_to_dict,
+    TRACK_TIMING_FIELDS,
 )
 from krok_helper.subtitle_render.n3.font_catalog import (
     get_n3_font_catalog,
@@ -2431,6 +2432,7 @@ class SubtitleRenderWindow(QWidget):
                 self._transport_bar.attach_playback_controller(controller)
 
         self._property_panel.styleChanged.connect(self._apply_style)
+        self._property_panel.trackTimingChanged.connect(self._on_track_timing_changed)
         self._property_panel.set_title_window_provider(self._derive_title_windows)
         self._property_panel.set_title_entry_defaults_provider(
             self._new_title_entry_defaults
@@ -4476,6 +4478,7 @@ class SubtitleRenderWindow(QWidget):
 
     def _refresh_source_ui(self) -> None:
         """刷新歌词面板的字幕源下拉；无主字幕时隐藏。"""
+        self._push_timing_context()
         if self._timing_track is None:
             self._active_source_index = 0
             self._active_title_index = None
@@ -4501,6 +4504,65 @@ class SubtitleRenderWindow(QWidget):
             # 标题条目没有歌词文件，不能换文件；其余每个源都能。
             replaceable_indices=set(range(len(self._extra_sources) + 1)),
         )
+
+    def _push_timing_context(self) -> None:
+        """把字幕轴上下文推给时间卡片（主字幕 + 副源；标题轴不进）。"""
+
+        follows: list[bool] = [True]
+        override_views: list[dict | None] = [None]
+        for source in self._extra_sources:
+            timing = source.track.display_timing
+            follows.append(bool(timing.follow_main))
+            override_views.append(
+                dict(timing.overrides) if timing.overrides else None
+            )
+        self._property_panel.set_timing_context(
+            ["主字幕"] + [source.name for source in self._extra_sources],
+            follows,
+            override_views,
+        )
+
+    def _on_track_timing_changed(self, scope_index: int, changes: dict) -> None:
+        """时间卡片按轴编辑落地：写副轴 display_timing，快照进撤销。"""
+
+        index = int(scope_index)
+        if index <= 0 or index > len(self._extra_sources):
+            return
+        timing_fields = dict(changes)
+
+        def apply(target: TimingTrack) -> None:
+            timing = target.display_timing
+            if "__follow_main__" in timing_fields:
+                follow = bool(timing_fields["__follow_main__"])
+                timing.overrides.clear()
+                if follow:
+                    timing.follow_main = True
+                else:
+                    # 关闭跟随：快照主轴当前时间卡片值，数值连续可接着改。
+                    timing.follow_main = False
+                    timing.overrides.update(
+                        {
+                            field: getattr(self._style, field)
+                            for field in TRACK_TIMING_FIELDS
+                        }
+                    )
+                return
+            timing.overrides.update(
+                {
+                    field: value
+                    for field, value in timing_fields.items()
+                    if field in TRACK_TIMING_FIELDS
+                }
+            )
+
+        mutation = self._project_document.mutate_track(index, apply)
+        if mutation is not None and mutation.changed:
+            self._record_track_mutation(mutation)
+        self._push_timing_context()
+        self._sync_extra_tracks_to_preview()
+        self._refresh_tracks_view_windows()
+        self._refresh_preview_style_soon()
+        self._mark_project_dirty()
 
     def _refresh_lyrics_panel_source(self) -> None:
         """把当前选中源的行喂给歌词列表。"""
