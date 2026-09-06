@@ -546,6 +546,7 @@ def _payload_alpha_bounds(
     width: int = 640,
     height: int = 360,
     stride: int | None = None,
+    alpha_min: int = 0,
 ) -> tuple[int, int, int, int]:
     stride = stride or width * 4
     xs: list[int] = []
@@ -553,7 +554,7 @@ def _payload_alpha_bounds(
     for y in range(height):
         row = y * stride
         for x in range(width):
-            if payload[row + x * 4 + 3] > 0:
+            if payload[row + x * 4 + 3] > alpha_min:
                 xs.append(x)
                 ys.append(y)
     assert xs and ys
@@ -1149,6 +1150,65 @@ def test_gpu_g1_directwrite_wipe_progresses_monotonically(monkeypatch) -> None:
     ]
     assert red_counts[0] < red_counts[1] < red_counts[2]
     assert len({_alpha_count(payload) for payload in frames}) == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_main_glow_splits_before_after_radii(monkeypatch) -> None:
+    """走字前/走字后发光半径不同时，主发光各用各的半径，不再统一取最大值。
+
+    对齐 Painter 经 karaoke_glow_states_differ 的拆层语义：全 before 帧只有
+    小半径光晕、全 after 帧光晕明显更大；擦除中途左半（已唱）用 after 大
+    半径、右半（未唱）用 before 小半径。半径相等时仍走合并单源（N3 语义），
+    由其余 glow 用例覆盖。
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[
+                    TimingChar("K", 600),
+                    TimingChar("a", 1_100),
+                    TimingChar("歌", 1_600),
+                ],
+                end_ms=2_000,
+            )
+        ]
+    )
+    style = _g1_style(
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="glow",
+        glow_before_radius_px=3,
+        glow_after_radius_px=18,
+        glow_concentration_level=0,
+        line_lead_in_ms=1_000,
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        _configured, frames = _render_g1_frames(
+            renderer,
+            style,
+            (100, 850, 1_700),
+            force_warp=True,
+            track=track,
+        )
+    before_bounds = _payload_alpha_bounds(frames[0], alpha_min=25)
+    mid_bounds = _payload_alpha_bounds(frames[1], alpha_min=25)
+    after_bounds = _payload_alpha_bounds(frames[2], alpha_min=25)
+    # 旧实现（前后同取 max）两帧光晕一致；拆分后 after 半径 18 的墨水外扩
+    # 明显大于 before 半径 3。
+    assert (
+        after_bounds[2] - after_bounds[0]
+        - (before_bounds[2] - before_bounds[0])
+        >= 20
+    )
+    assert (
+        after_bounds[3] - after_bounds[1]
+        - (before_bounds[3] - before_bounds[1])
+        >= 20
+    )
+    # 中途帧：左缘来自已唱 K 的 after 大半径，右缘来自未唱 歌 的 before 小半径。
+    assert abs(mid_bounds[0] - after_bounds[0]) <= 4
+    assert abs(mid_bounds[2] - before_bounds[2]) <= 4
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")

@@ -2915,141 +2915,203 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         };
 
         const auto glowStart = Clock::now();
-        ID2D1Bitmap1 *glowSource = nullptr;
-        ID2D1Effect *blur = nullptr;
-        std::vector<int> glowSigmas;
-        D2D1_RECT_F glowSourceRect{};
-        D2D1_RECT_F glowEffectRect{};
+        struct MainGlowLayer {
+            ID2D1Bitmap1 *source = nullptr;
+            ID2D1Effect *blur = nullptr;
+            std::vector<int> sigmas;
+            D2D1_RECT_F sourceRect{};
+            D2D1_RECT_F effectRect{};
+        };
+        std::vector<MainGlowLayer> mainGlowLayers;
         if (style.decorationKind == "glow"
             && !line->hasInlineStyles) {
-            const int radius = std::max(
-                1,
-                static_cast<int>(std::lround(std::max(style.glowBeforeRadius, style.glowAfterRadius)))
+            // 走字前/走字后发光半径不同时按状态拆成两个 source：每层用自己
+            // 的轮廓笔宽与 sigma 阶梯（对应 Painter 经 karaoke_glow_states_differ
+            // 的拆层）。半径相等则保持 N3 DrawOneLineDecorBlurMulti 的合并单源
+            // ——N3 两色共用一个 DecorSize、一次模糊，此路径逐字节不变。
+            const int beforeRadius = std::max(
+                0, static_cast<int>(std::lround(style.glowBeforeRadius))
             );
-            const float sourceWidth = std::max(0.0f, style.strokeWidth)
-                + (style.stroke2Width > 0.0f ? style.stroke2Width : 0.0f)
-                + static_cast<float>(radius);
-            // Restrict the scratch clear and, at composite time, the blur
-            // evaluation to the line's neighbourhood; Direct2D effects only
-            // process the input needed for the requested output rectangle.
-            const D2D1_RECT_F glowContent = unionRect(
-                line->bounds, line->fillBounds
+            const int afterRadius = std::max(
+                0, static_cast<int>(std::lround(style.glowAfterRadius))
             );
-            glowSourceRect = glowOutputRect(
-                glowContent, sourceWidth, radius
-            );
-            count(
-                frameDiagnostics.glowSourceAreaPx,
-                rectAreaPx(glowSourceRect)
-            );
-            const D2D1_RECT_F glowClearRect = glowClearBounds(
-                glowSourceRect, radius
-            );
-            glowSource = acquireGlowScratch(
-                glowClearRect.right - glowClearRect.left,
-                glowClearRect.bottom - glowClearRect.top
-            );
-            blur = acquireGlowEffect();
-            glowEffectRect = impl_->glowDirtyRectEnabled
-                ? D2D1::RectF(
-                    glowSourceRect.left - glowClearRect.left,
-                    glowSourceRect.top - glowClearRect.top,
-                    glowSourceRect.right - glowClearRect.left,
-                    glowSourceRect.bottom - glowClearRect.top
-                )
-                : D2D1::RectF(
-                    glowSourceRect.left + dx,
-                    glowSourceRect.top + dy,
-                    glowSourceRect.right + dx,
-                    glowSourceRect.bottom + dy
+            const bool splitGlowStates = beforeRadius != afterRadius;
+            for (int stateIndex = 0; stateIndex < (splitGlowStates ? 2 : 1);
+                 ++stateIndex) {
+                const bool stateAfter = splitGlowStates && stateIndex == 1;
+                const bool *stateOnly = splitGlowStates ? &stateAfter : nullptr;
+                const int radius = splitGlowStates
+                    ? (stateAfter ? afterRadius : beforeRadius)
+                    : std::max(
+                        1,
+                        static_cast<int>(std::lround(std::max(
+                            style.glowBeforeRadius, style.glowAfterRadius
+                        )))
+                    );
+                if (radius <= 0) {
+                    // 该状态半径为 0：完全没有光晕（与 Painter radius==0 跳层一致）。
+                    continue;
+                }
+                if (stateOnly != nullptr) {
+                    const bool hasVisibleSource = std::any_of(
+                        line->chars.begin(), line->chars.end(),
+                        [&](const Impl::CachedChar &ch) {
+                            const std::size_t charIndex = static_cast<std::size_t>(
+                                &ch - line->chars.data()
+                            );
+                            if (!charUsesGroupedGlowAt(charIndex)
+                                || charGeometryAt(charIndex) == nullptr) {
+                                return false;
+                            }
+                            const N3WipePhase phase = wipePhaseAt(
+                                line->chars, charIndex
+                            );
+                            return stateAfter
+                                ? phase != N3WipePhase::Before
+                                : phase != N3WipePhase::After;
+                        }
+                    );
+                    if (!hasVisibleSource) {
+                        continue;
+                    }
+                }
+                MainGlowLayer layer;
+                const float sourceWidth = std::max(0.0f, style.strokeWidth)
+                    + (style.stroke2Width > 0.0f ? style.stroke2Width : 0.0f)
+                    + static_cast<float>(radius);
+                // Restrict the scratch clear and, at composite time, the blur
+                // evaluation to the line's neighbourhood; Direct2D effects only
+                // process the input needed for the requested output rectangle.
+                const D2D1_RECT_F glowContent = unionRect(
+                    line->bounds, line->fillBounds
                 );
-            context->SetTarget(glowSource);
-            context->SetTransform(
-                impl_->glowDirtyRectEnabled
-                    ? D2D1::Matrix3x2F::Translation(
-                        -glowClearRect.left, -glowClearRect.top
+                layer.sourceRect = glowOutputRect(
+                    glowContent, sourceWidth, radius
+                );
+                count(
+                    frameDiagnostics.glowSourceAreaPx,
+                    rectAreaPx(layer.sourceRect)
+                );
+                const D2D1_RECT_F glowClearRect = glowClearBounds(
+                    layer.sourceRect, radius
+                );
+                layer.source = acquireGlowScratch(
+                    glowClearRect.right - glowClearRect.left,
+                    glowClearRect.bottom - glowClearRect.top
+                );
+                layer.blur = acquireGlowEffect();
+                layer.effectRect = impl_->glowDirtyRectEnabled
+                    ? D2D1::RectF(
+                        layer.sourceRect.left - glowClearRect.left,
+                        layer.sourceRect.top - glowClearRect.top,
+                        layer.sourceRect.right - glowClearRect.left,
+                        layer.sourceRect.bottom - glowClearRect.top
                     )
-                    : D2D1::Matrix3x2F::Translation(dx, dy)
-            );
-            context->BeginDraw();
-            // The pooled bitmap can be larger than this frame's requested
-            // crop. Clear the whole target before installing the local clip;
-            // otherwise GaussianBlur may sample stale pixels just outside the
-            // crop and make output depend on this worker's previous frame.
-            context->Clear(D2D1::ColorF(0.0f, 0.0f));
-            pushAxisAlignedClip(
-                glowClearRect, D2D1_ANTIALIAS_MODE_ALIASED
-            );
-            const auto drawGlowPart = [&](std::size_t index, bool after) {
-                if (!charUsesGroupedGlowAt(index)) {
-                    return;
-                }
-                ID2D1Geometry *geometry = charGeometryAt(index);
-                if (geometry == nullptr) {
-                    return;
-                }
-                ID2D1Brush *brush = after ? afterDecor.Get() : beforeDecor.Get();
-                brush->SetOpacity(
-                    globalOpacity * characterOpacityAt(index)
+                    : D2D1::RectF(
+                        layer.sourceRect.left + dx,
+                        layer.sourceRect.top + dy,
+                        layer.sourceRect.right + dx,
+                        layer.sourceRect.bottom + dy
+                    );
+                context->SetTarget(layer.source);
+                context->SetTransform(
+                    impl_->glowDirtyRectEnabled
+                        ? D2D1::Matrix3x2F::Translation(
+                            -glowClearRect.left, -glowClearRect.top
+                        )
+                        : D2D1::Matrix3x2F::Translation(dx, dy)
                 );
-                context->DrawGeometry(geometry, brush, sourceWidth);
-            };
-            const auto pushGlowClip = [&](std::size_t index, bool after) {
-                float edge = delegatedWipeCoordinateAt(line->chars, index);
-                D2D1_RECT_F bounds = line->bounds;
-                if (useUtopiaTransition) {
-                    const auto animated = utopiaCharWipe(index);
-                    bounds = animated.first;
-                    edge = animated.second;
-                }
-                const float pad = sourceWidth + 4.0f;
+                context->BeginDraw();
+                // The pooled bitmap can be larger than this frame's requested
+                // crop. Clear the whole target before installing the local clip;
+                // otherwise GaussianBlur may sample stale pixels just outside the
+                // crop and make output depend on this worker's previous frame.
+                context->Clear(D2D1::ColorF(0.0f, 0.0f));
                 pushAxisAlignedClip(
-                    directionalWipeClip(bounds, edge, pad, after),
-                    D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                    glowClearRect, D2D1_ANTIALIAS_MODE_ALIASED
                 );
-            };
-            const auto drawGlowPhase = [&](std::size_t index, N3WipePhase phase) {
-                if (phase != N3WipePhase::Wiping) {
-                    drawGlowPart(index, phase == N3WipePhase::After);
-                    return;
+                const auto drawGlowPart = [&](std::size_t index, bool after) {
+                    if (!charUsesGroupedGlowAt(index)) {
+                        return;
+                    }
+                    ID2D1Geometry *geometry = charGeometryAt(index);
+                    if (geometry == nullptr) {
+                        return;
+                    }
+                    ID2D1Brush *brush = after ? afterDecor.Get() : beforeDecor.Get();
+                    brush->SetOpacity(
+                        globalOpacity * characterOpacityAt(index)
+                    );
+                    context->DrawGeometry(geometry, brush, sourceWidth);
+                };
+                const auto pushGlowClip = [&](std::size_t index, bool after) {
+                    float edge = delegatedWipeCoordinateAt(line->chars, index);
+                    D2D1_RECT_F bounds = line->bounds;
+                    if (useUtopiaTransition) {
+                        const auto animated = utopiaCharWipe(index);
+                        bounds = animated.first;
+                        edge = animated.second;
+                    }
+                    const float pad = sourceWidth + 4.0f;
+                    pushAxisAlignedClip(
+                        directionalWipeClip(bounds, edge, pad, after),
+                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                    );
+                };
+                const auto drawGlowPhase = [&](std::size_t index, N3WipePhase phase) {
+                    if (phase != N3WipePhase::Wiping) {
+                        const bool after = phase == N3WipePhase::After;
+                        if (stateOnly != nullptr && *stateOnly != after) {
+                            return;
+                        }
+                        drawGlowPart(index, after);
+                        return;
+                    }
+                    if (stateOnly == nullptr) {
+                        pushGlowClip(index, false);
+                        drawGlowPart(index, false);
+                        context->PopAxisAlignedClip();
+                        pushGlowClip(index, true);
+                        drawGlowPart(index, true);
+                        context->PopAxisAlignedClip();
+                        return;
+                    }
+                    pushGlowClip(index, *stateOnly);
+                    drawGlowPart(index, *stateOnly);
+                    context->PopAxisAlignedClip();
+                };
+                for (std::size_t reverse = line->chars.size(); reverse > 0; --reverse) {
+                    const std::size_t index = reverse - 1;
+                    if (wipePhaseAt(line->chars, index) == N3WipePhase::Before) {
+                        drawGlowPhase(index, N3WipePhase::Before);
+                    }
                 }
-                pushGlowClip(index, false);
-                drawGlowPart(index, false);
+                for (std::size_t index = 0; index < line->chars.size(); ++index) {
+                    if (wipePhaseAt(line->chars, index) == N3WipePhase::After) {
+                        drawGlowPhase(index, N3WipePhase::After);
+                    }
+                }
+                for (std::size_t index = 0; index < line->chars.size(); ++index) {
+                    if (wipePhaseAt(line->chars, index) == N3WipePhase::Wiping) {
+                        drawGlowPhase(index, N3WipePhase::Wiping);
+                    }
+                }
                 context->PopAxisAlignedClip();
-                pushGlowClip(index, true);
-                drawGlowPart(index, true);
-                context->PopAxisAlignedClip();
-            };
-            for (std::size_t reverse = line->chars.size(); reverse > 0; --reverse) {
-                const std::size_t index = reverse - 1;
-                if (wipePhaseAt(line->chars, index) == N3WipePhase::Before) {
-                    drawGlowPhase(index, N3WipePhase::Before);
-                }
-            }
-            for (std::size_t index = 0; index < line->chars.size(); ++index) {
-                if (wipePhaseAt(line->chars, index) == N3WipePhase::After) {
-                    drawGlowPhase(index, N3WipePhase::After);
-                }
-            }
-            for (std::size_t index = 0; index < line->chars.size(); ++index) {
-                if (wipePhaseAt(line->chars, index) == N3WipePhase::Wiping) {
-                    drawGlowPhase(index, N3WipePhase::Wiping);
-                }
-            }
-            context->PopAxisAlignedClip();
-            endDrawMeasured(
-                "ID2D1DeviceContext::EndDraw(glow source)",
-                frameDiagnostics.endDrawGlowSourceMs,
-                frameDiagnostics.endDrawGlowSourceCount
-            );
-            blur->SetInput(0, glowSource);
+                endDrawMeasured(
+                    "ID2D1DeviceContext::EndDraw(glow source)",
+                    frameDiagnostics.endDrawGlowSourceMs,
+                    frameDiagnostics.endDrawGlowSourceCount
+                );
+                layer.blur->SetInput(0, layer.source);
 
-            // N3 DrawOneLineDecorBlurMulti: N = BlurLevel + 1 and
-            // sigma_i = R - floor(i * R / N). The common N3 path has one
-            // DecorSize for both wipe colors, so use that exact combined source.
-            const int passes = std::clamp(style.glowConcentrationLevel, 0, 2) + 1;
-            for (int index = 0; index < passes; ++index) {
-                glowSigmas.push_back(radius - index * radius / passes);
+                // N3 DrawOneLineDecorBlurMulti: N = BlurLevel + 1 and
+                // sigma_i = R - floor(i * R / N). Equal radii keep the exact
+                // combined source; split states ladder from their own radius.
+                const int passes = std::clamp(style.glowConcentrationLevel, 0, 2) + 1;
+                for (int index = 0; index < passes; ++index) {
+                    layer.sigmas.push_back(radius - index * radius / passes);
+                }
+                mainGlowLayers.push_back(std::move(layer));
             }
         }
 
@@ -3766,15 +3828,15 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 );
             }
         }
-        if (!glowSigmas.empty()) {
+        for (MainGlowLayer &layer : mainGlowLayers) {
             const D2D1_RECT_F glowImageRect = D2D1::RectF(
-                glowSourceRect.left + dx, glowSourceRect.top + dy,
-                glowSourceRect.right + dx, glowSourceRect.bottom + dy
+                layer.sourceRect.left + dx, layer.sourceRect.top + dy,
+                layer.sourceRect.right + dx, layer.sourceRect.bottom + dy
             );
-            for (int sigma : glowSigmas) {
+            for (int sigma : layer.sigmas) {
                 context->SetTransform(lineViewportTransform);
                 checkHr(
-                    blur->SetValue(
+                    layer.blur->SetValue(
                         D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
                         static_cast<float>(sigma)
                     ),
@@ -3782,9 +3844,9 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     device_
                 );
                 context->DrawImage(
-                    blur,
+                    layer.blur,
                     D2D1::Point2F(glowImageRect.left, glowImageRect.top),
-                    glowEffectRect
+                    layer.effectRect
                 );
             }
         }
@@ -4790,8 +4852,8 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             frameDiagnostics.endDrawFrameLayersCount
         );
         renderedAnyLine = true;
-        if (blur != nullptr) {
-            blur->SetInput(0, nullptr);
+        for (MainGlowLayer &layer : mainGlowLayers) {
+            layer.blur->SetInput(0, nullptr);
         }
         for (RubyGlowLayer &layer : rubyGlowLayers) {
             layer.blur->SetInput(0, nullptr);
