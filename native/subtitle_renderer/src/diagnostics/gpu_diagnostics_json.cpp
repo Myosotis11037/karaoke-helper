@@ -37,6 +37,34 @@ void appendGpuDiagnostics(
         QStringLiteral("cached_geometries"),
         static_cast<qint64>(diagnostics.geometryCount)
     );
+    out->insert(
+        QStringLiteral("glyph_geometry_cache_hits"),
+        static_cast<qint64>(diagnostics.glyphGeometryCacheHits)
+    );
+    out->insert(
+        QStringLiteral("glyph_geometry_cache_misses"),
+        static_cast<qint64>(diagnostics.glyphGeometryCacheMisses)
+    );
+    out->insert(
+        QStringLiteral("glyph_geometry_cache_size"),
+        static_cast<qint64>(diagnostics.glyphGeometryCacheSize)
+    );
+    out->insert(
+        QStringLiteral("glyph_stroke_cache_hits"),
+        static_cast<qint64>(diagnostics.glyphStrokeCacheHits)
+    );
+    out->insert(
+        QStringLiteral("glyph_stroke_cache_misses"),
+        static_cast<qint64>(diagnostics.glyphStrokeCacheMisses)
+    );
+    out->insert(
+        QStringLiteral("glyph_geometry_build_ms"),
+        diagnostics.glyphGeometryBuildMs
+    );
+    out->insert(
+        QStringLiteral("glyph_stroke_build_ms"),
+        diagnostics.glyphStrokeBuildMs
+    );
     out->insert(QStringLiteral("cached_rubies"), static_cast<qint64>(diagnostics.rubyCount));
     out->insert(QStringLiteral("cached_styles"), static_cast<qint64>(diagnostics.styleCount));
     out->insert(

@@ -2169,6 +2169,50 @@ def test_gpu_g1_repeated_configure_hits_geometry_layout_cache(monkeypatch) -> No
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_configure_shares_repeated_text_glyph_and_stroke_geometry(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", index * 250) for index in range(3)],
+                end_ms=750,
+            ),
+            TimingLine(
+                chars=[TimingChar("歌", 750 + index * 250) for index in range(3)],
+                end_ms=1_500,
+            ),
+        ]
+    )
+    style = _g1_style(
+        stroke_width_px=10,
+        stroke2_enabled=True,
+        stroke2_width_px=5,
+        decoration_kind="none",
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        configured = renderer.configure_gpu(
+            track,
+            style,
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        frame = renderer.render_gpu_frame(750, force_warp=True)
+
+    assert configured["cached_chars"] == 6
+    assert configured["glyph_geometry_cache_misses"] == 1
+    assert configured["glyph_geometry_cache_hits"] == 5
+    assert configured["glyph_geometry_cache_size"] == 1
+    assert configured["glyph_stroke_cache_misses"] == 2
+    assert configured["glyph_stroke_cache_hits"] == 10
+    assert configured["glyph_geometry_build_ms"] >= 0.0
+    assert configured["glyph_stroke_build_ms"] >= 0.0
+    assert frame["event"] == "gpu_frame_ready"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_preview_worker_pool_bounds_in_flight_and_tags_out_of_order_frames(
     monkeypatch,
 ) -> None:

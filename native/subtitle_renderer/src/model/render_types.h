@@ -424,6 +424,13 @@ struct BackendDiagnostics {
     std::uint64_t lineCount = 0;
     std::uint64_t charCount = 0;
     std::uint64_t geometryCount = 0;
+    std::uint64_t glyphGeometryCacheHits = 0;
+    std::uint64_t glyphGeometryCacheMisses = 0;
+    std::uint64_t glyphGeometryCacheSize = 0;
+    std::uint64_t glyphStrokeCacheHits = 0;
+    std::uint64_t glyphStrokeCacheMisses = 0;
+    double glyphGeometryBuildMs = 0.0;
+    double glyphStrokeBuildMs = 0.0;
     std::uint64_t rubyCount = 0;
     std::uint64_t styleCount = 0;
     bool videoMemoryInfoAvailable = false;
