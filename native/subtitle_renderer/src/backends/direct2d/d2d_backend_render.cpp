@@ -396,10 +396,20 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
     frameDiagnostics.animationLayoutMs += elapsedMs(renderStart);
     bool renderedAnyLine = false;
     std::vector<std::pair<int, int>> readbackIntervals;
+    D2D1_MATRIX_3X2_F realizationBaseTransform =
+        D2D1::Matrix3x2F::Identity();
+    bool sharedInstanceTransformActive = false;
+    const auto restoreRealizationBaseTransform = [&]() {
+        if (sharedInstanceTransformActive) {
+            context->SetTransform(realizationBaseTransform);
+            sharedInstanceTransformActive = false;
+        }
+    };
     const auto pushAxisAlignedClip = [&] (
         const D2D1_RECT_F &rect,
         D2D1_ANTIALIAS_MODE antialiasMode
     ) {
+        restoreRealizationBaseTransform();
         count(frameDiagnostics.layerPush);
         context->PushAxisAlignedClip(rect, antialiasMode);
     };
@@ -409,6 +419,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         float width,
         bool secondStroke
     ) {
+        restoreRealizationBaseTransform();
         const auto start = Clock::now();
         context->DrawGeometry(geometry, brush, width);
         frameDiagnostics.strokeMs += elapsedMs(start);
@@ -423,6 +434,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         ID2D1Brush *brush,
         bool secondStroke
     ) {
+        restoreRealizationBaseTransform();
         const auto start = Clock::now();
         context->FillGeometry(geometry, brush);
         frameDiagnostics.strokeMs += elapsedMs(start);
@@ -432,20 +444,44 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 : frameDiagnostics.strokeDraw
         );
     };
+    const auto drawSharedRealization = [&] (
+        ID2D1GeometryRealization *realization,
+        ID2D1Brush *brush,
+        const D2D1_MATRIX_3X2_F &instanceTransform
+    ) {
+        const bool identity = instanceTransform._11 == 1.0f
+            && instanceTransform._12 == 0.0f
+            && instanceTransform._21 == 0.0f
+            && instanceTransform._22 == 1.0f
+            && instanceTransform._31 == 0.0f
+            && instanceTransform._32 == 0.0f;
+        if (identity) {
+            restoreRealizationBaseTransform();
+            impl_->realizationContext->DrawGeometryRealization(
+                realization, brush
+            );
+            return;
+        }
+        context->SetTransform(instanceTransform * realizationBaseTransform);
+        sharedInstanceTransformActive = true;
+        impl_->realizationContext->DrawGeometryRealization(realization, brush);
+    };
     const auto fillWithRealization = [&] (
         ID2D1GeometryRealization *realization,
         ID2D1Geometry *geometry,
         ID2D1Brush *brush,
+        const D2D1_MATRIX_3X2_F &instanceTransform,
         bool eligible
     ) {
         if (eligible && impl_->realizationActive && realization != nullptr) {
-            impl_->realizationContext->DrawGeometryRealization(realization, brush);
+            drawSharedRealization(realization, brush, instanceTransform);
             count(frameDiagnostics.realizationHit);
             return;
         }
         if (impl_->realizationActive && eligible) {
             count(frameDiagnostics.realizationMiss);
         }
+        restoreRealizationBaseTransform();
         context->FillGeometry(geometry, brush);
     };
     const auto strokeWithRealization = [&] (
@@ -454,16 +490,18 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         ID2D1Brush *brush,
         float width,
         bool secondStroke,
+        const D2D1_MATRIX_3X2_F &instanceTransform,
         bool eligible
     ) {
         const auto start = Clock::now();
         if (eligible && impl_->realizationActive && realization != nullptr) {
-            impl_->realizationContext->DrawGeometryRealization(realization, brush);
+            drawSharedRealization(realization, brush, instanceTransform);
             count(frameDiagnostics.realizationHit);
         } else {
             if (impl_->realizationActive && eligible) {
                 count(frameDiagnostics.realizationMiss);
             }
+            restoreRealizationBaseTransform();
             context->DrawGeometry(geometry, brush, width);
         }
         frameDiagnostics.strokeMs += elapsedMs(start);
@@ -478,10 +516,13 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         ID2D1Geometry *geometry,
         ID2D1Brush *brush,
         bool secondStroke,
+        const D2D1_MATRIX_3X2_F &instanceTransform,
         bool eligible
     ) {
         const auto start = Clock::now();
-        fillWithRealization(realization, geometry, brush, eligible);
+        fillWithRealization(
+            realization, geometry, brush, instanceTransform, eligible
+        );
         frameDiagnostics.strokeMs += elapsedMs(start);
         count(
             secondStroke
@@ -2728,6 +2769,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             context->SetTransform(previousTransform);
         };
         auto drawBitmapGuidePart = [&](std::size_t charIndex, bool after) {
+            restoreRealizationBaseTransform();
             if (charIndex >= line->chars.size()) {
                 return;
             }
@@ -3861,7 +3903,11 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 );
             }
         }
-        context->SetTransform(withViewport(D2D1::Matrix3x2F::Translation(dx, dy)));
+        realizationBaseTransform = withViewport(
+            D2D1::Matrix3x2F::Translation(dx, dy)
+        );
+        context->SetTransform(realizationBaseTransform);
+        sharedInstanceTransformActive = false;
 
         auto drawShadowSilhouette = [&](ID2D1Geometry *geometry,
                                         ID2D1Geometry *animatedOuterGeometry,
@@ -4204,6 +4250,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                             std::max(0.0f, style.strokeWidth)
                                 + style.stroke2Width,
                             true,
+                            ch.stroke2RealizationTransform,
                             realizationEligible
                         );
                     }
@@ -4220,12 +4267,14 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                             fillStrokeWithRealization(
                                 ch.protectedStrokeRealization.Get(),
                                 ch.protectedStrokeGeometry.Get(), stroke, false,
+                                ch.protectedStrokeRealizationTransform,
                                 realizationEligible
                             );
                         } else {
                             strokeWithRealization(
                                 ch.strokeRealization.Get(), ch.geometry.Get(), stroke,
-                                style.strokeWidth, false, realizationEligible
+                                style.strokeWidth, false,
+                                ch.strokeRealizationTransform, realizationEligible
                             );
                         }
                     }
@@ -4234,6 +4283,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     if (ch.geometry) {
                         fillWithRealization(
                             ch.fillRealization.Get(), ch.geometry.Get(), fill,
+                            ch.fillRealizationTransform,
                             realizationEligible
                         );
                     }
@@ -4373,6 +4423,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         std::max(0.0f, charStyle.strokeWidth)
                             + charStyle.stroke2Width,
                         true,
+                        ch.stroke2RealizationTransform,
                         realizationEligible
                     );
                 }
@@ -4401,19 +4452,22 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         fillStrokeWithRealization(
                             ch.protectedStrokeRealization.Get(),
                             protectedGeometry, brush, false,
+                            ch.protectedStrokeRealizationTransform,
                             realizationEligible
                         );
                     }
                 } else {
                     strokeWithRealization(
                         ch.strokeRealization.Get(), geometry, brush,
-                        charStyle.strokeWidth, false, realizationEligible
+                        charStyle.strokeWidth, false,
+                        ch.strokeRealizationTransform, realizationEligible
                     );
                 }
                 return;
             }
             fillWithRealization(
-                ch.fillRealization.Get(), geometry, brush, realizationEligible
+                ch.fillRealization.Get(), geometry, brush,
+                ch.fillRealizationTransform, realizationEligible
             );
         };
         const auto drawMainLayer = [&](int layer) {
@@ -4526,6 +4580,8 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 const Impl::CachedChar *rubyChar = index < ruby.chars.size()
                     ? &ruby.chars[index]
                     : nullptr;
+                const D2D1_MATRIX_3X2_F identityTransform =
+                    D2D1::Matrix3x2F::Identity();
                 const bool rubyTransformed = rubyUnitTransformed(ruby, index);
                 const bool realizationEligible = !rubyTransformed
                     && std::max(rubyStyle.rubyStrokeWidth, 0.0f)
@@ -4551,6 +4607,9 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                             std::max(0.0f, rubyStyle.rubyStrokeWidth)
                                 + rubyStyle.rubyStroke2Width,
                             true,
+                            rubyChar != nullptr
+                                ? rubyChar->stroke2RealizationTransform
+                                : identityTransform,
                             realizationEligible
                         );
                     }
@@ -4589,6 +4648,9 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                                     ? rubyChar->protectedStrokeRealization.Get()
                                     : nullptr,
                                 protectedGeometry, stroke.Get(), false,
+                                rubyChar != nullptr
+                                    ? rubyChar->protectedStrokeRealizationTransform
+                                    : identityTransform,
                                 realizationEligible
                             );
                         }
@@ -4599,13 +4661,20 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                                 : nullptr,
                             geometry, stroke.Get(), rubyStyle.rubyStrokeWidth,
                             false,
+                            rubyChar != nullptr
+                                ? rubyChar->strokeRealizationTransform
+                                : identityTransform,
                             realizationEligible
                         );
                     }
                 }
                 fillWithRealization(
                     rubyChar != nullptr ? rubyChar->fillRealization.Get() : nullptr,
-                    geometry, fill.Get(), realizationEligible
+                    geometry, fill.Get(),
+                    rubyChar != nullptr
+                        ? rubyChar->fillRealizationTransform
+                        : identityTransform,
+                    realizationEligible
                 );
                 if (pushedUtopiaClip) {
                     context->PopAxisAlignedClip();
@@ -4660,6 +4729,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 }
             }
         }
+        restoreRealizationBaseTransform();
         if (signalState.visible
             && style.litOpacity > 0.0f
             && signalState.opacity > 0.0f) {

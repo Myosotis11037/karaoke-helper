@@ -677,6 +677,102 @@ def test_gpu_shared_realizations_preserve_pixels(animation, monkeypatch) -> None
     assert min(iou for _mean, _p99, iou in metrics) >= 0.98
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+@pytest.mark.parametrize(
+    "direction_changes",
+    [{}, {"right_to_left": True}, {"vertical": True}],
+)
+def test_gpu_shared_realizations_preserve_repeated_main_and_ruby_transforms(
+    direction_changes,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", 0), TimingChar("歌", 1_000)],
+                end_ms=2_000,
+            )
+        ],
+        rubies=[
+            RubyAnnotation(
+                kanji="歌歌",
+                reading="かか",
+                reading_parts=["か", "か"],
+                reading_part_ms=[1_000],
+                pos_start_ms=0,
+                pos_end_ms=2_000,
+            )
+        ],
+    )
+    style = _g1_style(
+        font_family="Meiryo",
+        font_family_latin="Meiryo",
+        stroke_width_px=14,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        ruby_font_family="Meiryo",
+        ruby_font_family_latin="Meiryo",
+        ruby_font_follow_main=False,
+        ruby_font_size_px=32,
+        ruby_stroke_width_px=14,
+        ruby_stroke2_enabled=False,
+        ruby_decoration_kind="none",
+        **direction_changes,
+    )
+    timestamps = (500, 1_000, 1_500)
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=30.0) as renderer:
+        _, baseline = _render_g1_frames(
+            renderer,
+            style,
+            timestamps,
+            force_warp=False,
+            track=track,
+            worker_count=3,
+            realization_enabled=False,
+            shared_resources=False,
+        )
+        configured, shared = _render_g1_frames(
+            renderer,
+            style,
+            timestamps,
+            force_warp=False,
+            track=track,
+            worker_count=3,
+            realization_enabled=True,
+            shared_resources=True,
+        )
+
+    # This scene fits below the capacity threshold, so its two main and two
+    # ruby instances retain the faster positioned fill/stroke realizations.
+    assert configured["realization_prewarm_tasks"] == 8
+    assert configured["realization_count"] == 8, {
+        key: configured[key]
+        for key in (
+            "realization_prewarm_tasks",
+            "realization_prewarm_skipped",
+            "realization_prewarm_fill_tasks",
+            "realization_prewarm_stroke_tasks",
+            "realization_count",
+        )
+    }
+    for expected, actual in zip(baseline, shared):
+        expected_rgba = np.frombuffer(expected, dtype=np.uint8).reshape(-1, 4)
+        actual_rgba = np.frombuffer(actual, dtype=np.uint8).reshape(-1, 4)
+        visible = (expected_rgba[:, 3] > 2) | (actual_rgba[:, 3] > 2)
+        delta = np.abs(
+            expected_rgba[visible].astype(np.int16)
+            - actual_rgba[visible].astype(np.int16)
+        )
+        expected_ink = expected_rgba[:, 3] > 2
+        actual_ink = actual_rgba[:, 3] > 2
+        union = np.count_nonzero(expected_ink | actual_ink)
+        intersection = np.count_nonzero(expected_ink & actual_ink)
+        assert float(np.mean(delta)) <= 3.0
+        assert intersection / max(union, 1) >= 0.98
+
+
 @pytest.mark.skipif(
     os.name != "nt" or not RUN_REAL_GPU_AB or not MEFISTO_N3PROJ.is_file(),
     reason="real Mephisto GPU A/B is opt-in",
@@ -3131,6 +3227,100 @@ def test_gpu_realization_prewarms_off_frame_and_hits_on_steady_frame(monkeypatch
     assert configured["realization_enabled"] is True
     assert configured["realization_supported"] is True
     assert diagnostics["realization_count"] > 0
+    assert diagnostics["realization_prewarm_skipped"] == 0
+    assert frame["realization_hit"] > 0
+    assert frame["realization_miss"] == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_realization_prewarm_keeps_positioned_instances_below_capacity(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("KROK_GPU_REALIZATION", raising=False)
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", index * 250) for index in range(3)],
+                end_ms=750,
+            ),
+            TimingLine(
+                chars=[TimingChar("歌", 750 + index * 250) for index in range(3)],
+                end_ms=1_500,
+            ),
+        ]
+    )
+    style = _g1_style(
+        stroke_width_px=14,
+        latin_stroke_width_px=14,
+        stroke2_enabled=True,
+        stroke2_width_px=7,
+        latin_stroke2_width_px=7,
+        decoration_kind="none",
+    )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        renderer.configure_gpu(
+            track,
+            style,
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=False,
+            prewarm_t_ms=750,
+        )
+        diagnostics = _wait_for_realization_prewarm(renderer)
+        frame = renderer.render_gpu_frame(750, force_warp=False)
+
+    # Below capacity, positioned realizations remain the faster hot path.
+    assert diagnostics["realization_prewarm_tasks"] == 18
+    assert diagnostics["realization_count"] == 18
+    assert diagnostics["realization_prewarm_skipped"] == 0
+    assert frame["realization_hit"] > 0
+    assert frame["realization_miss"] == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_realization_prewarm_shares_instances_when_capacity_bound(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.delenv("KROK_GPU_REALIZATION", raising=False)
+    char_count = 2_731  # fill + stroke + stroke2 exceeds the 8192 budget.
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", index * 10) for index in range(char_count)],
+                end_ms=char_count * 10,
+            )
+        ]
+    )
+    style = _g1_style(
+        font_size_px=8,
+        stroke_width_px=14,
+        latin_stroke_width_px=14,
+        stroke2_enabled=True,
+        stroke2_width_px=7,
+        latin_stroke2_width_px=7,
+        decoration_kind="none",
+    )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=30.0) as renderer:
+        renderer.configure_gpu(
+            track,
+            style,
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=False,
+            prewarm_t_ms=char_count * 5,
+        )
+        diagnostics = _wait_for_realization_prewarm(renderer, timeout_s=20.0)
+        frame = renderer.render_gpu_frame(char_count * 5, force_warp=False)
+
+    assert diagnostics["realization_capacity"] == 8_192
+    assert diagnostics["realization_prewarm_tasks"] == 3
+    assert diagnostics["realization_count"] == 3
     assert diagnostics["realization_prewarm_skipped"] == 0
     assert frame["realization_hit"] > 0
     assert frame["realization_miss"] == 0

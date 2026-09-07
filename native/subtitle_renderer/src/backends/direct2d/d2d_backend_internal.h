@@ -49,6 +49,20 @@ struct Direct2DGpuBackend::Impl {
         Microsoft::WRL::ComPtr<ID2D1Geometry> protectedStrokeGeometry;
         Microsoft::WRL::ComPtr<ID2D1Geometry> strokeGeometry;
         Microsoft::WRL::ComPtr<ID2D1Geometry> stroke2Geometry;
+        // Realizations use the shared, unpositioned glyph geometry. Each
+        // character keeps only the matrix that places that shared mesh.
+        Microsoft::WRL::ComPtr<ID2D1Geometry> realizationGeometry;
+        Microsoft::WRL::ComPtr<ID2D1Geometry> protectedRealizationGeometry;
+        D2D1_MATRIX_3X2_F realizationTransform =
+            D2D1::Matrix3x2F::Identity();
+        D2D1_MATRIX_3X2_F fillRealizationTransform =
+            D2D1::Matrix3x2F::Identity();
+        D2D1_MATRIX_3X2_F protectedStrokeRealizationTransform =
+            D2D1::Matrix3x2F::Identity();
+        D2D1_MATRIX_3X2_F strokeRealizationTransform =
+            D2D1::Matrix3x2F::Identity();
+        D2D1_MATRIX_3X2_F stroke2RealizationTransform =
+            D2D1::Matrix3x2F::Identity();
         Microsoft::WRL::ComPtr<ID2D1GeometryRealization> fillRealization;
         Microsoft::WRL::ComPtr<ID2D1GeometryRealization> protectedStrokeRealization;
         Microsoft::WRL::ComPtr<ID2D1GeometryRealization> strokeRealization;
@@ -165,11 +179,16 @@ struct Direct2DGpuBackend::Impl {
         Stroke2,
     };
 
-    struct RealizationTask {
+    struct RealizationTarget {
         std::size_t lineIndex = 0;
         int rubyIndex = -1;
         std::size_t charIndex = 0;
         RealizationKind kind = RealizationKind::Fill;
+        D2D1_MATRIX_3X2_F transform = D2D1::Matrix3x2F::Identity();
+    };
+
+    struct RealizationTask {
+        std::vector<RealizationTarget> targets;
         Microsoft::WRL::ComPtr<ID2D1Geometry> geometry;
         float strokeWidth = 0.0f;
     };

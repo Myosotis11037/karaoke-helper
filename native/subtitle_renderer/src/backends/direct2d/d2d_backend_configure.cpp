@@ -1034,6 +1034,9 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 cached.chars.back().geometry = cached.geometries.back();
                 if (glyphResource != nullptr) {
                     const float strokeDx = cursor + pathOffset;
+                    cached.chars.back().realizationGeometry = path;
+                    cached.chars.back().realizationTransform =
+                        D2D1::Matrix3x2F::Translation(strokeDx, 0.0f);
                     const float stroke2Width =
                         charStyle.stroke2Width > 0.0f
                             ? std::max(charStyle.strokeWidth, 0.0f)
@@ -1089,6 +1092,8 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                                 0.0f,
                                 "ID2D1Factory::CreateTransformedGeometry(position vector protected stroke)"
                             );
+                            cached.chars.back().protectedRealizationGeometry =
+                                entry->second;
                         }
                         cached.chars.back().protectedStrokeGeometry = protectedStroke;
                     }
@@ -1165,6 +1170,8 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 ch.layoutLeft = newLayoutLeft;
                 ch.layoutRight = cursor - oldLayoutLeft;
                 ch.pivotX += offsetX;
+                ch.realizationTransform = ch.realizationTransform
+                    * D2D1::Matrix3x2F::Translation(offsetX, 0.0f);
                 if (ch.bitmapGuide.has_value()) {
                     ch.bitmapRect.left += offsetX;
                     ch.bitmapRect.right += offsetX;
@@ -1290,6 +1297,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                         90.0f, D2D1::Point2F(0.0f, cellTop + cellHeight * 0.5f)
                     );
                 }
+                ch.realizationTransform = ch.realizationTransform * matrix;
                 transformVertical(
                     ch.geometry.Get(), matrix, ch.geometry,
                     "ID2D1Factory::CreateTransformedGeometry(vertical character)"
@@ -1731,6 +1739,23 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                     positionedHasBounds ? positionedBounds.top : ruby.bounds.top,
                     positionedHasBounds ? positionedBounds.bottom : ruby.bounds.bottom,
                 });
+                if (glyph.geometry && glyph.resource != nullptr) {
+                    ruby.chars.back().realizationGeometry = glyph.geometry;
+                    ruby.chars.back().realizationTransform =
+                        D2D1::Matrix3x2F::Translation(
+                            origin + glyph.pathOffset,
+                            ruby.baselineOffset
+                        );
+                    const auto protectedEntry =
+                        glyph.resource->protectedGeometries.find(
+                            rubyStyle.rubyStrokeWidth
+                        );
+                    if (protectedEntry
+                        != glyph.resource->protectedGeometries.end()) {
+                        ruby.chars.back().protectedRealizationGeometry =
+                            protectedEntry->second;
+                    }
+                }
                 ruby.chars.back().pivotX = origin + glyph.layoutWidth * 0.5f;
                 ruby.chars.back().pivotY = ruby.pivotY;
                 ruby.chars.back().wipePoints = {
@@ -1807,6 +1832,8 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                             D2D1::Point2F(rubyX, slotTop + slotHeight * 0.5f)
                         );
                     }
+                    ruby.chars[unitIndex].realizationTransform =
+                        ruby.chars[unitIndex].realizationTransform * matrix;
                     ruby.chars[unitIndex].left = rubyX - rubyCellWidth * 0.5f;
                     ruby.chars[unitIndex].right = rubyX + rubyCellWidth * 0.5f;
                     ruby.chars[unitIndex].top = slotTop;
@@ -2190,7 +2217,16 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                     < distanceFromPrewarm(impl_->lines[right]);
             }
         );
-        std::vector<Impl::RealizationTask> tasks;
+        struct RealizationCandidate {
+            Impl::RealizationTarget target;
+            Microsoft::WRL::ComPtr<ID2D1Geometry> sharedGeometry;
+            Microsoft::WRL::ComPtr<ID2D1Geometry> positionedGeometry;
+            D2D1_MATRIX_3X2_F instanceTransform =
+                D2D1::Matrix3x2F::Identity();
+            float strokeWidth = 0.0f;
+            bool stroked = false;
+        };
+        std::vector<RealizationCandidate> candidates;
         const std::size_t realizationCapacity = static_cast<std::size_t>(
             std::max<std::uint64_t>(
                 impl_->scene.realizationCapacity,
@@ -2198,34 +2234,30 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
             )
         );
         impl_->diagnostics.realizationCapacity = realizationCapacity;
-        tasks.reserve(realizationCapacity);
-        std::uint64_t capacitySkipped = 0;
-        const auto appendTask = [&] (
+        const auto appendCandidate = [&] (
             std::size_t lineIndex,
             int rubyIndex,
             std::size_t charIndex,
             Impl::RealizationKind kind,
-            ID2D1Geometry *geometry,
+            ID2D1Geometry *sharedGeometry,
+            ID2D1Geometry *positionedGeometry,
+            const D2D1_MATRIX_3X2_F &instanceTransform,
             float strokeWidth
         ) {
             const bool isStroke = kind == Impl::RealizationKind::Stroke
                 || kind == Impl::RealizationKind::Stroke2;
-            if (geometry == nullptr
+            if (sharedGeometry == nullptr || positionedGeometry == nullptr
                 || (isStroke && strokeWidth <= 0.0f)) {
                 return;
             }
-            if (tasks.size() >= realizationCapacity) {
-                ++capacitySkipped;
-                return;
-            }
-            Impl::RealizationTask task;
-            task.lineIndex = lineIndex;
-            task.rubyIndex = rubyIndex;
-            task.charIndex = charIndex;
-            task.kind = kind;
-            task.geometry = geometry;
-            task.strokeWidth = strokeWidth;
-            tasks.push_back(std::move(task));
+            candidates.push_back({
+                {lineIndex, rubyIndex, charIndex, kind},
+                sharedGeometry,
+                positionedGeometry,
+                instanceTransform,
+                strokeWidth,
+                isStroke,
+            });
         };
         const auto appendCharTasks = [&] (
             std::size_t lineIndex,
@@ -2239,22 +2271,30 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
             if (mainWidth < Impl::realizationStrokeThreshold) {
                 return;
             }
-            appendTask(
+            appendCandidate(
                 lineIndex, rubyIndex, charIndex,
-                Impl::RealizationKind::Fill, ch.geometry.Get(), 0.0f
+                Impl::RealizationKind::Fill,
+                ch.realizationGeometry.Get(), ch.geometry.Get(),
+                ch.realizationTransform, 0.0f
             );
-            appendTask(
+            appendCandidate(
                 lineIndex, rubyIndex, charIndex,
                 Impl::RealizationKind::ProtectedStroke,
-                ch.protectedStrokeGeometry.Get(), 0.0f
+                ch.protectedRealizationGeometry.Get(),
+                ch.protectedStrokeGeometry.Get(),
+                ch.realizationTransform, 0.0f
             );
-            appendTask(
+            appendCandidate(
                 lineIndex, rubyIndex, charIndex,
-                Impl::RealizationKind::Stroke, ch.geometry.Get(), mainWidth
+                Impl::RealizationKind::Stroke,
+                ch.realizationGeometry.Get(), ch.geometry.Get(),
+                ch.realizationTransform, mainWidth
             );
-            appendTask(
+            appendCandidate(
                 lineIndex, rubyIndex, charIndex,
-                Impl::RealizationKind::Stroke2, ch.geometry.Get(),
+                Impl::RealizationKind::Stroke2,
+                ch.realizationGeometry.Get(), ch.geometry.Get(),
+                ch.realizationTransform,
                 stroke2Width > 0.0f ? mainWidth + stroke2Width : 0.0f
             );
         };
@@ -2288,6 +2328,56 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                         rubyStyle.rubyStroke2Width
                     );
                 }
+            }
+        }
+        std::vector<Impl::RealizationTask> tasks;
+        tasks.reserve(std::min(candidates.size(), realizationCapacity));
+        std::uint64_t capacitySkipped = 0;
+        if (candidates.size() <= realizationCapacity) {
+            // The original positioned realization is faster at draw time: no
+            // per-instance world transform is needed. Keep that path whenever
+            // every requested resource fits in the configured budget.
+            for (const RealizationCandidate &candidate : candidates) {
+                Impl::RealizationTask task;
+                task.targets.push_back(candidate.target);
+                task.geometry = candidate.positionedGeometry;
+                task.strokeWidth = candidate.strokeWidth;
+                tasks.push_back(std::move(task));
+            }
+        } else {
+            // Only capacity-bound scenes pay the instance-transform cost. A
+            // shared glyph realization replaces many positioned resources and
+            // prevents the tail of a long song from falling back to geometry.
+            using RealizationKey =
+                std::tuple<std::uintptr_t, bool, std::uint32_t>;
+            std::map<RealizationKey, std::size_t> taskByResource;
+            for (const RealizationCandidate &candidate : candidates) {
+                const RealizationKey key{
+                    reinterpret_cast<std::uintptr_t>(
+                        candidate.sharedGeometry.Get()
+                    ),
+                    candidate.stroked,
+                    std::bit_cast<std::uint32_t>(
+                        candidate.stroked ? candidate.strokeWidth : 0.0f
+                    ),
+                };
+                const auto existing = taskByResource.find(key);
+                Impl::RealizationTarget target = candidate.target;
+                target.transform = candidate.instanceTransform;
+                if (existing != taskByResource.end()) {
+                    tasks[existing->second].targets.push_back(target);
+                    continue;
+                }
+                if (tasks.size() >= realizationCapacity) {
+                    ++capacitySkipped;
+                    continue;
+                }
+                Impl::RealizationTask task;
+                task.targets.push_back(target);
+                task.geometry = candidate.sharedGeometry;
+                task.strokeWidth = candidate.strokeWidth;
+                tasks.push_back(std::move(task));
+                taskByResource.emplace(key, tasks.size() - 1);
             }
         }
         impl_->diagnostics.realizationPrewarmSkipped = capacitySkipped;
@@ -2412,44 +2502,57 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 Microsoft::WRL::ComPtr<ID2D1GeometryRealization> created
             ) {
                 std::lock_guard<std::mutex> lock(impl_->realizationMutex);
-                if (shouldStop() || !isCurrent()
-                    || task.lineIndex >= impl_->lines.size()) {
+                if (shouldStop() || !isCurrent()) {
                     return false;
                 }
-                Impl::CachedLine &line = impl_->lines[task.lineIndex];
-                Impl::CachedChar *targetChar = nullptr;
-                if (task.rubyIndex < 0) {
-                    if (task.charIndex < line.chars.size()) {
-                        targetChar = &line.chars[task.charIndex];
+                bool published = false;
+                for (const Impl::RealizationTarget &target : task.targets) {
+                    if (target.lineIndex >= impl_->lines.size()) {
+                        continue;
                     }
-                } else if (static_cast<std::size_t>(task.rubyIndex)
-                           < line.rubies.size()) {
-                    Impl::CachedRuby &ruby = line.rubies[
-                        static_cast<std::size_t>(task.rubyIndex)
-                    ];
-                    if (task.charIndex < ruby.chars.size()) {
-                        targetChar = &ruby.chars[task.charIndex];
+                    Impl::CachedLine &line = impl_->lines[target.lineIndex];
+                    Impl::CachedChar *targetChar = nullptr;
+                    if (target.rubyIndex < 0) {
+                        if (target.charIndex < line.chars.size()) {
+                            targetChar = &line.chars[target.charIndex];
+                        }
+                    } else if (static_cast<std::size_t>(target.rubyIndex)
+                               < line.rubies.size()) {
+                        Impl::CachedRuby &ruby = line.rubies[
+                            static_cast<std::size_t>(target.rubyIndex)
+                        ];
+                        if (target.charIndex < ruby.chars.size()) {
+                            targetChar = &ruby.chars[target.charIndex];
+                        }
                     }
+                    if (targetChar == nullptr) {
+                        continue;
+                    }
+                    switch (target.kind) {
+                    case Impl::RealizationKind::Fill:
+                        targetChar->fillRealization = created;
+                        targetChar->fillRealizationTransform = target.transform;
+                        break;
+                    case Impl::RealizationKind::ProtectedStroke:
+                        targetChar->protectedStrokeRealization = created;
+                        targetChar->protectedStrokeRealizationTransform =
+                            target.transform;
+                        break;
+                    case Impl::RealizationKind::Stroke:
+                        targetChar->strokeRealization = created;
+                        targetChar->strokeRealizationTransform = target.transform;
+                        break;
+                    case Impl::RealizationKind::Stroke2:
+                        targetChar->stroke2Realization = created;
+                        targetChar->stroke2RealizationTransform = target.transform;
+                        break;
+                    }
+                    published = true;
                 }
-                if (targetChar == nullptr) {
-                    return false;
+                if (published) {
+                    ++impl_->realizationCount;
                 }
-                switch (task.kind) {
-                case Impl::RealizationKind::Fill:
-                    targetChar->fillRealization = std::move(created);
-                    break;
-                case Impl::RealizationKind::ProtectedStroke:
-                    targetChar->protectedStrokeRealization = std::move(created);
-                    break;
-                case Impl::RealizationKind::Stroke:
-                    targetChar->strokeRealization = std::move(created);
-                    break;
-                case Impl::RealizationKind::Stroke2:
-                    targetChar->stroke2Realization = std::move(created);
-                    break;
-                }
-                ++impl_->realizationCount;
-                return true;
+                return published;
             };
             const auto yieldSlice = [&]() {
                 if (elapsedMs(sliceStart) >= 50.0) {
@@ -2465,8 +2568,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 waitMs += elapsedMs(waitStart);
                 Microsoft::WRL::ComPtr<ID2D1GeometryRealization> created;
                 HRESULT result = E_FAIL;
-                const bool stroked = task.kind == Impl::RealizationKind::Stroke
-                    || task.kind == Impl::RealizationKind::Stroke2;
+                const bool stroked = task.strokeWidth > 0.0f;
                 const auto createStart = Clock::now();
                 if (stroked) {
                     result = workerContext->CreateStrokedGeometryRealization(
