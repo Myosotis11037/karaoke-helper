@@ -10104,6 +10104,105 @@ def test_animation_overlap_switch_keeps_placement_on_stable_windows(qapp):
     assert all(offset == (0.0, 0.0) for offset in offsets.values())
 
 
+def test_collision_geometry_cache_reuses_static_rects_across_passes(qapp):
+    """几何缓存：同一解析内复用墨迹矩形，只按当次显示线重算时间窗。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("あいう", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("えお", 4_000)], end_ms=5_000),
+    ]
+    track = TimingTrack(lines=lines)
+    style = Style(font_family="Arial", font_family_latin="Arial")
+    display_a = [
+        DisplayLine(lines[0], 0, 500, 2_500, 0, 1, 1),
+        DisplayLine(lines[1], 0, 2_600, 5_500, 0, 2, 1),
+    ]
+    display_b = [
+        DisplayLine(lines[0], 0, 900, 2_400, 0, 1, 1),
+        DisplayLine(lines[1], 0, 3_100, 5_000, 0, 2, 1),
+    ]
+
+    cache = subtitle_painter.CollisionGeometryCache()
+    first = subtitle_painter.measure_collision_bands(
+        1280, 720, track, style, display_a, geometry_cache=cache
+    )
+    second = subtitle_painter.measure_collision_bands(
+        1280, 720, track, style, display_b, geometry_cache=cache
+    )
+    fresh = subtitle_painter.measure_collision_bands(
+        1280, 720, track, style, display_b
+    )
+
+    # 缓存路径与全量现算逐字节一致；时间窗按当次显示线正确重算。
+    assert second == fresh
+    assert [band.display_start_ms for _i, _p, band, _g in second] == [
+        900,
+        3_100,
+    ]
+    # 静态几何在两次测量间复用（矩形/锚点逐项相等；行距在元组末位）。
+    for (_ia, _pa, band_a, gap_a), (_ib, _pb, band_b, gap_b) in zip(first, second):
+        assert band_a.axis_min == band_b.axis_min
+        assert band_a.axis_max == band_b.axis_max
+        assert band_a.cross_min == band_b.cross_min
+        assert band_a.cross_max == band_b.cross_max
+        assert band_a.axis_anchor == band_b.axis_anchor
+        assert gap_a == gap_b
+
+
+def test_collision_geometry_cache_resets_when_baselines_change(qapp):
+    """基线防御校验：布局参数变化导致基线不同即整体失效重测。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("あいう", 1_000)], end_ms=2_000),
+    ]
+    track = TimingTrack(lines=lines)
+    display = [DisplayLine(lines[0], 0, 500, 2_500, 0, 1, 1)]
+    low = Style(font_family="Arial", font_family_latin="Arial")
+    high = replace(low, line_y_margin_px=200)
+
+    cache = subtitle_painter.CollisionGeometryCache()
+    subtitle_painter.measure_collision_bands(
+        1280, 720, track, low, display, geometry_cache=cache
+    )
+    shifted = subtitle_painter.measure_collision_bands(
+        1280, 720, track, high, display, geometry_cache=cache
+    )
+    fresh = subtitle_painter.measure_collision_bands(
+        1280, 720, track, high, display
+    )
+
+    assert shifted == fresh
+
+
+def test_display_resolution_applies_section_edge_animation_without_outer_pass(qapp):
+    """直接调用显示窗解析（无外层排版区间）也要应用段首/尾动画替换。
+
+    解析入口自身包在可重入 ``layout_pass`` 内：段边缘 / 信号上下文在
+    区间映射里注册，逐行动画解析（style_for_line）才能读到替换结果；
+    否则轨道视图刷新这类直接调用会把「未替换」的结果写进显示缓存。
+    """
+
+    lines = [
+        TimingLine(chars=[TimingChar("あ", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("い", 20_000)], end_ms=21_000),
+    ]
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        section_edge_anim_enabled=True,
+        section_head_anim="spin_flip",
+        entry_anim="fade",
+    )
+    plan = subtitle_painter.build_track_layout_plan(
+        track, style, logical_w=1280, logical_h=720
+    )
+
+    # 段首行的入场动画被替换为 spin_flip，第二段的首行同样替换；
+    # 无替换时两行都应是基础 fade。
+    assert plan.lines[0].animation_style.entry_anim == "spin_flip"
+    assert plan.lines[1].animation_style.entry_anim == "spin_flip"
+
+
 def test_cross_page_line_ink_height_excludes_layout_line_gap(qapp):
     line = TimingLine(chars=[TimingChar("Ag", 1_000)], end_ms=2_000)
     track = TimingTrack(lines=[line])
@@ -10659,7 +10758,7 @@ def test_secondary_displacement_pairs_only_report_new_cascade(monkeypatch):
     monkeypatch.setattr(
         subtitle_painter,
         "measure_collision_bands",
-        lambda *_args: measured,
+        lambda *_args, **_kwargs: measured,
     )
     monkeypatch.setattr(
         display_resolver,

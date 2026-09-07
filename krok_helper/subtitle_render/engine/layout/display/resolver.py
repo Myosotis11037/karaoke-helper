@@ -46,6 +46,7 @@ from krok_helper.subtitle_render.engine.layout.display.signal import (
     signal_head_context,
     signal_lead_in_ms,
 )
+from krok_helper.subtitle_render.engine.layout.layout_context import layout_pass
 from krok_helper.subtitle_render.engine.timing.timeline import DisplayLine
 from krok_helper.subtitle_render.engine.timing.show_time import (
     compression_floor_ms,
@@ -146,15 +147,20 @@ def collision_squeeze_pairs(
     """Return authored-position conflicts across distinct lyric pages."""
 
     conflicts: list[tuple[int, int]] = []
-    for incoming_pos, (
-        incoming_index,
-        incoming_page,
-        incoming_band,
-        _incoming_gap,
-    ) in enumerate(measured):
-        for previous_index, previous_page, previous_band, _previous_gap in measured[
-            :incoming_pos
-        ]:
+    for incoming_pos in range(len(measured)):
+        (
+            incoming_index,
+            incoming_page,
+            incoming_band,
+            _incoming_gap,
+        ) = measured[incoming_pos]
+        for previous_pos in range(incoming_pos):
+            (
+                previous_index,
+                previous_page,
+                previous_band,
+                _previous_gap,
+            ) = measured[previous_pos]
             if previous_page == incoming_page:
                 continue
             if not time_windows_overlap(incoming_band, previous_band):
@@ -225,21 +231,23 @@ def secondary_displacement_squeeze_pairs(
         return ()
 
     conflicts: list[tuple[int, int]] = []
-    for incoming_pos, (
-        incoming_index,
-        incoming_page,
-        incoming_band,
-        _incoming_gap,
-    ) in enumerate(measured):
+    for incoming_pos in range(len(measured)):
+        (
+            incoming_index,
+            incoming_page,
+            incoming_band,
+            _incoming_gap,
+        ) = measured[incoming_pos]
         incoming_offset = float(offsets.get(incoming_page, 0.0))
         if incoming_offset == 0.0:
             continue
-        for (
-            previous_index,
-            previous_page,
-            previous_band,
-            _previous_gap,
-        ) in measured[:incoming_pos]:
+        for previous_pos in range(incoming_pos):
+            (
+                previous_index,
+                previous_page,
+                previous_band,
+                _previous_gap,
+            ) = measured[previous_pos]
             if previous_page == incoming_page:
                 continue
             if not time_windows_overlap(incoming_band, previous_band):
@@ -751,20 +759,33 @@ def apply_animation_time_guard(
         "stable" if style.allow_entry_exit_animation_overlap else "display"
     )
     measured = ports.measure(guarded, time_window)
+    # 时间剪枝上界：冲突要求 incoming 起点早于 previous 终点 + 同轨间隔，
+    # 早于此界的对可直接跳过（跨轨间隔为 0，此界仍是安全下界）。
+    max_lane_gap = max(int(style.line_lane_gap_ms), 0)
     for _pass in range(max(len(guarded) * 3, 1)):
         adjusted = False
         changed_indices: list[int] = []
-        for incoming_pos, (
-            incoming_index,
-            incoming_page,
-            incoming_band,
-            _incoming_gap,
-        ) in enumerate(measured):
+        for incoming_pos in range(len(measured)):
+            (
+                incoming_index,
+                incoming_page,
+                incoming_band,
+                _incoming_gap,
+            ) = measured[incoming_pos]
             incoming = guarded[incoming_index]
-            for previous_index, previous_page, previous_band, _previous_gap in measured[
-                :incoming_pos
-            ]:
+            for previous_pos in range(incoming_pos):
+                (
+                    previous_index,
+                    previous_page,
+                    previous_band,
+                    _previous_gap,
+                ) = measured[previous_pos]
                 if previous_page == incoming_page:
+                    continue
+                if (
+                    int(previous_band.display_end_ms) + max_lane_gap
+                    <= int(incoming_band.display_start_ms)
+                ):
                     continue
                 previous = guarded[previous_index]
                 same_lane = int(previous.lane) == int(incoming.lane)
@@ -1085,44 +1106,51 @@ def resolve_display_lines_for_style(
     logical_w: int | None = None,
     logical_h: int | None = None,
 ) -> DisplayLines:
-    """Resolve and cache one style's display lines on a normalized canvas."""
+    """Resolve and cache one style's display lines on a normalized canvas.
 
-    base_kwargs = {
-        **compute_kwargs,
-        "sync_entry": False,
-        "sync_ending": False,
-        "auto_fill_section_time": False,
-    }
-    signal_heads = signal_head_context(track, style)
-    if signal_heads is not None:
-        base_kwargs["signal_head_indexes"] = signal_heads
-        base_kwargs["signal_lead_ms"] = signal_lead_in_ms(style)
-    # 段首/段尾页标记供逐行动画解析（style_for_line）读取；此处注册后，
-    # 本函数产出的显示窗口与后续布局计划看到的替换结果保持一致。
-    section_edge_context(track, style)
-    if logical_w is None or logical_h is None:
-        default_h = max(int(style.layout_reference_height), 1)
-        default_w = max(int(round(default_h * 16 / 9)), 1)
-        logical_w = default_w if logical_w is None else logical_w
-        logical_h = default_h if logical_h is None else logical_h
-    logical_w = max(int(logical_w), 1)
-    logical_h = max(int(logical_h), 1)
-    cache_key = (
-        logical_w,
-        logical_h,
-        id(track),
-        value_signature(track),
-        lyric_layout_style_signature(style),
-    )
-    cached = cached_display_line_resolution(cache_key)
-    if cached is not None:
-        return cached
-    resolved = resolve_display_lines(
-        avoid_collisions=not style.allow_inter_page_line_overlap,
-        ports=ports.build(logical_w, logical_h, base_kwargs),
-    )
-    store_display_line_resolution(cache_key, track, resolved)
-    return resolved
+    整场解析包在可重入的 :func:`layout_pass` 内：多轮发现 / 填充 / 守卫
+    共享同一份区间缓存（行布局、墨迹、段边缘与信号上下文）。直接调用方
+    （轨道视图刷新、诊断）不再逐趟重付全价；嵌套在绘制 / IR 的既有区间
+    内时复用同一组映射，行为不变。
+    """
+
+    with layout_pass():
+        base_kwargs = {
+            **compute_kwargs,
+            "sync_entry": False,
+            "sync_ending": False,
+            "auto_fill_section_time": False,
+        }
+        signal_heads = signal_head_context(track, style)
+        if signal_heads is not None:
+            base_kwargs["signal_head_indexes"] = signal_heads
+            base_kwargs["signal_lead_ms"] = signal_lead_in_ms(style)
+        # 段首/段尾页标记供逐行动画解析（style_for_line）读取；此处注册后，
+        # 本函数产出的显示窗口与后续布局计划看到的替换结果保持一致。
+        section_edge_context(track, style)
+        if logical_w is None or logical_h is None:
+            default_h = max(int(style.layout_reference_height), 1)
+            default_w = max(int(round(default_h * 16 / 9)), 1)
+            logical_w = default_w if logical_w is None else logical_w
+            logical_h = default_h if logical_h is None else logical_h
+        logical_w = max(int(logical_w), 1)
+        logical_h = max(int(logical_h), 1)
+        cache_key = (
+            logical_w,
+            logical_h,
+            id(track),
+            value_signature(track),
+            lyric_layout_style_signature(style),
+        )
+        cached = cached_display_line_resolution(cache_key)
+        if cached is not None:
+            return cached
+        resolved = resolve_display_lines(
+            avoid_collisions=not style.allow_inter_page_line_overlap,
+            ports=ports.build(logical_w, logical_h, base_kwargs),
+        )
+        store_display_line_resolution(cache_key, track, resolved)
+        return resolved
 
 
 __all__ = [

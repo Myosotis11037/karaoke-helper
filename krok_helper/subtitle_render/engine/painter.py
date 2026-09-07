@@ -2364,6 +2364,48 @@ def _active_lit_indices(
     )
 
 
+_MISSING_GEOMETRY = object()
+
+
+class CollisionGeometryCache:
+    """一次显示窗解析内共享的静态墨迹几何。
+
+    几何（无修饰主字形的墨迹矩形 / 锚点 / 行距）只依赖画布、字体、行
+    内容与 lane，**与显示时间无关且平移不变**——这正是守卫 ``retime``
+    复用矩形的前提。键 = (track 行索引, lane)；水平布局另存基线快照做
+    防御校验，基线变化即整体失效重测。生命周期 = 一次
+    ``resolve_display_lines_for_style``（在其 ``build`` 闭包内创建），
+    跨解析不共享，不存在陈旧风险；同步 / 填充 / 三次发现 / 守卫与
+    retime 回落因此共享**一趟**几何测量，逐行样式解析与墨迹构建也
+    只发生一次。
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[
+            tuple[int, int], CollisionLineGeometry | None
+        ] = {}
+        self._baselines: dict[int, int] | None = None
+
+    def baselines_match(self, baselines: dict[int, int]) -> bool:
+        if self._baselines is None:
+            self._baselines = dict(baselines)
+            return True
+        return self._baselines == baselines
+
+    def reset(self) -> None:
+        self._entries.clear()
+
+    def get(self, key: tuple[int, int]):
+        return self._entries.get(key, _MISSING_GEOMETRY)
+
+    def put(
+        self,
+        key: tuple[int, int],
+        geometry: CollisionLineGeometry | None,
+    ) -> None:
+        self._entries[key] = geometry
+
+
 def measure_collision_bands(
     logical_w: int,
     logical_h: int,
@@ -2372,29 +2414,56 @@ def measure_collision_bands(
     display_lines: list[DisplayLine],
     *,
     time_window: str | None = None,
+    geometry_cache: CollisionGeometryCache | None = None,
 ) -> list[tuple[int, tuple[int, int], LineVisualBand, float]]:
-    """Measure ink bands without changing display-time behaviour."""
+    """Measure ink bands without changing display-time behaviour.
+
+    ``geometry_cache`` 提供时，静态墨迹几何按 (track 行索引, lane) 复用，
+    只重算各阶段自己的时间窗；缺省 ``None`` 保持全量现算（独立调用 /
+    测试路径行为不变）。
+    """
 
     if not display_lines:
         return []
-    if style.vertical:
-        baselines: dict[int, int] = {}
-        line_layouts: dict[int, _SayatooLineLayout] = {}
-        layout_cache_sig = None
-    else:
-        baselines = _resolve_display_baselines(
-            logical_h, track, display_lines, style
-        )
-        line_layouts = _resolve_sayatoo_line_layouts(
-            logical_w,
-            logical_h,
-            track,
-            display_lines,
-            baselines,
-            0,
-            style,
-        )
-        layout_cache_sig = _layout_cache_sig(track, style)
+    baselines: dict[int, int] = {}
+    line_layouts: dict[int, _SayatooLineLayout] = {}
+    layout_cache_sig = None
+    layouts_ready = False
+
+    def ensure_layouts() -> None:
+        nonlocal layouts_ready, layout_cache_sig
+        if layouts_ready:
+            return
+        if not style.vertical:
+            baselines.update(
+                _resolve_display_baselines(
+                    logical_h, track, display_lines, style
+                )
+            )
+            line_layouts.update(
+                _resolve_sayatoo_line_layouts(
+                    logical_w,
+                    logical_h,
+                    track,
+                    display_lines,
+                    baselines,
+                    0,
+                    style,
+                )
+            )
+            layout_cache_sig = _layout_cache_sig(track, style)
+        layouts_ready = True
+
+    # 基线防御校验：每次带缓存的水平测量都先快照/比对基线（首次调用
+    # 本就全 miss、必然计算布局，无额外开销）。基线变化即整体失效重测，
+    # 杜绝跨轮陈旧几何。
+    if geometry_cache is not None and not style.vertical:
+        ensure_layouts()
+        if not geometry_cache.baselines_match(baselines):
+            geometry_cache.reset()
+    track_index_of = {
+        id(line): index for index, line in enumerate(track.lines)
+    }
 
     geometries: list[CollisionLineGeometry | None] = []
     measure_total = len(display_lines)
@@ -2402,6 +2471,16 @@ def measure_collision_bands(
         # 逐行墨迹实测是 display 阶段的主要耗时：按当前槽位逐行上报，
         # 让百分比连续爬升而非每趟一跳（无 reporter 时为 no-op）。
         report_display_measure_progress(measure_index, measure_total)
+        cache_key: tuple[int, int] | None = None
+        if geometry_cache is not None:
+            cache_key = (
+                track_index_of.get(id(display_line.line), -1),
+                int(display_line.lane),
+            )
+            cached = geometry_cache.get(cache_key)
+            if cached is not _MISSING_GEOMETRY:
+                geometries.append(cached)
+                continue
         line_style = _style_for_line(style, display_line.line)
         if style.vertical:
             ink_rect = _display_line_vertical_ink_rect(
@@ -2423,6 +2502,7 @@ def measure_collision_bands(
                 logical_w, track, [display_line], line_style
             ).get(display_line.lane)
         else:
+            ensure_layouts()
             ink_rect = _display_line_horizontal_ink_rect(
                 logical_w,
                 logical_h,
@@ -2448,19 +2528,22 @@ def measure_collision_bands(
                 else baselines.get(display_line.lane)
             )
         if axis_bounds is None:
+            if cache_key is not None:
+                geometry_cache.put(cache_key, None)
             geometries.append(None)
             continue
         assert cross_bounds is not None
-        geometries.append(
-            CollisionLineGeometry(
-                axis_min=float(axis_bounds[0]),
-                axis_max=float(axis_bounds[1]),
-                cross_min=float(cross_bounds[0]),
-                cross_max=float(cross_bounds[1]),
-                axis_anchor=(None if axis_anchor is None else float(axis_anchor)),
-                gap_px=float(line_style.line_gap_px),
-            )
+        geometry = CollisionLineGeometry(
+            axis_min=float(axis_bounds[0]),
+            axis_max=float(axis_bounds[1]),
+            cross_min=float(cross_bounds[0]),
+            cross_max=float(cross_bounds[1]),
+            axis_anchor=(None if axis_anchor is None else float(axis_anchor)),
+            gap_px=float(line_style.line_gap_px),
         )
+        if cache_key is not None:
+            geometry_cache.put(cache_key, geometry)
+        geometries.append(geometry)
     report_display_measure_progress(measure_total, measure_total)
     return _build_measured_collision_bands(
         display_lines,
@@ -2476,6 +2559,8 @@ def pixel_collision_squeeze_pairs(
     track: TimingTrack,
     style: Style,
     display_lines: list[DisplayLine],
+    *,
+    geometry_cache: CollisionGeometryCache | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Return pairs conflicting in the configured time window and pixel axis."""
 
@@ -2486,6 +2571,7 @@ def pixel_collision_squeeze_pairs(
             track,
             style,
             display_lines,
+            geometry_cache=geometry_cache,
         )
     )
 
@@ -2496,6 +2582,8 @@ def _secondary_displacement_squeeze_pairs(
     track: TimingTrack,
     style: Style,
     display_lines: list[DisplayLine],
+    *,
+    geometry_cache: CollisionGeometryCache | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """Return cascade dependencies created by rigid inter-page displacement.
 
@@ -2506,7 +2594,12 @@ def _secondary_displacement_squeeze_pairs(
     """
 
     measured = measure_collision_bands(
-        logical_w, logical_h, track, style, display_lines
+        logical_w,
+        logical_h,
+        track,
+        style,
+        display_lines,
+        geometry_cache=geometry_cache,
     )
     return _resolve_secondary_displacement_pairs(
         measured,
@@ -2522,6 +2615,8 @@ def _apply_measured_section_time_fill(
     track: TimingTrack,
     style: Style,
     display_lines: list[DisplayLine],
+    *,
+    geometry_cache: CollisionGeometryCache | None = None,
 ) -> list[DisplayLine]:
     """Bind Painter geometry to the layout-owned section-fill policy."""
 
@@ -2537,6 +2632,7 @@ def _apply_measured_section_time_fill(
         style,
         display_lines,
         time_window=time_window,
+        geometry_cache=geometry_cache,
     )
     return _fill_section_time_from_measurements(
         display_lines,
@@ -2552,6 +2648,8 @@ def animation_guard_ports_for_style(
     logical_h: int,
     track: TimingTrack,
     style: Style,
+    *,
+    geometry_cache: CollisionGeometryCache | None = None,
 ) -> AnimationGuardPorts:
     """Expose Painter collision measurements through the layout guard ports."""
 
@@ -2565,6 +2663,7 @@ def animation_guard_ports_for_style(
             style,
             items,
             time_window=time_window,
+            geometry_cache=geometry_cache,
         ),
         retime=lambda measured, items, indices, time_window: (
             _retime_measured_collision_bands(
@@ -2601,59 +2700,60 @@ def display_lines_for_style(
     """
 
     style = style_for_track(style, track)
+
+    def _build_display_ports(width: int, height: int, base_kwargs) -> DisplayResolutionPorts:
+        # 一次解析一趟几何测量：同步 / 填充 / 三次发现 / 守卫 / retime
+        # 回落全部复用这份静态墨迹几何（与显示时间无关、平移不变）。
+        geometry_cache = CollisionGeometryCache()
+        guard_ports = animation_guard_ports_for_style(
+            width, height, track, style, geometry_cache=geometry_cache
+        )
+        return DisplayResolutionPorts(
+            compute=lambda **overrides: compute_display_lines(
+                track,
+                **base_kwargs,
+                **overrides,
+            ),
+            resolve_timing=(
+                lambda items, enforce_gap, fill_section_time=None: (
+                    resolve_display_timing(
+                        style,
+                        items,
+                        guard_ports,
+                        enforce_inter_page_gap=enforce_gap,
+                        fill_section_time=fill_section_time,
+                    )
+                )
+            ),
+            collision_pairs=lambda items: pixel_collision_squeeze_pairs(
+                width, height, track, style, items,
+                geometry_cache=geometry_cache,
+            ),
+            secondary_collision_pairs=lambda items: (
+                _secondary_displacement_squeeze_pairs(
+                    width, height, track, style, items,
+                    geometry_cache=geometry_cache,
+                )
+            ),
+            fill_section_time=lambda items: _apply_measured_section_time_fill(
+                width, height, track, style, items,
+                geometry_cache=geometry_cache,
+            ),
+            apply_animation_guard=lambda items, enforce_gap: (
+                apply_animation_time_guard(
+                    style,
+                    items,
+                    guard_ports,
+                    enforce_inter_page_gap=enforce_gap,
+                )
+            ),
+        )
+
     return resolve_display_lines_for_style(
         track,
         style,
         display_line_compute_kwargs(style),
-        StyleDisplayResolutionPorts(
-            build=lambda width, height, base_kwargs: DisplayResolutionPorts(
-                compute=lambda **overrides: compute_display_lines(
-                    track,
-                    **base_kwargs,
-                    **overrides,
-                ),
-                resolve_timing=(
-                    lambda items, enforce_gap, fill_section_time=None: (
-                        resolve_display_timing(
-                            style,
-                            items,
-                            animation_guard_ports_for_style(
-                                width,
-                                height,
-                                track,
-                                style,
-                            ),
-                            enforce_inter_page_gap=enforce_gap,
-                            fill_section_time=fill_section_time,
-                        )
-                    )
-                ),
-                collision_pairs=lambda items: pixel_collision_squeeze_pairs(
-                    width, height, track, style, items
-                ),
-                secondary_collision_pairs=lambda items: (
-                    _secondary_displacement_squeeze_pairs(
-                        width, height, track, style, items
-                    )
-                ),
-                fill_section_time=lambda items: _apply_measured_section_time_fill(
-                    width, height, track, style, items
-                ),
-                apply_animation_guard=lambda items, enforce_gap: (
-                    apply_animation_time_guard(
-                        style,
-                        items,
-                        animation_guard_ports_for_style(
-                            width,
-                            height,
-                            track,
-                            style,
-                        ),
-                        enforce_inter_page_gap=enforce_gap,
-                    )
-                ),
-            ),
-        ),
+        StyleDisplayResolutionPorts(build=_build_display_ports),
         logical_w=logical_w,
         logical_h=logical_h,
     )
