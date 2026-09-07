@@ -753,7 +753,7 @@ def apply_animation_time_guard(
     measured = ports.measure(guarded, time_window)
     for _pass in range(max(len(guarded) * 3, 1)):
         adjusted = False
-        changed_index: int | None = None
+        changed_indices: list[int] = []
         for incoming_pos, (
             incoming_index,
             incoming_page,
@@ -785,66 +785,84 @@ def apply_animation_time_guard(
                     continue
                 overlap_ms = required_start - int(incoming_band.display_start_ms)
 
-                if previous.line.display_end_override_ms is None:
-                    # 退场侧容量：从完整 display_end 起算。display 判碰窗口下
-                    # 压缩动画能直接消解判定的重叠，动画可压到下限；stable
-                    # 判碰窗口下稳定段端点在余量 ≤ 动画时长后就不再移动，
-                    # 继续压动画只是白白缩短可见动画，因此下限抬到完整动画。
-                    exit_stop = max(
-                        exit_floors[previous_index],
-                        exit_durations[previous_index]
-                        if time_window == "stable"
-                        else 0,
-                    )
-                    stable_tail = max(
+                # 两侧容量：从完整 display 端点起算。display 判碰窗口下压缩
+                # 动画能直接消解判定的重叠，动画可压到下限；stable 判碰窗口
+                # 下稳定段端点在余量 ≤ 动画时长后就不再移动，继续压动画只是
+                # 白白缩短可见动画，因此下限抬到完整动画。手工覆盖的一侧
+                # 容量为 0。
+                exit_stop = max(
+                    exit_floors[previous_index],
+                    exit_durations[previous_index]
+                    if time_window == "stable"
+                    else 0,
+                )
+                exit_capacity = (
+                    max(
                         int(previous.display_end_ms)
                         - line_ends[previous_index]
                         - exit_stop,
                         0,
                     )
-                    delta = min(overlap_ms, stable_tail)
-                    new_end = int(previous.display_end_ms) - delta
-                    if new_end < previous.display_end_ms:
-                        if adjustments is not None:
-                            adjustments.append(
-                                TimingCollisionAdjustment(
-                                    previous_index=previous_index,
-                                    incoming_index=incoming_index,
-                                    boundary="exit",
-                                    before_ms=int(previous.display_end_ms),
-                                    after_ms=int(new_end),
-                                )
-                            )
-                        guarded[previous_index] = replace(
-                            previous,
-                            display_end_ms=max(
-                                int(previous.display_start_ms),
-                                new_end,
-                            ),
-                        )
-                        adjusted = True
-                        changed_index = previous_index
-                        changed = True
-                        break
-
-                if incoming.line.display_start_override_ms is None:
-                    # 入场侧与退场侧同构：stable 判碰窗口下推迟到余量 =
-                    # 动画时长后稳定段起点已贴住唱字开始，再推迟只是
-                    # 白白缩短可见动画，下限同样抬到完整动画时长。
-                    entry_stop = max(
-                        entry_floors[incoming_index],
-                        entry_durations[incoming_index]
-                        if time_window == "stable"
-                        else 0,
-                    )
-                    stable_lead = max(
+                    if previous.line.display_end_override_ms is None
+                    else 0
+                )
+                entry_stop = max(
+                    entry_floors[incoming_index],
+                    entry_durations[incoming_index]
+                    if time_window == "stable"
+                    else 0,
+                )
+                entry_capacity = (
+                    max(
                         line_starts[incoming_index]
                         - int(incoming.display_start_ms)
                         - entry_stop,
                         0,
                     )
-                    delta = min(overlap_ms, stable_lead)
-                    new_start = int(incoming.display_start_ms) + delta
+                    if incoming.line.display_start_override_ms is None
+                    else 0
+                )
+
+                # 两边平均分担：各瞄准重叠量的一半，容量不足的一侧把差额
+                # 让给另一侧；两侧都到底后残余冲突留给空间避让。避免"先
+                # 把退场一侧压到底、再动入场"的单向贪心，需要缩短出入场
+                # 动画时两边同步、尽量均匀地承受。
+                if overlap_ms > exit_capacity + entry_capacity:
+                    exit_take = exit_capacity
+                    entry_take = entry_capacity
+                else:
+                    exit_take = min(
+                        exit_capacity,
+                        max(
+                            (overlap_ms + 1) // 2,
+                            overlap_ms - entry_capacity,
+                        ),
+                    )
+                    entry_take = min(entry_capacity, overlap_ms - exit_take)
+
+                pair_changed: list[int] = []
+                if exit_take > 0:
+                    new_end = int(previous.display_end_ms) - exit_take
+                    if adjustments is not None:
+                        adjustments.append(
+                            TimingCollisionAdjustment(
+                                previous_index=previous_index,
+                                incoming_index=incoming_index,
+                                boundary="exit",
+                                before_ms=int(previous.display_end_ms),
+                                after_ms=int(new_end),
+                            )
+                        )
+                    guarded[previous_index] = replace(
+                        previous,
+                        display_end_ms=max(
+                            int(previous.display_start_ms),
+                            new_end,
+                        ),
+                    )
+                    pair_changed.append(previous_index)
+                if entry_take > 0:
+                    new_start = int(incoming.display_start_ms) + entry_take
                     latest_entry_start = max(
                         line_starts[incoming_index] - entry_stop,
                         0,
@@ -865,19 +883,21 @@ def apply_animation_time_guard(
                             incoming,
                             display_start_ms=new_start,
                         )
-                        adjusted = True
-                        changed_index = incoming_index
-                        changed = True
-                        break
+                        pair_changed.append(incoming_index)
+                if pair_changed:
+                    adjusted = True
+                    changed_indices.extend(pair_changed)
+                    changed = True
+                    break
             if adjusted:
                 break
         if not adjusted:
             break
-        if changed_index is not None:
+        if changed_indices:
             retimed = ports.retime(
                 measured,
                 guarded,
-                (changed_index,),
+                tuple(changed_indices),
                 time_window,
             )
             measured = (

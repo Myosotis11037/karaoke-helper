@@ -10427,17 +10427,19 @@ def test_cross_page_spatial_mode_squeezes_only_pixel_conflicting_lines(qapp):
     )
 
     assert normal != legacy
+    # 避让按「两边平均分担」：(A,C) 重叠 1_100 → 退场/入场各 550；(B,D)
+    # 重叠 600 → 各 300。
     assert normal == {
-        0: (8_200, 12_000),
-        1: (10_700, 13_900),
-        2: (12_300, 16_000),
-        3: (14_200, 18_000),
+        0: (8_200, 12_450),
+        1: (10_700, 14_200),
+        2: (12_750, 16_000),
+        3: (14_500, 18_000),
     }
     # Both same-lane handoffs retain the configured 300 ms interval.
-    assert normal[0] == (8_200, 12_000)
-    assert normal[2] == (12_300, 16_000)
+    assert normal[0] == (8_200, 12_450)
+    assert normal[2] == (12_750, 16_000)
     assert normal[1][0] == lines[1].chars[0].start_ms - 1_800
-    assert normal[3][0] == lines[3].chars[0].start_ms - 1_800
+    assert normal[3][0] == lines[3].chars[0].start_ms - 1_800 + 300
     assert all(
         start <= lines[index].chars[0].start_ms
         and end >= int(lines[index].end_ms)
@@ -10490,11 +10492,13 @@ def test_overlap_mode_only_drops_avoidance_and_keeps_the_timing_pipeline(qapp):
     # Avoidance can only delay an entry or clip an exit, never the reverse.
     assert all(overlap[index][0] <= normal[index][0] for index in normal)
     assert all(overlap[index][1] >= normal[index][1] for index in normal)
-    # Both same-lane handoffs retain the configured schedule gap.
-    assert {index for index in normal if normal[index] != overlap[index]} == {0, 1, 2}
-    assert normal[1] == (10_700, 13_900)
+    # Both same-lane handoffs share their overlap across both sides (balanced),
+    # so every line's window differs from the un-avoided ideal.
+    assert {index for index in normal if normal[index] != overlap[index]} == {0, 1, 2, 3}
+    assert normal[1] == (10_700, 14_200)
     assert overlap[1] == (10_700, int(lines[1].end_ms) + 1_000)
-    assert normal[2][0] == overlap[2][0] + 100
+    # (A,C) 重叠 1_100 两侧各担 550：C 比理想上屏推迟 550。
+    assert normal[2][0] == overlap[2][0] + 550
 
 
 @pytest.mark.parametrize(
@@ -10541,23 +10545,24 @@ def test_overlap_mode_computes_page_sync_identically(
         track, replace(style, allow_inter_page_line_overlap=True)
     )
 
-    # Avoidance shortens and delays only the directly colliding line pairs.
-    # A sibling from the same page keeps its own independently resolved window.
-    expected_changed = {0, 1, 2}
-    if sync_entry:
-        expected_changed.add(3)
+    # Avoidance shortens and delays both sides of each colliding pair
+    # (balanced sharing), so all four windows differ from the ideal.
     assert {
         index for index in normal if normal[index] != overlap[index]
-    } == expected_changed
+    } == {0, 1, 2, 3}
     assert overlap[1] == (normal[1][0], int(lines[1].end_ms) + 1_000)
-    if sync_entry:
-        assert normal[2][0] == 12_300
-        # Entry sync stops at the previous page's resolved exit plus the lane
-        # gap; it never buys the remaining distance from that exit.
-        assert normal[3][0] == 14_200
-        assert overlap[2][0] == overlap[3][0] == 12_200
+    if sync_entry and sync_ending:
+        # 同步退场把 A 尾撑到页内最晚 14_500：(A,C) 重叠 2_600 两侧各担 1_300。
+        assert normal[2][0] == 13_500
+    elif sync_entry:
+        # A 尾保持自身 1_000：(A,C) 重叠 1_100 两侧各担 550。
+        assert normal[2][0] == 12_750
     else:
-        assert normal[2][0] == overlap[2][0] + 100
+        assert normal[2][0] == overlap[2][0] + 550
+    if sync_entry:
+        # (B,D) 重叠 600 两侧各担 300：D 被推迟 300。
+        assert normal[3][0] == 14_500
+        assert overlap[2][0] == overlap[3][0] == 12_200
     if sync_entry:
         # The collision-driven contraction is per line, not page-wide.
         assert normal[0][0] == normal[1][0]
@@ -10610,7 +10615,8 @@ def test_animation_guard_keeps_exit_floor_and_delays_full_coverage_entry(qapp):
         track, animated, logical_w=1920, logical_h=1080
     )
 
-    assert plain_windows[0][1] == lines[0].end_ms
+    # A 的 1_000ms 尾巴与 C 的提前入场按重叠量各半分担：尾侧留 ~458ms。
+    assert plain_windows[0][1] == lines[0].end_ms + 458
     # The automatic window may retain additional stable tail, but it must not
     # consume the protected 100 ms exit animation floor.
     assert animated_windows[0][1] >= lines[0].end_ms + 100
@@ -11364,8 +11370,9 @@ def test_protect_time_defaults_to_no_floor(qapp):
     )
 
     assert style.line_protect_ms == 0
-    # B 与下一页同轨相撞，退场被压到只剩 400ms 尾巴——这正是无保护时的行为。
-    assert windows[1][1] - int(lines[1].end_ms) == 400
+    # B 与下一页同轨相撞，重叠 600ms 两侧各担 300：B 的尾巴留 700ms——
+    # 无保护时两侧平分，不再单侧压到 400。
+    assert windows[1][1] - int(lines[1].end_ms) == 700
     assert windows == subtitle_painter.display_windows_for_style(
         track, replace(style, line_protect_ms=0), logical_w=1920, logical_h=1080
     )
@@ -11375,7 +11382,8 @@ def test_protect_time_floors_automatic_exit_compression(qapp):
     """保护时间是自动压缩的下界：演唱结束后至少留这么久才消失。"""
 
     lines, track, base_style = _protect_time_track()
-    for protect, expected_tail in ((0, 400), (500, 500), (900, 900)):
+    # 重叠 600ms：保护时间抬高一侧底线，能承担的一半不足时另一侧补足。
+    for protect, expected_tail in ((0, 700), (500, 700), (900, 900)):
         windows = subtitle_painter.display_windows_for_style(
             track,
             replace(base_style, line_protect_ms=protect),
@@ -11387,7 +11395,7 @@ def test_protect_time_floors_automatic_exit_compression(qapp):
         ]
         assert min(tails) >= min(protect, base_style.line_tail_ms)
         assert tails[1] == expected_tail
-        # 让出的时间由后一句自己的入场吸收，而不是把冲突留在屏幕上。
+        # 两侧分担后同轨间隔仍然成立：冲突不会留在屏幕上。
         assert windows[1][1] + 300 == windows[3][0]
 
 
@@ -11466,14 +11474,15 @@ def test_page_sync_entry_never_shortens_previous_page_exit(qapp):
         logical_h=1080,
     )
 
-    # 第一页完整同步。第二页的每一行各自尽量提前到页内最早入场，但下界是
-    # 「同位邻行退场 + IntervalTime」——够不着就停在下界，绝不通过压缩上一页的
-    # 退场来换取提前量。这里 D 的下界正好等于它自己的自动入场，所以它不动。
+    # 第一页完整同步。第二页的每一行各自尽量提前到页内最早入场，同步层
+    # 绝不压缩上一页的退场；随后的碰撞压缩按两侧平均分担——出厂默认
+    # 同步退场把 A/B 尾巴对齐到页内最晚 14_500，(A,C) 重叠 2_600 两侧
+    # 各担 1_300（A 消失 13_200、C 上屏 13_500），(B,D) 重叠 600 各担 300。
     assert synchronized[0][0] == synchronized[1][0] == baseline[0][0]
     assert synchronized[0][1] == baseline[0][1]
     assert synchronized[1][1] == baseline[1][1]
-    assert synchronized[2][0] == 12_200
-    assert synchronized[3][0] == baseline[3][0] == 14_200
+    assert synchronized[2][0] == 13_500
+    assert synchronized[3][0] == baseline[3][0] == 14_500
     assert synchronized[1][1] + 300 == synchronized[3][0]
     offsets = subtitle_painter.resolved_page_offsets_for_style(
         1920,
@@ -11680,12 +11689,12 @@ def test_animation_overlap_switch_changes_collision_time_window(qapp):
         (500, 2_550),
         (2_350, 4_250),
     ]
-    # 关闭开关后用完整显示窗判碰，动画可压缩到下限：前句退场余量 550ms
-    # 压到 100ms 下限（消失 2_100），剩余 50ms 由后句入场吸收（上屏
-    # 2_400，入场余量 450ms 仍高于 250ms 下限）。
+    # 关闭开关后用完整显示窗判碰，动画可压缩到下限：重叠 500ms 两侧
+    # 各担 250——前句退场 550ms 压到 300ms（消失 2_300，仍高于 100ms
+    # 下限），后句入场 500ms 压到 250ms（上屏 2_600，正好到下限）。
     assert [(item.display_start_ms, item.display_end_ms) for item in forbidden] == [
-        (500, 2_100),
-        (2_400, 4_250),
+        (500, 2_300),
+        (2_600, 4_250),
     ]
 
 
@@ -11732,8 +11741,9 @@ def test_same_lane_gap_does_not_depend_on_horizontal_glyph_intersection(
         1_280, 720, track, style, display_lines, enforce_inter_page_gap=True
     )
 
-    assert guarded[0].display_end_ms == 2_300
-    assert guarded[1].display_start_ms == 2_600
+    # 重叠 200ms 两侧各担 100：A 消失 2_400、B 上屏 2_700。
+    assert guarded[0].display_end_ms == 2_400
+    assert guarded[1].display_start_ms == 2_700
 
 
 def test_animation_guard_compresses_stable_overlap_incrementally(qapp):
@@ -11765,10 +11775,10 @@ def test_animation_guard_compresses_stable_overlap_incrementally(qapp):
         enforce_inter_page_gap=True,
     )
 
-    # Consume the 100 ms overlap plus the configured 300 ms interval from the
-    # outgoing stable tail without shortening either 250 ms animation.
-    assert guarded[0].display_end_ms == 2_600
-    assert guarded[1].display_start_ms == 2_400
+    # 稳定段重叠 100ms + 300ms 间隔 = 400ms：两侧各担 200，两个 250ms
+    # 动画都完整保留。
+    assert guarded[0].display_end_ms == 2_800
+    assert guarded[1].display_start_ms == 2_600
     assert guarded[0].display_end_ms - lines[0].end_ms >= 250
     assert lines[1].chars[0].start_ms - guarded[1].display_start_ms >= 250
 
@@ -11841,11 +11851,11 @@ def test_animation_guard_compresses_exit_animation_to_minimum_in_display_window(
         enforce_inter_page_gap=True,
     )
 
-    # 同轨间隔 300：需要的起点 = 2_900 + 300 = 3_200，重叠 100ms 全部由
-    # 前句的退场余量吸收（900ms 退场动画压到 800ms，仍高于 100ms 下限），
-    # 后句的 900ms 入场动画原样保留。
-    assert guarded[0].display_end_ms == 2_800
-    assert guarded[1].display_start_ms == 3_100
+    # 同轨间隔 300：需要的起点 = 2_900 + 300 = 3_200，重叠 100ms 两侧
+    # 各担 50——前句退场 900ms 压到 850ms、后句入场 900ms 压到 850ms，
+    # 都仍高于各自下限。
+    assert guarded[0].display_end_ms == 2_850
+    assert guarded[1].display_start_ms == 3_150
 
 
 def test_animation_guard_compresses_entry_animation_to_minimum_in_display_window(qapp):
@@ -11915,11 +11925,63 @@ def test_animation_guard_keeps_protect_floor_when_compressing_animations(qapp):
         enforce_inter_page_gap=True,
     )
 
-    # 退场侧可压容量 = 2_900 − 2_000 − max(100, 500) = 400：前句消失停在
-    # 唱完 + 500（保护时间），剩余 100ms 重叠由后句入场吸收。
-    assert guarded[0].display_end_ms == 2_500
-    assert guarded[1].display_start_ms == 2_800
-    assert guarded[0].display_end_ms - lines[0].end_ms == 500
+    # 重叠 500ms 两侧各担 250（保护时间 500 是不可越过的底线，两侧
+    # 分担后均停在底线之上）：前句消失 2_650（尾 650 ≥ 500），后句
+    # 上屏 2_950（提前量 1_050 ≥ 500）。
+    assert guarded[0].display_end_ms == 2_650
+    assert guarded[1].display_start_ms == 2_950
+    assert guarded[0].display_end_ms - lines[0].end_ms >= 500
+    assert lines[1].chars[0].start_ms - guarded[1].display_start_ms >= 500
+
+
+def test_animation_guard_shares_overlap_evenly_between_exit_and_entry(qapp):
+    """压缩避让按两侧平均分担：各瞄准重叠的一半；容量不足的一侧把差额让给另一侧。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar("前句", 1_000)], end_ms=2_000),
+        TimingLine(chars=[TimingChar("后句", 4_000)], end_ms=5_000),
+    ]
+    track = TimingTrack(lines=lines)
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        entry_anim="fade",
+        entry_lead_ms=900,
+        exit_anim="fade",
+        exit_fade_ms=900,
+    )
+
+    # 两侧容量都充足：重叠 100ms 严格对半（50/50），两个动画各压 50ms。
+    even = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        style,
+        [
+            DisplayLine(lines[0], 0, 100, 2_900, 0, 1, 1),
+            DisplayLine(lines[1], 0, 3_100, 6_000, 0, 2, 1),
+        ],
+        enforce_inter_page_gap=True,
+    )
+    assert even[0].display_end_ms == 2_850
+    assert even[1].display_start_ms == 3_150
+
+    # 退场侧容量不足半份：改用 100ms 退场动画（恢复步不再拉长尾巴），
+    # A 尾 180ms → 可压容量 80ms（底线 = 出场动画保护 100ms）；重叠
+    # 180ms 的半份是 90ms > 80ms，于是退场压到底（尾 100ms），入场侧
+    # 补足剩余 100ms。
+    short = _apply_painter_animation_time_guard(
+        1_280,
+        720,
+        track,
+        replace(style, exit_fade_ms=100),
+        [
+            DisplayLine(lines[0], 0, 100, 2_180, 0, 1, 1),
+            DisplayLine(lines[1], 0, 2_300, 6_000, 0, 2, 1),
+        ],
+        enforce_inter_page_gap=True,
+    )
+    assert short[0].display_end_ms == 2_100
+    assert short[1].display_start_ms == 2_400
 
 
 def test_animation_guard_honours_custom_animation_protect_times(qapp):
@@ -12010,8 +12072,11 @@ def test_force_bottom_waits_for_automatic_time_avoidance(qapp, monkeypatch):
 
     # Display windows overlap only during animation; stable text does not.
     assert windows[3][0] < windows[1][1]
-    assert windows[2][0] == 24_680
-    assert windows[3][0] == 27_360
+    # 同步退场把 L0/L1 尾巴对齐到页内最晚 28_310：(L0,L2) 稳定段重叠
+    # 3_430 两侧各担 1_715（L2 上屏 24_680+1_715），(L1,L3) 重叠 1_400
+    # 各担 700。
+    assert windows[2][0] == 26_395
+    assert windows[3][0] == 27_410
     assert all(not pairs for pairs in calls)
 
     diagnostics = layout_timing_diagnostics_for_style(
