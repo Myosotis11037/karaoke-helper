@@ -49,6 +49,7 @@ from PyQt6.QtWidgets import (
     QWIDGETSIZE_MAX,
 )
 from qfluentwidgets import (
+    Action,
     CaptionLabel,
     CheckBox,
     ComboBox as FluentComboBox,
@@ -57,6 +58,7 @@ from qfluentwidgets import (
     LineEdit as FluentLineEdit,
     PushButton as FluentPushButton,
     RadioButton,
+    RoundMenu,
     ScrollArea as FluentScrollArea,
     SegmentedWidget,
     SpinBox as FluentSpinBox,
@@ -192,6 +194,7 @@ from krok_helper.subtitle_render.settings.property_controllers import (
     SCHEME_FIELDS as _SCHEME_FIELDS,
     SCHEME_ONLY_FIELDS as _SCHEME_ONLY_FIELDS,
     TitleOverlaysController,
+    builtin_preset_display_name,
     normalize_decoration_kind as _normalize_decoration_kind,
     normalize_entry_animation as _normalize_entry_animation,
     normalize_exit_animation as _normalize_exit_animation,
@@ -609,7 +612,7 @@ class PropertyPanel(QWidget):
     """「应用到全部页」：参数为布局 index（0 = 默认布局）。"""
     layoutAutoAssignRequested = Signal()
     """「各页按行数自动布局」：不重新分页，只恢复同行数映射布局。"""
-    layoutDeleted = Signal(int)
+    layoutDeleted = Signal(int, str, str)
     """布局被删除：参数为被删布局 index（>= 1），宿主需修正歌词行引用。"""
     backgroundBrowseRequested = Signal(str)
     """点击某张背景卡请求选择素材；参数为 kind（video/image/image_sequence/solid）。"""
@@ -2111,7 +2114,10 @@ class PropertyPanel(QWidget):
         combo_row_layout.addWidget(self._layout_combo, 1)
 
         self._add_layout_btn = FluentTransparentToolButton(FIF.ADD, nav)
-        self._add_layout_btn.setToolTip("新建布局（以当前布局的值复制）")
+        self._add_layout_btn.setToolTip(
+            "新建布局（以当前布局的值复制）；存在已删除的软件预设时，"
+            "可从此菜单逐个恢复。"
+        )
         self._add_layout_btn.clicked.connect(lambda _checked=False: self._on_add_layout())
         self._rename_layout_btn = FluentTransparentToolButton(FIF.EDIT, nav)
         self._rename_layout_btn.setToolTip("重命名当前布局")
@@ -2125,8 +2131,8 @@ class PropertyPanel(QWidget):
         )
         self._save_layout_btn = FluentTransparentToolButton(FIF.SAVE, nav)
         self._save_layout_btn.setToolTip(
-            "将当前布局参数保存为软件级新建项目默认值；不会应用到当前页面，"
-            "也不会改变各行数的自动布局映射。"
+            "将当前布局参数保存为软件级新建项目默认值，并让以后新建项目中"
+            "相同行数的页面默认使用该布局；不会应用到当前页面。"
         )
         self._save_layout_btn.clicked.connect(
             lambda _checked=False: self._save_current_layout_default()
@@ -2349,11 +2355,73 @@ class PropertyPanel(QWidget):
         self._sync_layout_editor_controls()
 
     def _on_add_layout(self) -> None:
+        hidden = sorted(
+            (
+                str(value)
+                for value in self._style.hidden_builtin_layout_ids
+                if str(value) in _BUILTIN_LAYOUT_PRESET_IDS
+            ),
+            key=self._hidden_preset_order,
+        )
+        if hidden:
+            self._show_add_layout_menu(hidden)
+            return
+        self._add_layout_now()
+
+    @staticmethod
+    def _hidden_preset_order(layout_id: str) -> tuple[int, int]:
+        """恢复菜单排序：标题预设在前，行布局按行数升序。"""
+        if layout_id == "title-default":
+            return (0, 0)
+        rows = layout_id.removeprefix("builtin-")
+        return (1, int(rows) if rows.isdigit() else 99)
+
+    def _add_layout_now(self) -> None:
         changes, selected = self._layout_controller.add_changes(
             self._style,
             self._current_layout_index(),
         )
         self._update_style(**changes)
+        self._refresh_layout_combo(selected=selected)
+        self._sync_layout_editor_controls()
+
+    def _show_add_layout_menu(self, hidden: list[str]) -> None:
+        """存在已删除的出厂预设时，添加按钮弹出「新建 / 恢复」菜单。"""
+        menu = RoundMenu(parent=self)
+        menu.addAction(Action("新建布局（复制当前）", triggered=self._add_layout_now))
+        menu.addSeparator()
+        for layout_id in hidden:
+            menu.addAction(
+                Action(
+                    f"恢复『{builtin_preset_display_name(layout_id)}』",
+                    triggered=(
+                        lambda _checked=False, lid=layout_id: (
+                            self._restore_builtin_layout(lid)
+                        )
+                    ),
+                )
+            )
+        menu.exec(
+            self._add_layout_btn.mapToGlobal(
+                self._add_layout_btn.rect().bottomLeft()
+            )
+        )
+
+    def _restore_builtin_layout(self, layout_id: str) -> None:
+        changes = self._layout_controller.restore_changes(self._style, layout_id)
+        if not changes:
+            return
+        self._update_style(**changes)
+        # 补种发生在宿主应用样式后的 ensure_page_layout_defaults，回流后按
+        # id 选中恢复项，让用户立刻看到它。
+        selected = next(
+            (
+                index
+                for index, layout in enumerate(self._style.layouts, start=1)
+                if layout.layout_id == layout_id
+            ),
+            0,
+        )
         self._refresh_layout_combo(selected=selected)
         self._sync_layout_editor_controls()
 
@@ -2381,9 +2449,10 @@ class PropertyPanel(QWidget):
         fallback_name = layout_display_name(self._style, "default")
         layout_id = str(self._style.layouts[index - 1].layout_id or "")
         preset_hint = (
-            "\n这是软件预设布局：删除后不会自动恢复（仅影响当前工程）。"
+            "\n这是软件预设布局：删除仅影响当前工程，之后可通过"
+            "「新建布局」菜单恢复。"
             if layout_id in _BUILTIN_LAYOUT_PRESET_IDS
-            else ""
+            else "\n这是自定义布局：将同时从软件级布局库中删除。"
         )
         confirmed = fluent_question(
             self,
@@ -2399,7 +2468,7 @@ class PropertyPanel(QWidget):
         self._update_style(
             **self._layout_controller.delete_changes(self._style, index)
         )
-        self.layoutDeleted.emit(index)
+        self.layoutDeleted.emit(index, name, layout_id)
         self._refresh_layout_combo(selected=0)
         self._sync_layout_editor_controls()
 
@@ -2416,8 +2485,8 @@ class PropertyPanel(QWidget):
             self,
             "保存为软件默认布局",
             f"是否将布局“{name}”的当前参数保存到软件级新建项目默认值？\n"
-            "这只影响以后新建的项目，不会应用到当前页面，也不会更改各行数的"
-            "自动布局选择。",
+            "以后新建的项目中，相同行数的页面将默认使用该布局；"
+            "不会应用到当前页面。",
             yes_text="保存",
             no_text="取消",
             default_cancel=True,

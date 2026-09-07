@@ -300,6 +300,7 @@ from krok_helper.subtitle_render.domain.models import (
     TITLE_SCHEME_NAME,
     TitleOverlay,
     TitleTimeWindow,
+    builtin_preset_layout_ids,
     ensure_page_layout_defaults,
     layout_capacity,
     layout_display_name,
@@ -1609,6 +1610,9 @@ class SubtitleRenderWindow(QWidget):
         self._style, _font_names_changed = normalize_style_font_families(
             plan.style, catalog
         )
+        # 布局库跨工程积累：任何加载进来的布局（含被删后仍随 .yurika 存在的
+        # 自定义布局）都按名字并入软件级库；新建项目传入库自身，合并为幂等。
+        self._merge_layouts_into_library(self._style)
         if plan.selected_scheme_key is not None:
             self._selected_scheme_key = plan.selected_scheme_key
         self._property_panel.set_style(self._style)
@@ -5570,8 +5574,14 @@ class SubtitleRenderWindow(QWidget):
             self._record_track_mutation(mutation)
             self._refresh_after_layout_assignment()
 
-    def _on_layout_deleted(self, deleted_index: int) -> None:
+    def _on_layout_deleted(
+        self,
+        deleted_index: int,
+        deleted_name: str = "",
+        deleted_layout_id: str = "",
+    ) -> None:
         """布局被删除后修正歌词行引用（全部字幕源）：被删的回默认，其后的序号前移。"""
+        self._remove_layout_from_library(deleted_name, deleted_layout_id)
         track_indices = tuple(range(len(self._all_tracks())))
         def repair_layout_references(tracks: tuple[TimingTrack, ...]) -> None:
             for track in tracks:
@@ -5609,6 +5619,26 @@ class SubtitleRenderWindow(QWidget):
                 duration=5000,
             )
             self._refresh_after_layout_assignment()
+
+    def _remove_layout_from_library(self, name: str, layout_id: str) -> None:
+        """删除自定义布局时同步移出软件级布局库（同名且非内置的条目）。
+
+        出厂预设（タイトル左上 + 1~8 行布局）仅工程级删除，库中永不移除；
+        被删的自定义布局之后仍可随使用它的 .yurika 工程自动回到库中。
+        """
+
+        if not str(name).strip() or layout_id in builtin_preset_layout_ids():
+            return
+        kept = [
+            layout
+            for layout in self._app_default_style.layouts
+            if layout.name != name
+            or layout.layout_id in builtin_preset_layout_ids()
+        ]
+        if len(kept) == len(self._app_default_style.layouts):
+            return
+        self._app_default_style = replace(self._app_default_style, layouts=kept)
+        self._schedule_persisted_state_save()
 
     def _refresh_after_layout_assignment(self) -> None:
         # track 是就地修改的，set_style 只为触发预览/列表重绘；副轨需重喂 worker。
@@ -6991,19 +7021,58 @@ class SubtitleRenderWindow(QWidget):
             0,
         )
 
-    def _sync_app_layout_defaults(self, style: Style) -> None:
-        """Remember the current layout catalog at the app-default reference size."""
+    def _merge_layouts_into_library(self, style: Style) -> None:
+        """把一份样式的布局目录按名字并入软件级布局库（同名以最新为准）。
+
+        库里已有而来源没有的条目一律保留——布局库跨工程积累，被删除的
+        自定义布局会随仍使用它的工程文件自动回来。仅当库真的变化时落盘。
+        """
 
         target_reference = max(int(self._app_default_style.layout_reference_height), 1)
+        source = ensure_page_layout_defaults(
+            rescale_layout_sizes(deepcopy(style), target_reference)
+        )
+        library = deepcopy(self._app_default_style.layouts)
+        changed = False
+        for layout in source.layouts:
+            matched = next(
+                (
+                    index
+                    for index, entry in enumerate(library)
+                    if entry.name == layout.name
+                ),
+                None,
+            )
+            if matched is None:
+                library.append(deepcopy(layout))
+                changed = True
+            elif library[matched] != layout:
+                library[matched] = deepcopy(layout)
+                changed = True
+        if not changed:
+            return
+        self._app_default_style = ensure_page_layout_defaults(
+            replace(self._app_default_style, layouts=library)
+        )
+        self._schedule_persisted_state_save()
+
+    def _sync_app_layout_defaults(self, style: Style) -> None:
+        """Remember the current layout habits at the app-default reference size."""
+
+        # 布局目录走同名合并（见 _merge_layouts_into_library），不再整体
+        # 覆盖软件默认库；这里只同步默认布局的标量参数。
+        self._merge_layouts_into_library(style)
+        target_reference = max(int(self._app_default_style.layout_reference_height), 1)
         source = rescale_layout_sizes(deepcopy(style), target_reference)
-        # 同步当前工程目录后补种缺失预设（尤其「タイトル左上」）：否则用
-        # N3 工程的布局目录覆盖应用默认后，新工程/交接工程永远丢标题预设。
-        source = ensure_page_layout_defaults(source)
         changes = {
             field_name: deepcopy(getattr(source, field_name))
-            for field_name in _LAYOUT_DEFAULT_STYLE_FIELDS
+            for field_name in _LAYOUT_DEFAULT_VALUE_FIELDS
         }
-        self._app_default_style = replace(self._app_default_style, **changes)
+        self._app_default_style = replace(
+            self._app_default_style,
+            layout_reference_height=target_reference,
+            **changes,
+        )
 
     @staticmethod
     def _preferred_title_for_preferences(style: Style) -> TitleOverlay:
@@ -7311,6 +7380,8 @@ class SubtitleRenderWindow(QWidget):
             }
             self._app_default_style = replace(self._app_default_style, **changes)
             target = layout_display_name(self._style, "default")
+            mapping_target = "default"
+            rows = max(1, min(len(source_style.line_alignments), 8))
         else:
             saved_layout = deepcopy(source_style.layouts[index - 1])
             layouts = deepcopy(self._app_default_style.layouts)
@@ -7331,12 +7402,20 @@ class SubtitleRenderWindow(QWidget):
                 layouts=layouts,
             )
             target = saved_layout.name
+            mapping_target = str(saved_layout.layout_id or "")
+            rows = max(1, min(len(saved_layout.line_alignments), 8))
+        # 按所存布局的行数接入自动映射：新建工程中相同行数的页面默认用它。
+        mapping = dict(self._app_default_style.default_layout_by_row_count)
+        mapping[rows] = mapping_target
+        self._app_default_style = ensure_page_layout_defaults(
+            replace(self._app_default_style, default_layout_by_row_count=mapping)
+        )
         self._save_persisted_state()
         InfoBar.success(
             title="已保存软件默认布局",
             content=(
-                f"以后新建项目将携带布局“{target}”的当前参数；"
-                "当前页面及现有项目不受影响。"
+                f"以后新建项目中 {rows} 行页面将默认使用布局“{target}”；"
+                "当前工程不受影响。"
             ),
             parent=self,
             position=InfoBarPosition.BOTTOM_RIGHT,

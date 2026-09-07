@@ -77,6 +77,7 @@ from krok_helper.subtitle_render.domain.models import (  # noqa: E402
     BackgroundSource,
     KaraokeColors,
     KaraokeColorState,
+    DEFAULT_LAYOUT_BY_ROW_COUNT,
     LyricsLayout,
     PaintFill,
     StylePreset,
@@ -88,6 +89,7 @@ from krok_helper.subtitle_render.domain.models import (  # noqa: E402
     TimingTrack,
     TitleOverlay,
     effective_karaoke_animation,
+    ensure_page_layout_defaults,
     paint_fill_from_dict,
     subtitle_style_scheme_to_dict,
     style_from_dict,
@@ -103,6 +105,7 @@ from krok_helper.subtitle_render.settings.property_controllers import (  # noqa:
     PropertyStyleController,
     RoleSchemeController,
     TitleOverlaysController,
+    builtin_preset_display_name,
 )
 from krok_helper.subtitle_render.project.session import ExtraSubtitleSource  # noqa: E402
 
@@ -276,6 +279,36 @@ def test_layout_catalog_controller_preserves_inheritance_and_title_references():
     assert [layout.name for layout in deleted.layouts] == ["布局 3"]
     assert deleted.title_overlays
     assert deleted.title_overlays[0].layout_index == 1
+
+
+def test_layout_catalog_controller_restore_changes_clears_hidden_marker():
+    controller = LayoutCatalogController()
+    style = replace(
+        Style(),
+        layouts=[
+            layout for layout in Style().layouts
+            if layout.layout_id != "builtin-3"
+        ],
+        hidden_builtin_layout_ids=["builtin-3"],
+    )
+
+    restored_changes = controller.restore_changes(style, "builtin-3")
+    assert restored_changes == {"hidden_builtin_layout_ids": []}
+    restored = ensure_page_layout_defaults(
+        replace(style, **restored_changes)
+    )
+    assert any(
+        layout.layout_id == "builtin-3" and layout.name == "3 行布局"
+        for layout in restored.layouts
+    )
+    # 未隐藏的 id 不产生变更
+    assert controller.restore_changes(Style(), "builtin-3") == {}
+
+
+def test_builtin_preset_display_name_covers_factory_ids():
+    assert builtin_preset_display_name("title-default") == "タイトル左上"
+    assert builtin_preset_display_name("builtin-3") == "3 行布局"
+    assert builtin_preset_display_name("layout-x") == "layout-x"
 
 
 def test_title_overlay_controller_migrates_roles_and_normalizes_mode():
@@ -1192,10 +1225,16 @@ def test_title_enabled_and_layout_are_remembered_without_leaking_project_text(qa
     assert reloaded._style.title_overlays
     assert reloaded._style.title_overlays[0].enabled is True
     assert reloaded._style.title_overlays[0].text_template == "{title} / {artist}"
-    assert reloaded._style.title_overlays[0].layout_index == 1
-    assert reloaded._style.layouts[0].name == "用户标题布局"
+    # 布局库按名字合并：库条目在前、工程新布局追加在后，标题按名字解析
+    # 到正确条目，而不是固定序号。
+    title_index = int(reloaded._style.title_overlays[0].layout_index or 0)
+    assert title_index >= 1
+    assert reloaded._style.layouts[title_index - 1].name == "用户标题布局"
+    assert "用户标题布局" in {
+        layout.name for layout in reloaded._style.layouts
+    }
     assert {
-        layout.layout_id for layout in reloaded._style.layouts[1:]
+        layout.layout_id for layout in reloaded._style.layouts
     } >= {f"builtin-{rows}" for rows in (1, 3, 4, 5, 6, 7, 8)}
     project_style = style_from_dict(win._current_project_data()["style"])
     assert project_style.title_overlays
@@ -1278,14 +1317,16 @@ def test_builtin_scheme_defaults_are_saved_only_for_requested_target(qapp):
     saved = style_from_dict(provider.data["style"])
     assert saved.fill_color == "#333333"
     # Layout preferences are remembered automatically; the explicit font/color
-    # save action still updates only its requested scheme target.
+    # save action still updates only its requested scheme target.  The layout
+    # catalog merges by name: previous library entries are never dropped.
     assert saved.line_gap_px == 99
-    assert (saved.layouts[0].name, saved.layouts[0].line_gap_px) == (
-        "项目布局",
-        98,
-    )
+    saved_gap_by_name = {
+        layout.name: layout.line_gap_px for layout in saved.layouts
+    }
+    assert saved_gap_by_name["保留布局"] == 22
+    assert saved_gap_by_name["项目布局"] == 98
     assert {
-        layout.layout_id for layout in saved.layouts[1:]
+        layout.layout_id for layout in saved.layouts
     } >= {f"builtin-{rows}" for rows in (1, 3, 4, 5, 6, 7, 8)}
     assert saved.custom_style_schemes[TITLE_SCHEME_NAME].fill_color == "#222222"
     assert "初音" not in saved.custom_style_schemes
@@ -1312,7 +1353,127 @@ def test_builtin_scheme_defaults_are_saved_only_for_requested_target(qapp):
     assert win._style.custom_style_schemes[TITLE_SCHEME_NAME].fill_color == "#444444"
     assert "镜音" not in win._style.custom_style_schemes
     assert win._style.line_gap_px == 99
-    assert win._style.layouts[0].name == "项目布局"
+    new_project_names = [layout.name for layout in win._style.layouts]
+    assert new_project_names[0] == "保留布局"
+    assert "项目布局" in new_project_names
+
+
+def test_layout_library_merges_on_project_load_and_keeps_entries(qapp):
+    provider = _FontMigrationSettingsProvider({})
+    win = mw.SubtitleRenderWindow(embedded=True, settings_provider=provider)
+
+    # 工程 A：自定义布局经样式编辑进入软件级布局库
+    win._apply_style(
+        replace(Style(), layouts=[LyricsLayout(name="我的布局", line_gap_px=55)])
+    )
+    names = {layout.name for layout in win._app_default_style.layouts}
+    assert {"我的布局", "タイトル左上"} <= names
+
+    # 打开另一个工程：库条目保留，工程自带布局并入，同名以最新为准
+    win._apply_project_data(
+        {
+            "style": style_to_dict(
+                Style(
+                    layouts=[
+                        LyricsLayout(name="工程B布局", line_gap_px=66),
+                        LyricsLayout(name="我的布局", line_gap_px=77),
+                    ]
+                )
+            ),
+            "screen": {"width": 1920, "height": 1080, "fps": 60, "par": "1:1"},
+        }
+    )
+    gap_by_name = {
+        layout.name: layout.line_gap_px
+        for layout in win._app_default_style.layouts
+    }
+    assert gap_by_name["工程B布局"] == 66
+    assert gap_by_name["我的布局"] == 77
+    assert "タイトル左上" in gap_by_name
+
+
+def test_deleting_custom_layout_removes_it_from_library(qapp):
+    provider = _FontMigrationSettingsProvider({})
+    win = mw.SubtitleRenderWindow(embedded=True, settings_provider=provider)
+    win._apply_style(
+        replace(Style(), layouts=[LyricsLayout(name="我的布局", line_gap_px=55)])
+    )
+
+    index = next(
+        i
+        for i, layout in enumerate(win._style.layouts, start=1)
+        if layout.name == "我的布局"
+    )
+    layout_id = win._style.layouts[index - 1].layout_id
+    win._apply_style(
+        replace(
+            win._style,
+            **LayoutCatalogController().delete_changes(win._style, index),
+        )
+    )
+    win._on_layout_deleted(index, "我的布局", layout_id)
+    assert "我的布局" not in {
+        layout.name for layout in win._app_default_style.layouts
+    }
+
+    # 删除出厂预设只动当前工程，库不受影响
+    builtin_index = next(
+        i
+        for i, layout in enumerate(win._style.layouts, start=1)
+        if layout.layout_id == "builtin-3"
+    )
+    win._apply_style(
+        replace(
+            win._style,
+            **LayoutCatalogController().delete_changes(
+                win._style, builtin_index
+            ),
+        )
+    )
+    win._on_layout_deleted(builtin_index, "3 行布局", "builtin-3")
+    assert any(
+        layout.layout_id == "builtin-3"
+        for layout in win._app_default_style.layouts
+    )
+
+
+def test_save_layout_default_wires_row_count_mapping(qapp):
+    provider = _FontMigrationSettingsProvider({})
+    win = mw.SubtitleRenderWindow(embedded=True, settings_provider=provider)
+
+    # 默认布局存为 3 行 → 以后新建项目里 3 行页默认用 default 布局
+    win._apply_style(
+        replace(Style(), line_alignments=["left", "center", "right"])
+    )
+    win._save_layout_default(0)
+    assert win._app_default_style.default_layout_by_row_count[3] == "default"
+
+    # 命名布局按其行数接入映射
+    win._apply_style(
+        replace(
+            win._style,
+            layouts=[
+                *win._style.layouts,
+                LyricsLayout(
+                    name="我的4行",
+                    line_alignments=["left", "right", "left", "right"],
+                    line_gap_px=44,
+                ),
+            ],
+        )
+    )
+    index = next(
+        i
+        for i, layout in enumerate(win._style.layouts, start=1)
+        if layout.name == "我的4行"
+    )
+    win._save_layout_default(index)
+    saved_id = next(
+        layout.layout_id
+        for layout in win._app_default_style.layouts
+        if layout.name == "我的4行"
+    )
+    assert win._app_default_style.default_layout_by_row_count[4] == saved_id
 
 
 def test_builtin_font_defaults_are_normalized_to_app_reference_height(qapp, monkeypatch):
@@ -1420,22 +1581,26 @@ def test_layout_defaults_follow_live_user_edits_at_app_reference_height(
 
     # User layout edits automatically become the next new project's defaults,
     # normalized from the current 720p project to the app's 1080p reference.
+    # The layout library merges by name: pre-existing entries (保留布局) are
+    # kept at their stored reference values instead of being dropped.
     win._apply_style(project_style)
     win._flush_persisted_state_save()
     saved = style_from_dict(provider.data["style"])
     assert saved.line_gap_px == 105
     assert saved.horizontal_margin_px == 120
-    assert [layout.name for layout in saved.layouts[:2]] == ["副歌布局", "项目新增"]
-    assert saved.layouts[0].line_y_margin_px == 108
-    assert saved.layouts[1].line_y_margin_px == 90
+    saved_margin_by_name = {
+        layout.name: layout.line_y_margin_px for layout in saved.layouts
+    }
+    assert saved_margin_by_name["副歌布局"] == 108
+    assert saved_margin_by_name["项目新增"] == 90
+    assert saved_margin_by_name["保留布局"] == 51
 
     win._project_dirty = False
     win._new_project()
     assert win._style.line_gap_px == 105
-    assert [layout.name for layout in win._style.layouts[:2]] == [
-        "副歌布局",
-        "项目新增",
-    ]
+    new_names = [layout.name for layout in win._style.layouts]
+    assert new_names[:2] == ["副歌布局", "保留布局"]
+    assert "项目新增" in new_names
 
 
 def test_batch_layout_assignment_is_remembered_for_new_subtitle_sources(qapp):
@@ -1730,7 +1895,8 @@ def test_delete_layout_uses_fluent_confirmation(qapp, monkeypatch):
     assert captured["args"][1:3] == (
         "删除布局",
         "确定要删除布局“副歌布局”吗？\n"
-        "使用它的页面（和标题）会回到“2 行布局（默认）”。",
+        "使用它的页面（和标题）会回到“2 行布局（默认）”。\n"
+        "这是自定义布局：将同时从软件级布局库中删除。",
     )
     assert captured["kwargs"] == {
         "yes_text": "删除",
@@ -8052,8 +8218,8 @@ def test_layout_save_button_is_after_delete_and_confirms_selected_layout(
     assert captured["args"][1:3] == (
         "保存为软件默认布局",
         "是否将布局“副歌布局”的当前参数保存到软件级新建项目默认值？\n"
-        "这只影响以后新建的项目，不会应用到当前页面，也不会更改各行数的"
-        "自动布局选择。",
+        "以后新建的项目中，相同行数的页面将默认使用该布局；"
+        "不会应用到当前页面。",
     )
     assert captured["kwargs"] == {
         "yes_text": "保存",
@@ -8109,6 +8275,85 @@ def test_property_panel_layout_selector_edits_selected_layout(qapp):
     assert emitted[-1].letter_spacing_px == 8
     assert emitted[-1].layouts[base_count].line_gap_px == 33
     assert emitted[-1].layouts[base_count].letter_spacing_px == -6
+
+
+def test_add_layout_menu_offers_restore_for_deleted_presets(qapp, monkeypatch):
+    panel = PropertyPanel()
+    style = replace(
+        Style(),
+        layouts=[
+            layout for layout in Style().layouts
+            if layout.layout_id != "builtin-3"
+        ],
+        hidden_builtin_layout_ids=["builtin-3", "title-default"],
+    )
+    style = replace(
+        style,
+        layouts=[
+            layout for layout in style.layouts
+            if layout.layout_id != "title-default"
+        ],
+    )
+    panel.set_style(style)
+    emitted = []
+    panel.styleChanged.connect(emitted.append)
+
+    class _FakeAction:
+        def __init__(self, text, triggered=None):
+            self._text = text
+            self._triggered = triggered
+
+        def text(self):
+            return self._text
+
+        def trigger(self):
+            if self._triggered is not None:
+                self._triggered()
+
+    class _FakeMenu:
+        def __init__(self, *args, **kwargs):
+            self.actions = []
+
+        def addAction(self, action):
+            self.actions.append(action)
+
+        def addSeparator(self):
+            return None
+
+        def exec(self, pos):
+            self.pos = pos
+            return None
+
+    menus = []
+    monkeypatch.setattr(
+        pp, "RoundMenu", lambda *args, **kwargs: _capture_menu()
+    )
+
+    def _capture_menu():
+        menus.append(_FakeMenu())
+        return menus[-1]
+
+    monkeypatch.setattr(pp, "Action", _FakeAction)
+
+    panel._on_add_layout()
+    assert len(menus) == 1
+    assert [action.text() for action in menus[0].actions] == [
+        "新建布局（复制当前）",
+        "恢复『タイトル左上』",
+        "恢复『3 行布局』",
+    ]
+
+    # 恢复动作清除隐藏标记（补种由宿主 ensure 完成）
+    menus[0].actions[2].trigger()
+    assert emitted[-1].hidden_builtin_layout_ids == ["title-default"]
+
+    # 无隐藏预设时保持原有直接新建行为
+    panel.set_style(Style())
+    monkeypatch.setattr(
+        pp, "RoundMenu", lambda *args, **kwargs: pytest.fail("不应弹出菜单")
+    )
+    panel._on_add_layout()
+    assert len(panel.subtitle_style.layouts) == len(Style().layouts) + 1
 
 
 def test_property_panel_layout_rename_uses_fluent_input(qapp, monkeypatch):

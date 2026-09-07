@@ -69,6 +69,9 @@ APP_STYLE_EXPLICIT_DEFAULT_FIELDS = (
     | LAYOUT_DEFAULT_STYLE_FIELDS
     | FONT_DEFAULT_STYLE_FIELDS
     | PROJECT_ONLY_STYLE_FIELDS
+    # 行数→布局映射属于软件级选择（「保存为软件默认布局」按行数写入），
+    # 不能被随手打开的工程经 merge_common_style_preferences 覆盖。
+    | frozenset({"default_layout_by_row_count"})
 )
 APP_LOCAL_ONLY_OUTPUT_FIELDS = frozenset(
     {

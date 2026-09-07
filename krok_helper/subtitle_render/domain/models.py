@@ -1280,8 +1280,13 @@ def _builtin_page_layout(style: Style, rows: int) -> LyricsLayout:
     )
 
 
-def _builtin_preset_ids() -> set[str]:
-    return {"title-default", *(f"builtin-{rows}" for rows in range(1, 9))}
+def builtin_preset_layout_ids() -> frozenset[str]:
+    """软件出厂预设布局 id（タイトル左上 + 1~8 行布局）。"""
+
+    return frozenset({"title-default", *(f"builtin-{rows}" for rows in range(1, 9))})
+
+
+_builtin_preset_ids = builtin_preset_layout_ids
 
 
 def ensure_page_layout_defaults(style: Style) -> Style:
@@ -1289,9 +1294,10 @@ def ensure_page_layout_defaults(style: Style) -> Style:
 
     Missing built-ins are appended, never inserted, so numeric layout indices
     from schema-v1 projects and N3 imports retain their meaning.  Presets the
-    user explicitly deleted (``hidden_builtin_layout_ids``) stay deleted, and
-    ``title-default`` is re-seeded whenever it is missing — the default title
-    (``layout_index=1``) must always resolve to the shipped top-left preset.
+    user explicitly deleted (``hidden_builtin_layout_ids``) stay deleted —
+    ``title-default`` included; when it is not hidden it is re-seeded whenever
+    missing, because the default title (``layout_index=1``) must always
+    resolve to the shipped top-left preset.
     """
 
     layouts = deepcopy(style.layouts)
@@ -1344,29 +1350,21 @@ def ensure_page_layout_defaults(style: Style) -> Style:
     def _fallback_for(rows: int, default_capacity: int) -> str:
         # 预设被显式删除时按容量找不到目标，退回全局默认布局。
         preferred = (
-            "default"
-            if default_capacity == 2 and rows == 2
-            else f"builtin-{rows}"
+            "default" if default_capacity == rows else f"builtin-{rows}"
         )
         return preferred if preferred in capacity_by_id else "default"
 
+    default_capacity = max(1, min(len(style.line_alignments), 8))
     for rows in range(1, 9):
         layout_id = str(raw_mapping.get(rows, "") or "")
-        if rows == 2:
-            default_capacity = max(1, min(len(style.line_alignments), 8))
-            fallback = _fallback_for(rows, default_capacity)
-            mapping[rows] = (
-                layout_id
-                if (
-                    (layout_id == "default" and default_capacity == rows)
-                    or capacity_by_id.get(layout_id) == rows
-                )
-                else fallback
-            )
-            continue
-        fallback = _fallback_for(rows, rows)
+        fallback = _fallback_for(rows, default_capacity)
         mapping[rows] = (
-            layout_id if capacity_by_id.get(layout_id) == rows else fallback
+            layout_id
+            if (
+                (layout_id == "default" and default_capacity == rows)
+                or capacity_by_id.get(layout_id) == rows
+            )
+            else fallback
         )
     if layouts == style.layouts and mapping == style.default_layout_by_row_count:
         return style

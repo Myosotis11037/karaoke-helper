@@ -506,6 +506,27 @@ def test_app_style_preferences_do_not_leak_project_only_content():
     assert "title_overlays" not in app_default_style_to_dict(merged)
 
 
+def test_app_style_preferences_keep_explicit_row_count_layout_mapping():
+    """行数→布局映射是软件级选择（保存为软件默认布局写入），不被随手打开
+    的工程覆盖。"""
+    app_default = replace(
+        Style(),
+        line_alignments=["left", "center", "right"],
+        default_layout_by_row_count={
+            **subtitle_models.DEFAULT_LAYOUT_BY_ROW_COUNT,
+            3: "default",
+        },
+    )
+    project = Style()
+
+    merged = merge_common_style_preferences(app_default, project)
+
+    assert (
+        merged.default_layout_by_row_count
+        == app_default.default_layout_by_row_count
+    )
+
+
 def test_app_style_preferences_load_title_habits_without_project_content():
     persisted = Style(
         custom_style_schemes={

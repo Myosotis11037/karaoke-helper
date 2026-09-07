@@ -18,10 +18,12 @@ from krok_helper.subtitle_render.domain.models import (
     Style,
     StylePreset,
     SubtitleStyleScheme,
+    TITLE_LAYOUT_NAME,
     TITLE_SHOW_MODES,
     TitleOverlay,
     VIEWPORT_ALIGNS,
     ViewportAlign,
+    builtin_preset_layout_ids,
     migrate_title_char_role_labels,
     rescale_scheme_font_sizes,
 )
@@ -39,11 +41,8 @@ from krok_helper.subtitle_render.domain.paint import (
 
 SCHEME_ONLY_FIELDS = frozenset({"n3_font_inheritance"})
 
-# 软件预设布局 id（与 models._builtin_preset_ids 同源；此处复制避免
-# settings 层反向依赖 engine 层）。
-_BUILTIN_LAYOUT_PRESET_IDS = frozenset(
-    {"title-default", *(f"builtin-{rows}" for rows in range(1, 9))}
-)
+# 软件预设布局 id（与 models.builtin_preset_layout_ids 同源）。
+_BUILTIN_LAYOUT_PRESET_IDS = builtin_preset_layout_ids()
 
 SCHEME_FIELDS = frozenset(
     {
@@ -672,6 +671,31 @@ class LayoutCatalogController:
         if overlays_changed:
             changes["title_overlays"] = overlays
         return changes
+
+    @staticmethod
+    def restore_changes(style: Style, layout_id: str) -> dict:
+        """把一个出厂预设移出隐藏清单，交由 ``ensure_page_layout_defaults`` 补种。"""
+        target = str(layout_id).strip()
+        hidden = [
+            str(value)
+            for value in style.hidden_builtin_layout_ids
+            if str(value) != target
+        ]
+        if len(hidden) == len(style.hidden_builtin_layout_ids):
+            return {}
+        return {"hidden_builtin_layout_ids": hidden}
+
+
+def builtin_preset_display_name(layout_id: str) -> str:
+    """出厂预设 id 的显示名（恢复菜单等 UI 用）；未知 id 原样返回。"""
+    text = str(layout_id).strip()
+    if text == "title-default":
+        return TITLE_LAYOUT_NAME
+    if text.startswith("builtin-"):
+        rows = text.removeprefix("builtin-")
+        if rows.isdigit() and 1 <= int(rows) <= 8:
+            return f"{int(rows)} 行布局"
+    return text
 
 
 class TitleOverlaysController:

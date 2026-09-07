@@ -19,6 +19,7 @@ from krok_helper.subtitle_render.engine.layout.page.plan import (
 )
 from krok_helper.subtitle_render.engine.timing.timeline import compute_display_lines
 from krok_helper.subtitle_render.domain.models import (
+    DEFAULT_LAYOUT_BY_ROW_COUNT,
     LyricsLayout,
     Style,
     SubtitleLoadingSettings,
@@ -98,6 +99,57 @@ def test_legacy_builtin_layout_names_are_normalized_without_renaming_custom_layo
     names = {layout.layout_id: layout.name for layout in style.layouts}
     assert names["builtin-4"] == "4 行布局"
     assert names["custom-six"] == "默认 6 行"
+
+
+def test_ensure_page_layout_defaults_keeps_default_for_matching_row_count():
+    """默认布局为 N 行时，N 行页的自动映射可以指向 "default"（保存为软件
+    默认布局的关键路径）；容量不匹配的行数仍指向容量一致的内置预设。"""
+    style = ensure_page_layout_defaults(
+        replace(
+            Style(),
+            line_alignments=["left", "center", "right"],
+            default_layout_by_row_count={
+                **DEFAULT_LAYOUT_BY_ROW_COUNT,
+                3: "default",
+            },
+        )
+    )
+
+    assert style.default_layout_by_row_count[3] == "default"
+    assert layout_capacity(style, "default") == 3
+    assert style.default_layout_by_row_count[2] == "builtin-2"
+    assert style.default_layout_by_row_count[4] == "builtin-4"
+
+
+def test_ensure_page_layout_defaults_reseeds_deleted_preset_when_unhidden():
+    deleted = ensure_page_layout_defaults(
+        replace(
+            Style(),
+            line_alignments=["left", "center", "right"],
+            layouts=[
+                layout for layout in Style().layouts
+                if layout.layout_id != "builtin-3"
+            ],
+            hidden_builtin_layout_ids=["builtin-3"],
+        )
+    )
+
+    assert not any(
+        layout.layout_id == "builtin-3" for layout in deleted.layouts
+    )
+    # 预设被删时，3 行页回落到同为 3 行容量的默认布局，而不是容量不足项。
+    assert deleted.default_layout_by_row_count[3] == "default"
+
+    restored = ensure_page_layout_defaults(
+        replace(deleted, hidden_builtin_layout_ids=[])
+    )
+    assert any(
+        layout.layout_id == "builtin-3" and layout.name == "3 行布局"
+        for layout in restored.layouts
+    )
+    assert (
+        layout_capacity(restored, restored.default_layout_by_row_count[3]) == 3
+    )
 
 
 def test_time_gap_is_strictly_greater_than_threshold():
