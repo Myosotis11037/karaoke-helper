@@ -7915,6 +7915,7 @@ def test_main_window_gpu_preferences_are_local_and_persisted(qapp, monkeypatch):
     win = mw.SubtitleRenderWindow(embedded=True, settings_provider=provider)
     assert win._gpu_preview_check.text() == "使用 GPU 渲染字幕预览"
     assert win._gpu_export_check.text() == "使用 GPU 渲染字幕导出"
+    assert "使用 AMD 硬件编码时会在后台近似换算" in win._export_crf_spin.toolTip()
     calls = []
     monkeypatch.setattr(
         win._preview_panel,

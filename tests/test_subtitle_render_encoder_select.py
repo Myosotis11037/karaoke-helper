@@ -28,6 +28,12 @@ def test_encoder_options_clamp_crf_and_normalize_bad_values():
     assert options == ["-c:v", "libx264", "-preset", "medium", "-crf", "51"]
 
 
+def test_qsv_translates_ui_zero_to_lowest_valid_icq_value():
+    options = enc.video_encoder_options("ffmpeg", "qsv", crf=0, preset="medium")
+
+    assert options == ["-c:v", "h264_qsv", "-global_quality", "1"]
+
+
 def test_hevc_cpu_uses_libx265_with_hvc1_tag():
     options = enc.video_encoder_options("ffmpeg", "cpu", crf=20, preset="medium", codec="hevc")
 
@@ -46,7 +52,27 @@ def test_hevc_hardware_encoders_map_names():
 
     amf = enc.video_encoder_options("ffmpeg", "amf", crf=20, preset="medium", codec="hevc")
     assert amf[:2] == ["-c:v", "hevc_amf"]
-    assert "-qp_b" not in amf  # hevc_amf 无 B 帧 QP 选项
+    assert amf[amf.index("-rc") + 1] == "qvbr"
+    assert amf[amf.index("-qvbr_quality_level") + 1] == "24"
+    assert not any(option.startswith("-qp_") for option in amf)
+
+
+def test_amf_quality_reverses_the_ui_crf_scale_for_qvbr():
+    assert enc.amf_qvbr_quality_level(0) == 51
+    assert enc.amf_qvbr_quality_level(18) == 26
+    assert enc.amf_qvbr_quality_level(51) == 1
+    assert enc.amf_qvbr_quality_level(-10) == 51
+    assert enc.amf_qvbr_quality_level(99) == 1
+
+    options = enc.video_encoder_options(
+        "ffmpeg", "amf", crf=18, preset="medium", codec="h264"
+    )
+    assert options == [
+        "-c:v", "h264_amf",
+        "-quality", "balanced",
+        "-rc", "qvbr",
+        "-qvbr_quality_level", "26",
+    ]
 
 
 def test_auto_hevc_picks_hevc_hardware_and_falls_back_to_x265(monkeypatch):

@@ -691,7 +691,9 @@ class ExportWorkspaceView(QWidget):
         preset_combo.setCurrentText("medium")
         crf_spin = make_export_spin(0, 51, 18, "")
         crf_spin.setToolTip(
-            "CRF 质量：数值越小画质越高、文件越大；18 约为视觉无损。"
+            "统一质量值：数值越小画质越高、文件越大；18 通常接近视觉无损，"
+            "使用 AMD 硬件编码时会在后台近似换算为对应质量等级；"
+            "实际画质和文件大小会因显卡型号、编码器与画面内容而异。"
         )
         quality_row.addWidget(
             make_labeled_export_control("CPU preset", preset_combo, theme_labels)

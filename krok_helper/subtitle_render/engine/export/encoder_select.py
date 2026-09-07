@@ -70,6 +70,16 @@ def normalize_cpu_preset(preset: str) -> str:
     return preset if preset in CPU_PRESETS else "medium"
 
 
+def amf_qvbr_quality_level(crf: int) -> int:
+    """Map UI quality to the inverse AMF QVBR scale (UI 18 -> QVBR 26)."""
+    normalized_crf = max(0, min(51, int(crf)))
+    if normalized_crf <= 18:
+        # Preserve the highest-quality endpoint while anchoring the app's
+        # visually-near-lossless default in AMF's practical QVBR range.
+        return round(51 - normalized_crf * 25 / 18)
+    return round(26 - (normalized_crf - 18) * 25 / 33)
+
+
 def video_encoder_options(
     ffmpeg_path: str,
     mode: str,
@@ -91,21 +101,21 @@ def video_encoder_options(
     if selected == ENCODER_NVENC:
         return ["-c:v", names[ENCODER_NVENC], "-preset", "p4", "-cq", str(crf), *hevc_tag]
     if selected == ENCODER_QSV:
-        return ["-c:v", names[ENCODER_QSV], "-global_quality", str(crf), *hevc_tag]
+        # QSV ICQ accepts 1-51. A zero value disables ICQ selection in FFmpeg,
+        # so preserve the shared UI range while translating only this endpoint.
+        return ["-c:v", names[ENCODER_QSV], "-global_quality", str(max(1, crf)), *hevc_tag]
     if selected == ENCODER_AMF:
-        options = [
+        return [
             "-c:v",
             names[ENCODER_AMF],
             "-quality",
             "balanced",
-            "-qp_i",
-            str(crf),
-            "-qp_p",
-            str(crf),
+            "-rc",
+            "qvbr",
+            "-qvbr_quality_level",
+            str(amf_qvbr_quality_level(crf)),
+            *hevc_tag,
         ]
-        if codec == CODEC_H264:
-            options.extend(["-qp_b", str(crf)])  # hevc_amf 无 B 帧，没有 -qp_b 选项
-        return options + hevc_tag
 
     return [
         "-c:v",
