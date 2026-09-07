@@ -9,14 +9,8 @@ from krok_helper.subtitle_render.engine.layout.display.resolver import (
     clear_display_line_resolution_cache,
     resolve_display_lines,
     resolve_display_lines_for_style,
-    resolve_display_timing,
 )
-from krok_helper.subtitle_render.engine.timing.timeline import DisplayLine
-from krok_helper.subtitle_render.domain.models import (
-    Style,
-    TimingChar,
-    TimingLine,
-)
+from krok_helper.subtitle_render.domain.models import Style
 from krok_helper.subtitle_render.domain.timing import TimingTrack
 
 
@@ -55,9 +49,7 @@ def test_style_display_resolver_owns_canvas_normalization_and_cache() -> None:
         events.append((width, height, dict(base_kwargs)))
         return DisplayResolutionPorts(
             compute=lambda **_kwargs: ["ideal"],
-            resolve_timing=lambda items, _enforce, fill_section_time=None: list(
-                items
-            ),
+            resolve_timing=lambda items, _enforce: list(items),
             collision_pairs=lambda _items: (),
             secondary_collision_pairs=lambda _items: (),
             fill_section_time=lambda items: items,
@@ -103,7 +95,7 @@ def test_display_resolver_skips_collision_discovery_when_overlap_is_allowed() ->
 
     ports = DisplayResolutionPorts(
         compute=compute,
-        resolve_timing=lambda items, enforce, fill_section_time=None: (
+        resolve_timing=lambda items, enforce: (
             events.append(("timing", tuple(items), enforce)) or ["resolved"]
         ),
         collision_pairs=lambda _items: (_ for _ in ()).throw(
@@ -120,6 +112,7 @@ def test_display_resolver_skips_collision_discovery_when_overlap_is_allowed() ->
 
     resolved = resolve_display_lines(
         avoid_collisions=False,
+        auto_fill_section_time=False,
         ports=ports,
     )
 
@@ -147,7 +140,7 @@ def test_display_resolver_preserves_collision_pass_order() -> None:
         events.append(("compute", kwargs))
         return list(next(computed))
 
-    def resolve_timing(items, enforce, fill_section_time=None):
+    def resolve_timing(items, enforce):
         events.append(("timing", tuple(items), enforce))
         return list(items)
 
@@ -166,6 +159,7 @@ def test_display_resolver_preserves_collision_pass_order() -> None:
 
     resolved = resolve_display_lines(
         avoid_collisions=True,
+        auto_fill_section_time=False,
         ports=ports,
     )
 
@@ -182,20 +176,22 @@ def test_display_resolver_preserves_collision_pass_order() -> None:
     ]
 
 
-def test_display_resolver_runs_standing_guard_after_the_last_timing_pass() -> None:
-    """与填充无关的收尾守卫：最后一轮 timing 之后无条件再兜一次底。"""
+def test_display_resolver_fills_after_conflicts_then_guards() -> None:
+    """旧流程顺序：冲突全部解完 → 自动填充段内时间 → 无条件兜底守卫。"""
 
     events: list[object] = []
     computed = iter((["ideal"],))
 
     ports = DisplayResolutionPorts(
         compute=lambda **_kwargs: next(computed),
-        resolve_timing=lambda items, enforce, fill_section_time=None: (
+        resolve_timing=lambda items, enforce: (
             events.append(("timing", tuple(items))) or ["timed"]
         ),
         collision_pairs=lambda _items: (),
         secondary_collision_pairs=lambda _items: (),
-        fill_section_time=lambda items: items,
+        fill_section_time=lambda items: (
+            events.append(("fill", tuple(items))) or ["filled"]
+        ),
         apply_animation_guard=lambda items, enforce: (
             events.append(("guard", tuple(items), enforce)) or ["guarded"]
         ),
@@ -203,66 +199,41 @@ def test_display_resolver_runs_standing_guard_after_the_last_timing_pass() -> No
 
     resolved = resolve_display_lines(
         avoid_collisions=True,
+        auto_fill_section_time=True,
         ports=ports,
     )
 
     assert resolved == ["guarded"]
-    assert events == [("timing", ("ideal",)), ("guard", ("timed",), True)]
-
-
-def test_resolve_display_timing_fills_expected_times_before_guard() -> None:
-    """填充属于预期时间阶段：同步之后、守卫之前，守卫看到的就是填充后的窗口。"""
-
-    lines = [
-        TimingLine(chars=[TimingChar("あ", 1_000)], end_ms=2_000),
-        TimingLine(chars=[TimingChar("い", 1_500)], end_ms=2_500),
+    # 守卫（冲突解算）在填充之前收口；兜底守卫看到的就是填充后的窗口。
+    assert events == [
+        ("timing", ("ideal",)),
+        ("fill", ("timed",)),
+        ("guard", ("filled",), True),
     ]
-    display_lines = [
-        DisplayLine(lines[0], 0, 0, 3_000, 0, 0, 1),
-        DisplayLine(lines[1], 1, 0, 3_500, 0, 0, 1),
-    ]
+
+
+def test_display_resolver_skips_fill_when_auto_fill_disabled() -> None:
     events: list[object] = []
+    computed = iter((["ideal"],))
 
-    class _Ports:
-        @staticmethod
-        def entry_animation_ms(_line):
-            return 0
-
-        @staticmethod
-        def exit_animation_ms(_line):
-            return 0
-
-        @staticmethod
-        def measure(items, _time_window):
-            events.append(
-                ("measure", tuple(int(item.display_end_ms) for item in items))
-            )
-            return []
-
-        @staticmethod
-        def retime(_measured, _items, _indices, _time_window):
-            return None
-
-    def fill(items):
-        events.append(("fill",))
-        return [
-            replace(item, display_end_ms=item.display_end_ms + 1_000)
-            for item in items
-        ]
-
-    resolved = resolve_display_timing(
-        Style(),
-        display_lines,
-        _Ports(),
-        enforce_inter_page_gap=True,
-        fill_section_time=fill,
+    ports = DisplayResolutionPorts(
+        compute=lambda **_kwargs: next(computed),
+        resolve_timing=lambda items, _enforce: (
+            events.append(("timing", tuple(items))) or ["timed"]
+        ),
+        collision_pairs=lambda _items: (),
+        secondary_collision_pairs=lambda _items: (),
+        fill_section_time=lambda items: (
+            events.append(("fill", tuple(items))) or ["filled"]
+        ),
+        apply_animation_guard=lambda items, _enforce: items,
     )
 
-    # 守卫的测量发生在填充之后，看到的是填充延长后的窗口；同步退场
-    # （默认开）先把两行结尾对齐到页内最晚，再由填充整体 +1000。
-    assert events == [
-        ("measure", (3_000, 3_500)),
-        ("fill",),
-        ("measure", (4_500, 4_500)),
-    ]
-    assert [item.display_end_ms for item in resolved] == [4_500, 4_500]
+    resolved = resolve_display_lines(
+        avoid_collisions=True,
+        auto_fill_section_time=False,
+        ports=ports,
+    )
+
+    assert resolved == ["timed"]
+    assert events == [("timing", ("ideal",))]

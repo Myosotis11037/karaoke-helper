@@ -2713,16 +2713,11 @@ def display_lines_for_style(
                 **base_kwargs,
                 **overrides,
             ),
-            resolve_timing=(
-                lambda items, enforce_gap, fill_section_time=None: (
-                    resolve_display_timing(
-                        style,
-                        items,
-                        guard_ports,
-                        enforce_inter_page_gap=enforce_gap,
-                        fill_section_time=fill_section_time,
-                    )
-                )
+            resolve_timing=lambda items, enforce_gap: resolve_display_timing(
+                style,
+                items,
+                guard_ports,
+                enforce_inter_page_gap=enforce_gap,
             ),
             collision_pairs=lambda items: pixel_collision_squeeze_pairs(
                 width, height, track, style, items,

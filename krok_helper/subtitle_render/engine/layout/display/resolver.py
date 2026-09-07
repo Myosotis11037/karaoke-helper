@@ -966,14 +966,12 @@ def resolve_display_timing(
     *,
     enforce_inter_page_gap: bool,
     adjustments: list[TimingCollisionAdjustment] | None = None,
-    fill_section_time: Callable[[DisplayLines], DisplayLines] | None = None,
 ) -> DisplayLines:
-    """Compute expected times (sync + section fill) before the collision guard.
+    """Apply page synchronization before measured animation-window guarding.
 
-    顺序即契约：同步入场/退场 → 自动填充段内时间 → ② 守卫压缩。填充属于
-    「预期时间」阶段，必须在解冲突**之前**落进窗口——守卫看到的就是填充
-    后的窗口，填充造出的重叠当场被解掉，不存在「填完再兜一遍」的第二轮。
-    段末清屏钳制由守卫在返回前统一施加。
+    自动填充段内时间**不在**这里：填充挂在冲突解完之后（见
+    :func:`resolve_display_lines` 尾部），随后由兜底守卫收口——把填充
+    提前进每轮会引发实际工程的显示窗错误。
     """
 
     synchronized = apply_constrained_page_sync(
@@ -987,8 +985,6 @@ def resolve_display_timing(
         ),
         enforce_inter_page_gap=enforce_inter_page_gap,
     )
-    if fill_section_time is not None:
-        synchronized = fill_section_time(synchronized)
     return apply_animation_time_guard(
         style,
         synchronized,
@@ -1001,6 +997,7 @@ def resolve_display_timing(
 def resolve_display_lines(
     *,
     avoid_collisions: bool,
+    auto_fill_section_time: bool,
     ports: DisplayResolutionPorts,
 ) -> DisplayLines:
     """Run the stable multi-pass display-line resolution policy.
@@ -1009,11 +1006,11 @@ def resolve_display_lines(
     owns only the ordering and data flow between those operations, so layout
     policy no longer depends on the Painter implementation.
 
-    每一轮 ``resolve_timing`` 都是完整的「预期时间 → 解冲突」：同步 →
-    填充 → 守卫（守卫永远最后跑）。段内填充由此从“全部解完后再补、再
-    兜一遍守卫”的末尾步骤，提前为冲突发现与压缩始终可见的预期值。
-    管线最后还有一个与填充无关的无条件收尾守卫：守卫内循环有趟数上限，
-    密集冲突时最后一轮可能未完全收敛，输出前统一再兜一次底。
+    顺序即契约（旧流程）：每轮 ``resolve_timing`` 只做 同步 → 守卫 的
+    冲突解算；**自动填充段内时间挂在全部冲突解完之后**，再由与填充无关
+    的无条件兜底守卫收口——填充造出的重叠当场兜掉，守卫内循环有趟数
+    上限，密集冲突时最后一轮可能未完全收敛，输出前统一再兜一次底。
+    （把填充提前进每轮曾引发实际工程的显示窗错误，已回退。）
 
     每个多趟步骤完成后按 ``display`` 阶段上报进度（步骤即真实工作量：
     逐趟碰撞测量占整轨重排的大头）。步骤开始前还会登记当前槽位，供
@@ -1021,11 +1018,7 @@ def resolve_display_lines(
     """
 
     def timing(items: DisplayLines, enforce_gap: bool) -> DisplayLines:
-        return ports.resolve_timing(
-            items,
-            enforce_gap,
-            fill_section_time=ports.fill_section_time,
-        )
+        return ports.resolve_timing(items, enforce_gap)
 
     try:
         set_display_phase_head(0, _DISPLAY_RESOLUTION_PHASES)
@@ -1085,7 +1078,14 @@ def resolve_display_lines(
             set_display_phase_head(5, _DISPLAY_RESOLUTION_PHASES)
             resolved = timing(resolved, avoid_collisions)
         report_render_progress("display", 6, _DISPLAY_RESOLUTION_PHASES)
+        # 冲突全部解完后再自动填充段内时间（挂尾巴），与旧流程一致。
         set_display_phase_head(6, _DISPLAY_RESOLUTION_PHASES)
+        if auto_fill_section_time:
+            filled = ports.fill_section_time(resolved)
+            if filled != resolved:
+                resolved = filled
+        # 与填充无关的无条件兜底守卫：既兜填充造出的重叠，也兜守卫内循
+        # 环未收敛的残余（含段末清屏钳制）。
         resolved = ports.apply_animation_guard(resolved, avoid_collisions)
         report_render_progress("display", 7, _DISPLAY_RESOLUTION_PHASES)
         return resolved
@@ -1143,6 +1143,7 @@ def resolve_display_lines_for_style(
             return cached
         resolved = resolve_display_lines(
             avoid_collisions=not style.allow_inter_page_line_overlap,
+            auto_fill_section_time=style.auto_fill_section_time,
             ports=ports.build(logical_w, logical_h, base_kwargs),
         )
         store_display_line_resolution(cache_key, track, resolved)

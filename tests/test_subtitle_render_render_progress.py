@@ -122,7 +122,7 @@ def test_resolve_display_lines_reports_measure_ticks_and_clears_slot():
             report_display_measure_progress(index, 4)
         return []
 
-    def measuring_resolve_timing(items, enforce_gap, fill_section_time=None):
+    def measuring_resolve_timing(items, enforce_gap):
         for index in range(4):
             report_display_measure_progress(index, 4)
         return items
@@ -139,6 +139,7 @@ def test_resolve_display_lines_reports_measure_ticks_and_clears_slot():
     with render_progress_scope(lambda stage, done, total: events.append((stage, done, total))):
         resolved = resolve_display_lines(
             avoid_collisions=False,
+            auto_fill_section_time=False,
             ports=ports,
         )
     assert resolved == []
