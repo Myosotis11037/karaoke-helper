@@ -2056,8 +2056,19 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         float wipeEdge = style.vertical
             ? (reverseVertical ? line->fillBounds.bottom : line->fillBounds.top)
             : (rtl ? line->bounds.right : line->bounds.left);
-        for (const Impl::CachedChar &ch : line->chars) {
+        for (std::size_t charIndex = 0; charIndex < line->chars.size(); ++charIndex) {
+            const Impl::CachedChar &ch = line->chars[charIndex];
             if (tMs < wipeStartMs(ch)) {
+                if (charIndex > 0) {
+                    // A finished character rests inside the timing gap while
+                    // the line is still clipped. Resting the front at that
+                    // character's own endpoint (ink + primary edge / 2) cuts
+                    // its outer stroke2 ring. The per-character phase path
+                    // deputes the edge to the following character's start
+                    // front instead, which clears the decoration — do the
+                    // same here so the legacy stack matches.
+                    wipeEdge = wipeCoordinateAt(ch);
+                }
                 break;
             }
             wipeEdge = wipeCoordinateAt(ch);
