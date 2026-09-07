@@ -3,6 +3,7 @@
 #include <d2d1helper.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -30,6 +31,29 @@ bool environmentFlagEnabled(const char *name, bool defaultValue) {
         && std::strcmp(value, "false") != 0
         && std::strcmp(value, "False") != 0
         && std::strcmp(value, "FALSE") != 0;
+}
+
+std::size_t environmentSize(
+    const char *name,
+    std::size_t defaultValue,
+    std::size_t minimum,
+    std::size_t maximum
+) {
+    const char *value = std::getenv(name);
+    if (value == nullptr || *value == '\0') {
+        return defaultValue;
+    }
+    errno = 0;
+    char *end = nullptr;
+    const unsigned long long parsed = std::strtoull(value, &end, 10);
+    if (errno != 0 || end == value || *end != '\0') {
+        return defaultValue;
+    }
+    return static_cast<std::size_t>(std::clamp<unsigned long long>(
+        parsed,
+        static_cast<unsigned long long>(minimum),
+        static_cast<unsigned long long>(maximum)
+    ));
 }
 
 std::uint64_t rectAreaPx(const D2D1_RECT_F &rect) {

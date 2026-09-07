@@ -2274,6 +2274,129 @@ def test_gpu_configure_shares_repeated_text_glyph_and_stroke_geometry(monkeypatc
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+@pytest.mark.parametrize("resource_cache", [True, False])
+def test_gpu_configure_reuses_text_geometry_across_scene_changes(
+    monkeypatch, resource_cache: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1" if resource_cache else "0")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", index * 250) for index in range(3)],
+                end_ms=750,
+            ),
+            TimingLine(
+                chars=[TimingChar("歌", 750 + index * 250) for index in range(3)],
+                end_ms=1_500,
+            ),
+        ]
+    )
+
+    def style(fill_color: str) -> Style:
+        state = KaraokeColorState(
+            text=PaintFill(mode="solid", color=fill_color),
+            stroke=PaintFill(mode="solid", color="#FF0000"),
+        )
+        return _g1_style(
+            stroke_width_px=10,
+            stroke2_enabled=False,
+            decoration_kind="none",
+            karaoke_colors=KaraokeColors(before=state, after=state),
+        )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first = renderer.configure_gpu(
+            track,
+            style("#80FFFFFF"),
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        first_frame = renderer.render_gpu_frame(750, force_warp=True)
+        second = renderer.configure_gpu(
+            track,
+            style("#80FFFFFE"),
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        second_frame = renderer.render_gpu_frame(750, force_warp=True)
+
+    assert first["glyph_geometry_cache_misses"] == 1
+    assert first["glyph_stroke_cache_misses"] == 1
+    assert second["glyph_geometry_cache_misses"] == (0 if resource_cache else 1)
+    assert second["glyph_geometry_cache_hits"] == (6 if resource_cache else 5)
+    assert second["glyph_stroke_cache_misses"] == (0 if resource_cache else 1)
+    assert second["glyph_stroke_cache_hits"] == (6 if resource_cache else 5)
+    assert (second["glyph_geometry_build_ms"] == 0.0) is resource_cache
+    assert (second["glyph_stroke_build_ms"] == 0.0) is resource_cache
+    assert second["glyph_geometry_cache_size"] == 1
+    assert second["glyph_geometry_cache_evictions"] == 0
+    assert second["glyph_geometry_cache_capacity"] == (
+        1024 if resource_cache else 0
+    )
+    assert first_frame["checksum"] != second_frame["checksum"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_cross_config_glyph_cache_evicts_lru(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1")
+    monkeypatch.setenv("KROK_GPU_GLYPH_GEOMETRY_CAPACITY", "1")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("歌", 0), TimingChar("夢", 250)],
+                end_ms=500,
+            )
+        ]
+    )
+    state = KaraokeColorState(
+        text=PaintFill(mode="solid", color="#80FFFFFF"),
+        stroke=PaintFill(mode="solid", color="#FF0000"),
+    )
+    style = _g1_style(
+        stroke_width_px=10,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        karaoke_colors=KaraokeColors(before=state, after=state),
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first = renderer.configure_gpu(
+            track,
+            style,
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        second = renderer.configure_gpu(
+            track,
+            replace(style, viewport_offset_x=1),
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+
+    assert first["glyph_geometry_cache_misses"] == 2
+    assert first["glyph_geometry_cache_size"] == 1
+    assert first["glyph_geometry_cache_evictions"] == 1
+    assert first["glyph_geometry_cache_capacity"] == 1
+    assert second["glyph_geometry_cache_misses"] == 1
+    assert second["glyph_geometry_cache_hits"] == 1
+    assert second["glyph_geometry_cache_size"] == 1
+    assert second["glyph_geometry_cache_evictions"] == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_configure_skips_unused_widened_stroke_geometry(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("KROK_GPU_DYNAMIC_DIRECT_STROKE", "1")

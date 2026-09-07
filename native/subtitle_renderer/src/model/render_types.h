@@ -427,6 +427,8 @@ struct BackendDiagnostics {
     std::uint64_t glyphGeometryCacheHits = 0;
     std::uint64_t glyphGeometryCacheMisses = 0;
     std::uint64_t glyphGeometryCacheSize = 0;
+    std::uint64_t glyphGeometryCacheEvictions = 0;
+    std::uint64_t glyphGeometryCacheCapacity = 0;
     std::uint64_t glyphStrokeCacheHits = 0;
     std::uint64_t glyphStrokeCacheMisses = 0;
     double glyphGeometryBuildMs = 0.0;

@@ -6,6 +6,7 @@
 #include <d2d1_2.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 
 namespace krok::subtitle::native::direct2d {
@@ -15,6 +16,12 @@ using RuntimeClock = std::chrono::steady_clock;
 double elapsedMs(RuntimeClock::time_point start);
 std::int64_t steadyNowMs();
 bool environmentFlagEnabled(const char *name, bool defaultValue);
+std::size_t environmentSize(
+    const char *name,
+    std::size_t defaultValue,
+    std::size_t minimum,
+    std::size_t maximum
+);
 std::uint64_t rectAreaPx(const D2D1_RECT_F &rect);
 void checkHr(HRESULT value, const char *operation, const D2DDevice &device);
 std::uint8_t unpremultiply(std::uint8_t value, std::uint8_t alpha);

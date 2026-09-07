@@ -11,6 +11,7 @@
 #include <dwrite.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -99,11 +100,15 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
     impl_->diagnostics.glyphGeometryCacheHits = 0;
     impl_->diagnostics.glyphGeometryCacheMisses = 0;
     impl_->diagnostics.glyphGeometryCacheSize = 0;
+    impl_->diagnostics.glyphGeometryCacheEvictions = 0;
+    impl_->diagnostics.glyphGeometryCacheCapacity =
+        impl_->resourceCacheEnabled ? impl_->glyphGeometryCapacity : 0;
     impl_->diagnostics.glyphStrokeCacheHits = 0;
     impl_->diagnostics.glyphStrokeCacheMisses = 0;
     impl_->diagnostics.glyphGeometryBuildMs = 0.0;
     impl_->diagnostics.glyphStrokeBuildMs = 0.0;
     const float layoutScale = std::max(scene.layoutReferenceScale, 0.01f);
+    const std::uint32_t layoutScaleKey = std::bit_cast<std::uint32_t>(layoutScale);
     const bool scaledPreviewLayout = std::abs(layoutScale - 1.0f) > 0.000001f;
     const auto referenceInt = [&](float scaledValue, int minimum) {
         const int value = scaledPreviewLayout
@@ -262,14 +267,11 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         "IDWriteFactory::GetSystemFontCollection",
         device_
     );
-    std::vector<Microsoft::WRL::ComPtr<IDWriteFontFace>> fallbackFaces;
-    using FontFaceKey = std::tuple<std::wstring, int, bool>;
-    std::map<FontFaceKey, Microsoft::WRL::ComPtr<IDWriteFontFace>> fontFaces;
     auto resolveFace = [&](const std::wstring &family, int weight, bool italic) {
         const std::wstring resolvedFamily = family.empty() ? L"Segoe UI" : family;
-        const FontFaceKey key{resolvedFamily, weight, italic};
-        const auto found = fontFaces.find(key);
-        if (found != fontFaces.end()) {
+        const Impl::FontFaceKey key{resolvedFamily, weight, italic};
+        const auto found = impl_->fontFaces.find(key);
+        if (found != impl_->fontFaces.end()) {
             return found->second;
         }
         auto face = createFontFace(
@@ -283,7 +285,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         if (!face) {
             throw BackendError("DirectWrite could not resolve a usable font face");
         }
-        fontFaces.emplace(key, face);
+        impl_->fontFaces.emplace(key, face);
         return face;
     };
 
@@ -318,15 +320,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
     // character is O(chars x outline segments) and can exceed the GPU configure
     // timeout by orders of magnitude, so they are cached per (glyph, unit) and
     // instanced with cheap lazy translation wrappers per character.
-    struct GlyphGeometryResource {
-        Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
-        bool hasBounds = false;
-        D2D1_RECT_F referenceBounds{};
-        D2D1_RECT_F bounds{};
-        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> strokeGeometries;
-        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> stroke2Geometries;
-        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> protectedGeometries;
-    };
+    using GlyphGeometryResource = Impl::GlyphGeometryResource;
     std::map<std::pair<const krok::subtitle::native::VectorGlyph *, int>, GlyphGeometryResource>
         vectorGlyphRealizations;
     auto vectorRealizationFor = [&](
@@ -373,24 +367,35 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
     };
     // Cache the resolved DirectWrite glyph identity, not Unicode text: fallback
     // fonts, variation selectors and multi-scalar glyph runs may map the same
-    // source spelling to a different outline. Font faces are held alive by the
-    // configure-local face caches for the full lifetime of these raw-pointer keys.
-    using TextGlyphKey = std::tuple<IDWriteFontFace *, int, std::vector<UINT16>>;
-    std::map<TextGlyphKey, GlyphGeometryResource> textGlyphRealizations;
+    // source spelling to a different outline. Font faces are kept alive by the
+    // backend-lifetime face caches, making the raw-pointer portion stable across
+    // configure calls. Layout scale is part of the key because the stored path
+    // has already been transformed into output coordinates.
+    std::map<Impl::TextGlyphKey, GlyphGeometryResource> configureGlyphResources;
+    auto &textGlyphRealizations = impl_->resourceCacheEnabled
+        ? impl_->textGlyphResources
+        : configureGlyphResources;
     auto textRealizationFor = [&] (
         const Microsoft::WRL::ComPtr<IDWriteFontFace> &face,
         const std::vector<UINT16> &glyphs,
         int unit
     ) -> GlyphGeometryResource & {
-        const TextGlyphKey key{face.Get(), unit, glyphs};
+        const Impl::TextGlyphKey key{
+            reinterpret_cast<std::uintptr_t>(face.Get()),
+            unit,
+            layoutScaleKey,
+            glyphs,
+        };
         const auto found = textGlyphRealizations.find(key);
         if (found != textGlyphRealizations.end()) {
             ++impl_->diagnostics.glyphGeometryCacheHits;
+            found->second.lastUse = ++impl_->glyphGeometryUseSerial;
             return found->second;
         }
         ++impl_->diagnostics.glyphGeometryCacheMisses;
         const auto buildStart = Clock::now();
         GlyphGeometryResource resource;
+        resource.lastUse = ++impl_->glyphGeometryUseSerial;
         checkHr(
             device_.d2dFactory()->CreatePathGeometry(
                 resource.path.ReleaseAndGetAddressOf()
@@ -727,7 +732,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 glyphs = glyphIndices(outlineFace.Get(), sourceChar.text);
                 if (!validGlyphIndices(glyphs)) {
                     outlineFace = findFallbackFontFace(
-                        fontCollection.Get(), sourceChar.text, fallbackFaces, glyphs
+                        fontCollection.Get(), sourceChar.text, impl_->fallbackFaces, glyphs
                     );
                 }
                 if (outlineFace && !glyphs.empty()) {
@@ -1388,7 +1393,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 Microsoft::WRL::ComPtr<IDWriteFontFace> outlineFace = drawingFace;
                 if (!validGlyphIndices(glyphs)) {
                     outlineFace = findFallbackFontFace(
-                        fontCollection.Get(), sourceUnit.text, fallbackFaces, glyphs
+                        fontCollection.Get(), sourceUnit.text, impl_->fallbackFaces, glyphs
                     );
                 }
                 Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
@@ -1416,7 +1421,8 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                     Microsoft::WRL::ComPtr<IDWriteFontFace> metricFace = measureFace;
                     if (!validGlyphIndices(measureGlyphs)) {
                         metricFace = findFallbackFontFace(
-                            fontCollection.Get(), sourceUnit.text, fallbackFaces, measureGlyphs
+                            fontCollection.Get(), sourceUnit.text,
+                            impl_->fallbackFaces, measureGlyphs
                         );
                     }
                     std::vector<DWRITE_GLYPH_METRICS> metrics(measureGlyphs.size());
@@ -2438,6 +2444,21 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
             }
             finish();
         });
+    }
+    if (impl_->resourceCacheEnabled) {
+        while (textGlyphRealizations.size() > impl_->glyphGeometryCapacity) {
+            const auto victim = std::min_element(
+                textGlyphRealizations.begin(), textGlyphRealizations.end(),
+                [](const auto &left, const auto &right) {
+                    return left.second.lastUse < right.second.lastUse;
+                }
+            );
+            if (victim == textGlyphRealizations.end()) {
+                break;
+            }
+            textGlyphRealizations.erase(victim);
+            ++impl_->diagnostics.glyphGeometryCacheEvictions;
+        }
     }
     impl_->diagnostics.lineCount = impl_->lines.size();
     impl_->diagnostics.glyphGeometryCacheSize = textGlyphRealizations.size();

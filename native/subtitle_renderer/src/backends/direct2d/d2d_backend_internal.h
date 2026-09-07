@@ -4,13 +4,16 @@
 #include "d2d_runtime_support.h"
 
 #include <d2d1_2.h>
+#include <dwrite.h>
 
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace krok::subtitle::native {
@@ -136,6 +139,22 @@ struct Direct2DGpuBackend::Impl {
         std::uint64_t lastUse = 0;
     };
 
+    struct GlyphGeometryResource {
+        Microsoft::WRL::ComPtr<ID2D1PathGeometry> path;
+        bool hasBounds = false;
+        D2D1_RECT_F referenceBounds{};
+        D2D1_RECT_F bounds{};
+        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> strokeGeometries;
+        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> stroke2Geometries;
+        std::map<float, Microsoft::WRL::ComPtr<ID2D1Geometry>> protectedGeometries;
+        std::uint64_t lastUse = 0;
+    };
+
+    using FontFaceKey = std::tuple<std::wstring, int, bool>;
+    using TextGlyphKey = std::tuple<
+        std::uintptr_t, int, std::uint32_t, std::vector<UINT16>
+    >;
+
     enum class RealizationKind {
         Fill,
         ProtectedStroke,
@@ -175,6 +194,17 @@ struct Direct2DGpuBackend::Impl {
     std::vector<CachedBrush> brushes;
     std::uint64_t brushUseSerial = 0;
     static constexpr std::size_t brushCapacity = 512;
+    std::map<FontFaceKey, Microsoft::WRL::ComPtr<IDWriteFontFace>> fontFaces;
+    std::vector<Microsoft::WRL::ComPtr<IDWriteFontFace>> fallbackFaces;
+    std::map<TextGlyphKey, GlyphGeometryResource> textGlyphResources;
+    std::uint64_t glyphGeometryUseSerial = 0;
+    static constexpr std::size_t defaultGlyphGeometryCapacity = 1024;
+    std::size_t glyphGeometryCapacity = direct2d::environmentSize(
+        "KROK_GPU_GLYPH_GEOMETRY_CAPACITY",
+        defaultGlyphGeometryCapacity,
+        1,
+        16384
+    );
     Microsoft::WRL::ComPtr<ID2D1DeviceContext1> realizationContext;
     std::uint64_t realizationCount = 0;
     std::uint64_t realizationGeneration = 0;

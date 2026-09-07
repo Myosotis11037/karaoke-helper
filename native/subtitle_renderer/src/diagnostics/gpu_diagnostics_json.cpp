@@ -50,6 +50,14 @@ void appendGpuDiagnostics(
         static_cast<qint64>(diagnostics.glyphGeometryCacheSize)
     );
     out->insert(
+        QStringLiteral("glyph_geometry_cache_evictions"),
+        static_cast<qint64>(diagnostics.glyphGeometryCacheEvictions)
+    );
+    out->insert(
+        QStringLiteral("glyph_geometry_cache_capacity"),
+        static_cast<qint64>(diagnostics.glyphGeometryCacheCapacity)
+    );
+    out->insert(
         QStringLiteral("glyph_stroke_cache_hits"),
         static_cast<qint64>(diagnostics.glyphStrokeCacheHits)
     );
