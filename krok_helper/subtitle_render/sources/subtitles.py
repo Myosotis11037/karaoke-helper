@@ -502,6 +502,12 @@ def _parse_body_line(
                 role_for_entry = value
                 continue
             text_entries.extend((element, role_for_entry) for element in _text_elements(value))
+        if next_ts is None:
+            # SUG 导出 nicokara .lrc 时会丢弃行末无时间戳的空白字符；解析侧对称
+            # 过滤，避免行尾空格分走字锚点（source_span_count）并参与行宽/页布局。
+            # 组内第一个字符承载本组 [ts] 锚点（含"仅一个空格"的组），保留。
+            while len(text_entries) > 1 and text_entries[-1][0].isspace():
+                text_entries.pop()
         visible_count = len(text_entries)
         if visible_count <= 0:
             for kind, value in parts:
@@ -528,33 +534,27 @@ def _parse_body_line(
             [element for element, _role in text_entries],
         )
         unresolved_tail = visible_count > 1 and next_ts is None
-        start_index = 0
-        for kind, value in parts:
-            if kind == "role":
-                active_role = value
-                if singer_label is None:
-                    singer_label = active_role
-                continue
-            for ch in _text_elements(value):
-                chars.append(
-                    TimingChar(
-                        text=ch,
-                        start_ms=char_starts[start_index],
-                        explicit_start=start_index == 0,
-                        explicit_end=(
-                            start_index == visible_count - 1 and next_ts is not None
-                        ),
-                        role_label=active_role,
-                        # Temporary parser marker. Cross-line completion uses
-                        # the following line start, then clears these fields so
-                        # Painter cannot apply SUG's width-weighted span logic.
-                        source_span_start_ms=pending_ts if unresolved_tail else None,
-                        source_span_end_ms=None,
-                        source_span_index=start_index if unresolved_tail else 0,
-                        source_span_count=visible_count if unresolved_tail else 1,
-                    )
+        for start_index, (ch, ch_role) in enumerate(text_entries):
+            chars.append(
+                TimingChar(
+                    text=ch,
+                    start_ms=char_starts[start_index],
+                    explicit_start=start_index == 0,
+                    explicit_end=(
+                        start_index == visible_count - 1 and next_ts is not None
+                    ),
+                    role_label=ch_role,
+                    # Temporary parser marker. Cross-line completion uses
+                    # the following line start, then clears these fields so
+                    # Painter cannot apply SUG's width-weighted span logic.
+                    source_span_start_ms=pending_ts if unresolved_tail else None,
+                    source_span_end_ms=None,
+                    source_span_index=start_index if unresolved_tail else 0,
+                    source_span_count=visible_count if unresolved_tail else 1,
                 )
-                start_index += 1
+            )
+        # parts 里最后一个角色标签继续对后续 token 生效。
+        active_role = role_for_entry
         pending_ts = None
 
     # tokens 用完后仍剩 pending_ts → 是行末结束时间戳
@@ -565,6 +565,8 @@ def _parse_body_line(
     # 行内有时间戳、但行首缓存字符一直没机会补回（如 ` [ts]` 仅"行首文本 + 结束 ts"）：
     # 用行末 ts 作为起点补回，仍不丢字。完全无时间戳的纯文本行保持空行语义（丢弃缓存）。
     if leading_buffer and end_ms is not None:
+        while leading_buffer and leading_buffer[-1][0].isspace():
+            leading_buffer.pop()
         for ch, role in leading_buffer:
             chars.append(
                 TimingChar(

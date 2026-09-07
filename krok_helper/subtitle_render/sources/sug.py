@@ -278,6 +278,18 @@ def timing_track_from_sug_project(
     sentences = list(getattr(project, "sentences", []) or [])
     for sentence_index, sentence in enumerate(sentences):
         chars = list(getattr(sentence, "characters", []) or [])
+        # SUG's nicokara exporter drops untimed whitespace at the line tail;
+        # mirror that so such spaces cannot claim wipe anchors or line width.
+        while chars:
+            tail = chars[-1]
+            if (
+                getattr(tail, "timestamps", None)
+                or not str(getattr(tail, "char", "")).isspace()
+                or getattr(tail, "sentence_end_ts", None) is not None
+                or bool(getattr(tail, "is_sentence_end", False))
+            ):
+                break
+            chars.pop()
         if _is_blank_sentence(chars):
             lines.append(
                 TimingLine(

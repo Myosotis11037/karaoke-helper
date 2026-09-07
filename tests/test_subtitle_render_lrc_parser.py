@@ -1010,3 +1010,27 @@ def test_repeated_ruby_base_in_one_line_gets_one_annotation_each():
     assert sorted(
         (ruby.target_char_start, ruby.reading) for ruby in track.rubies
     ) == [(0, "け"), (1, "ろ"), (2, "け"), (3, "ろ")]
+
+
+def test_untimed_trailing_space_dropped_like_sug_nicokara_export():
+    # SUG 导出 nicokara .lrc 会过滤行末无时间戳空格；解析侧对称过滤。
+    track = parse_nicokara_lrc("[00:01:00]あ[00:01:50]い \n")
+
+    line = track.lines[0]
+    assert [ch.text for ch in line.chars] == ["あ", "い"]
+    assert line.chars[-1].source_span_count == 1
+
+
+def test_trailing_space_kept_when_boundary_timestamp_follows():
+    # 空格后跟结束时间戳（explicit_end）说明该空格有边界锚，不过滤。
+    track = parse_nicokara_lrc("[00:01:00]あ [00:01:50]\n")
+
+    assert [ch.text for ch in track.lines[0].chars] == ["あ", " "]
+    assert track.lines[0].chars[-1].explicit_end
+
+
+def test_leading_untimed_space_preserved():
+    # 只过滤行末；行首无时间戳空格仍按"与后一字共享时间"保留。
+    track = parse_nicokara_lrc(" [00:01:00]あ[00:01:50]\n")
+
+    assert [ch.text for ch in track.lines[0].chars] == [" ", "あ"]

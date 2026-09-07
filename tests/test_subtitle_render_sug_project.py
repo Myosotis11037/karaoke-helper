@@ -1119,3 +1119,33 @@ def test_overlapping_nicokara_repeat_keeps_each_ruby_on_its_source_character() -
         (1, 9, 10, "魔"),
         (1, 11, 12, "罠"),
     ]
+
+
+def test_sug_drops_untimed_trailing_space_at_line_end() -> None:
+    # SUG 的 nicokara 导出会丢弃行末无时间戳空格；解析侧对称过滤，
+    # 避免空格分走字锚点（source_span_count）并参与行宽计算。
+    singer = Singer(id="main", name="主唱", color="#ff0000", is_default=True)
+    chars = [
+        Character(
+            char="あ",
+            check_count=1,
+            timestamps=[1000],
+            sentence_end_ts=2000,
+            is_sentence_end=True,
+            is_line_end=True,
+            singer_id=singer.id,
+        ),
+        Character(char=" ", check_count=0, singer_id=singer.id),
+    ]
+    project = Project(
+        singers=[singer],
+        sentences=[Sentence(singer_id=singer.id, characters=chars)],
+    )
+
+    track = timing_track_from_sug_project(project)
+
+    line = track.lines[0]
+    assert [ch.text for ch in line.chars] == ["あ"]
+    assert line.chars[0].source_span_count == 1
+    assert line.chars[0].source_span_start_ms is None
+    assert line.end_ms == 2000
