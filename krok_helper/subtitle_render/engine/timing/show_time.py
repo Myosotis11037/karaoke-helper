@@ -538,49 +538,38 @@ class _Solver:
         the two lines *both* overlap in time *and* violate separation on the
         layout axis.
 
-        压缩按「两边平均分担」进行：重叠量先在退场 / 入场两侧各瞄准一半，
-        容量不足的一侧把差额让给另一侧，而不是先把一个方向压到底。两侧
-        底线仍为 ``auto_entry/exit_reserve``（动画可压到下限、保护时间
-        不可压）。
+        顺序与守卫的阶段 A 一致：先压缩上一行的稳定退场缓冲，再缩短下一行
+        的提前入场；稳定窗算式只切动画之外的缓冲区（两侧底线由
+        ``_enforce_auto_wipe_bounds`` 的 ``auto_entry/exit_reserve`` 兜住）。
+        动画区的左右对砍由守卫（``apply_animation_time_guard``）在最终
+        解算时执行——守卫的恢复步会先把动画窗口还原，再按两阶段规则
+        重切，因此最终窗口始终以守卫口径为准。
         """
 
         starts, ends = self.out.starts, self.out.ends
         overlap = self._stable_end(other) - self._stable_start(line)
         if overlap <= 0:
             return
-        exit_capacity = 0
-        latest_start = None
+
         if self.end_override[other] is None:
-            exit_capacity = max(
-                self._stable_end(other)
-                - self.ends[other]
-                - self.auto_exit_reserve_ms[other],
-                0,
-            )
+            # 先压缩上一行的稳定退场余量；纯退场动画允许与下一行入场重叠。
+            capacity = max(self._stable_end(other) - self.ends[other], 0)
+            delta = min(overlap, capacity)
+            ends[other] -= delta
+            overlap = self._stable_end(other) - self._stable_start(line)
+        if overlap <= 0:
+            return
+
         if self.start_override[line] is None:
+            # 缩短提前入场，但保留该行自动入场动画的视觉反应下限。
             latest_start = max(
                 self.begins[line] - self.auto_entry_reserve_ms[line],
                 0,
             )
-        entry_capacity = (
-            max(latest_start - int(starts[line]), 0)
-            if latest_start is not None
-            else 0
-        )
-        if overlap > exit_capacity + entry_capacity:
-            exit_take = exit_capacity
-            entry_take = entry_capacity
-        else:
-            exit_take = min(
-                exit_capacity,
-                max((overlap + 1) // 2, overlap - entry_capacity),
+            target_stable_start = min(
+                self._stable_start(line) + overlap,
+                self.begins[line],
             )
-            entry_take = min(entry_capacity, overlap - exit_take)
-        if exit_take > 0:
-            ends[other] -= exit_take
-        if entry_take > 0 and latest_start is not None:
-            # 与既有机制同式：稳定目标 + 动画回补，受 latest 与页序天花板约束。
-            target_stable_start = self._stable_start(line) + entry_take
             animation = self.entry_animation_ms[line]
             proposed_start = (
                 latest_start

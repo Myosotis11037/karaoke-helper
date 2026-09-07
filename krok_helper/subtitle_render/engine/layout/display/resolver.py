@@ -802,26 +802,21 @@ def apply_animation_time_guard(
                     continue
                 overlap_ms = required_start - int(incoming_band.display_start_ms)
 
-                # 两侧容量：从完整 display 端点起算。display 判碰窗口下压缩
-                # 动画能直接消解判定的重叠，动画可压到下限；stable 判碰窗口
-                # 下稳定段端点在余量 ≤ 动画时长后就不再移动，继续压动画只是
-                # 白白缩短可见动画，因此下限抬到完整动画。手工覆盖的一侧
-                # 容量为 0。
+                # 两阶段压缩。底线（两侧都不许越过）：
+                #   stop = max(出入场动画保护时间, 保护时间)；stable 判碰
+                #   窗口下再抬到完整动画时长——压缩动画不移动稳定段端点，
+                #   白白缩短可见动画。
+                # 阶段 A · 缓冲区（动画之外的余量，砍了不动动画）：
+                #   依旧旧顺序贪心——先砍延迟退场缓冲，再砍提前入场缓冲。
+                # 阶段 B · 动画区（两侧都只剩动画时间时）：左右循环对砍，
+                #   各瞄准剩余量的一半，容量不足的一侧把差额让给另一侧，
+                #   动画按窗口加速播放、不截断。两侧都到底后残余冲突留给
+                #   空间避让。手工覆盖的一侧两个阶段容量均为 0。
                 exit_stop = max(
                     exit_floors[previous_index],
                     exit_durations[previous_index]
                     if time_window == "stable"
                     else 0,
-                )
-                exit_capacity = (
-                    max(
-                        int(previous.display_end_ms)
-                        - line_ends[previous_index]
-                        - exit_stop,
-                        0,
-                    )
-                    if previous.line.display_end_override_ms is None
-                    else 0
                 )
                 entry_stop = max(
                     entry_floors[incoming_index],
@@ -829,33 +824,56 @@ def apply_animation_time_guard(
                     if time_window == "stable"
                     else 0,
                 )
-                entry_capacity = (
-                    max(
-                        line_starts[incoming_index]
-                        - int(incoming.display_start_ms)
-                        - entry_stop,
+                exit_margin = (
+                    int(previous.display_end_ms) - line_ends[previous_index]
+                )
+                entry_margin = (
+                    line_starts[incoming_index]
+                    - int(incoming.display_start_ms)
+                )
+                if previous.line.display_end_override_ms is None:
+                    exit_total = max(exit_margin - exit_stop, 0)
+                    # 缓冲区 = 余量中动画完整保留仍可砍的部分。
+                    exit_free = max(
+                        exit_margin
+                        - max(exit_durations[previous_index], exit_stop),
                         0,
                     )
-                    if incoming.line.display_start_override_ms is None
-                    else 0
-                )
-
-                # 两边平均分担：各瞄准重叠量的一半，容量不足的一侧把差额
-                # 让给另一侧；两侧都到底后残余冲突留给空间避让。避免"先
-                # 把退场一侧压到底、再动入场"的单向贪心，需要缩短出入场
-                # 动画时两边同步、尽量均匀地承受。
-                if overlap_ms > exit_capacity + entry_capacity:
-                    exit_take = exit_capacity
-                    entry_take = entry_capacity
                 else:
-                    exit_take = min(
-                        exit_capacity,
+                    exit_total = exit_free = 0
+                exit_zone = exit_total - exit_free
+                if incoming.line.display_start_override_ms is None:
+                    entry_total = max(entry_margin - entry_stop, 0)
+                    entry_free = max(
+                        entry_margin
+                        - max(entry_durations[incoming_index], entry_stop),
+                        0,
+                    )
+                else:
+                    entry_total = entry_free = 0
+                entry_zone = entry_total - entry_free
+
+                remaining = overlap_ms
+                exit_free_take = min(remaining, exit_free)
+                remaining -= exit_free_take
+                entry_free_take = min(remaining, entry_free)
+                remaining -= entry_free_take
+                exit_zone_take = entry_zone_take = 0
+                if remaining > 0:
+                    # 只剩动画时间（+同轨间隔+保护时间）：两侧轮流对砍。
+                    exit_zone_take = min(
+                        exit_zone,
                         max(
-                            (overlap_ms + 1) // 2,
-                            overlap_ms - entry_capacity,
+                            (remaining + 1) // 2,
+                            remaining - entry_zone,
                         ),
                     )
-                    entry_take = min(entry_capacity, overlap_ms - exit_take)
+                    entry_zone_take = min(
+                        entry_zone,
+                        remaining - exit_zone_take,
+                    )
+                exit_take = exit_free_take + exit_zone_take
+                entry_take = entry_free_take + entry_zone_take
 
                 pair_changed: list[int] = []
                 if exit_take > 0:
