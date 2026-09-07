@@ -36,6 +36,7 @@ from krok_helper.subtitle_render.engine.layout.page.placement import (
     LineVisualBand,
     PageVisualBands,
     bands_require_separation,
+    bands_share_layout_axis,
     solve_page_axis_offsets,
     time_windows_overlap,
 )
@@ -759,8 +760,9 @@ def apply_animation_time_guard(
         "stable" if style.allow_entry_exit_animation_overlap else "display"
     )
     measured = ports.measure(guarded, time_window)
-    # 时间剪枝上界：冲突要求 incoming 起点早于 previous 终点 + 同轨间隔，
-    # 早于此界的对可直接跳过（跨轨间隔为 0，此界仍是安全下界）。
+    # 时间剪枝：冲突要求 incoming 起点早于 previous 终点 + 同轨间隔，
+    # 早于此界的对可直接跳过（视觉行口径下所有冲突对的间隔要求一致，
+    # 此界为精确等价条件）。
     max_lane_gap = max(int(style.line_lane_gap_ms), 0)
     for _pass in range(max(len(guarded) * 3, 1)):
         adjusted = False
@@ -787,20 +789,14 @@ def apply_animation_time_guard(
                     <= int(incoming_band.display_start_ms)
                 ):
                     continue
-                previous = guarded[previous_index]
-                same_lane = int(previous.lane) == int(incoming.lane)
-                if (
-                    not same_lane
-                    and not bands_require_separation(
-                        incoming_band,
-                        previous_band,
-                        0.0,
-                    )
-                ):
+                if not bands_share_layout_axis(incoming_band, previous_band):
+                    # 严格视觉行口径：布局轴（横排 Y / 竖排 X）墨迹带不相
+                    # 叠 = 不同视觉行，画面不可能相撞，直接跳过。行位号
+                    # （lane）在混排行数布局（2 行 / 3 行页混排）下与视觉
+                    # 行不对应，不作为判据；主守卫与收尾守卫共用本判定。
                     continue
-                required_gap = (
-                    max(int(style.line_lane_gap_ms), 0) if same_lane else 0
-                )
+                previous = guarded[previous_index]
+                required_gap = max(int(style.line_lane_gap_ms), 0)
                 required_start = int(previous_band.display_end_ms) + required_gap
                 if int(incoming_band.display_start_ms) >= required_start:
                     continue

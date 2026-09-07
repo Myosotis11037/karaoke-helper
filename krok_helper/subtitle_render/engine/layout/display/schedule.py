@@ -17,7 +17,7 @@ from krok_helper.subtitle_render.engine.layout.display.signal import (
 )
 from krok_helper.subtitle_render.engine.layout.page.placement import (
     LineVisualBand,
-    bands_require_separation,
+    bands_share_layout_axis,
 )
 from krok_helper.subtitle_render.engine.timing.timeline import (
     DisplayLine,
@@ -318,9 +318,10 @@ def _entry_floor_ms(
 
     Synchronization may only spend room that is already free.  The floor is the
     same separation the collision guard would demand -- an earlier page's
-    resolved exit plus ``IntervalTime`` at a shared screen position -- so a page
+    resolved exit plus ``IntervalTime`` at a shared visual row -- so a page
     that cannot reach its shared entry instant stops here instead of buying the
-    difference from the previous line's exit.
+    difference from the previous line's exit.  与守卫同一「严格视觉行」口径：
+    布局轴墨迹带相叠即同轨；行位号（lane）仅在无实测几何时作回退判据。
     """
 
     incoming = resolved[index]
@@ -338,22 +339,21 @@ def _entry_floor_ms(
         other = resolved[other_index]
         if (int(other.section_index), int(other.page_index)) == page_id:
             continue
-        same_lane = int(other.lane) == int(incoming.lane)
-        if not same_lane:
-            other_band = band_of(other_index)
-            if incoming_band is None or other_band is None:
-                # Without measured geometry only a shared lane is a known
-                # conflict; assuming more would suppress legitimate sync.
+        other_band = band_of(other_index)
+        if incoming_band is not None and other_band is not None:
+            if not bands_share_layout_axis(incoming_band, other_band):
+                # 不同视觉行：画面不可能相撞，不构成提前下界。
                 continue
-            if not bands_require_separation(incoming_band, other_band, 0.0):
-                continue
+        elif int(other.lane) != int(incoming.lane):
+            # 无实测几何时只有同行位是已知冲突；多假设会压制合法同步。
+            continue
         candidate = (
             int(
                 display_line_collision_time_window(
                     other, style, time_window=time_window
                 )[1]
             )
-            + (lane_gap if same_lane else 0)
+            + lane_gap
         )
         if floor is None or candidate > floor:
             floor = candidate

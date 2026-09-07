@@ -124,6 +124,27 @@ def bands_require_separation(
     ) > 0.0
 
 
+def bands_share_layout_axis(
+    incoming: LineVisualBand,
+    previous: LineVisualBand,
+) -> bool:
+    """Whether two ink bands share the layout axis -- the same visual row.
+
+    严格视觉行口径：横排看 Y、竖排看 X 的墨迹带相叠即同一视觉行，
+    与行位号（lane）无关——混排行数布局里（如 2 行 / 3 行页混排）
+    行位号与视觉行不对应。横向（cross 轴）是否相交不影响同轨判定：
+    同一视觉行左右错开的句子仍属同一显示轨，同轨间隔照常适用；
+    不同视觉行即使横向相叠，画面也不可能相撞，直接跳过。
+    """
+
+    incoming = _normalized_band(incoming)
+    previous = _normalized_band(previous)
+    return (
+        incoming.axis_min < previous.axis_max
+        and previous.axis_min < incoming.axis_max
+    )
+
+
 def solve_page_axis_offsets(
     pages: Sequence[PageVisualBands],
     *,

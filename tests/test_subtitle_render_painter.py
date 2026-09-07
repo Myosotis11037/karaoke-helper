@@ -10203,6 +10203,89 @@ def test_display_resolution_applies_section_edge_animation_without_outer_pass(qa
     assert plan.lines[1].animation_style.entry_anim == "spin_flip"
 
 
+def test_mixed_row_layouts_judge_conflicts_by_visual_row(qapp):
+    """混排行数布局按视觉行判碰，不按行位号。
+
+    两布局同为底部对齐、相同边距 / 行距：3 行布局的中行与 2 行布局的
+    顶行落在同一视觉行（底行上一格），两布局的底行也重合。于是：
+    - 3 行页顶行(lane0) 对 2 行页顶行(lane0)：**同行位、不同视觉行**
+      → 画面不相撞，不做任何时间避让（旧行位号口径会白压）；
+    - 3 行页中行(lane1) 对 2 行页顶行(lane0)、以及两条底行(lane2/lane1)：
+      **行位号不同、同一视觉行** → 同轨间隔照常生效（旧口径只给 0 间距）。
+    """
+
+    three = LyricsLayout(
+        name="三行",
+        layout_id="L3",
+        line_y_position="bottom",
+        line_y_margin_px=60,
+        line_gap_px=120,
+        line_alignments=["left", "center", "right"],
+    )
+    two = LyricsLayout(
+        name="两行",
+        layout_id="L2",
+        line_y_position="bottom",
+        line_y_margin_px=60,
+        line_gap_px=120,
+        line_alignments=["left", "right"],
+    )
+    lines = [
+        TimingLine(chars=[TimingChar(text, start)], end_ms=end)
+        for text, start, end in (
+            ("A0", 1_000, 2_000),
+            ("A1", 2_200, 3_200),
+            ("A2", 3_400, 4_400),
+            ("B0", 4_600, 5_600),
+            ("B1", 5_800, 6_800),
+        )
+    ]
+    for line in lines[:3]:
+        line.layout_index = 1
+    for line in lines[3:]:
+        line.layout_index = 2
+    track = TimingTrack(
+        lines=lines,
+        page_plan=TrackPagePlan(
+            [
+                TrackSection(
+                    [TrackPage(3, "L3"), TrackPage(2, "L2")]
+                )
+            ]
+        ),
+    )
+    style = replace(
+        Style(font_family="Arial", font_family_latin="Arial"),
+        layouts=[three, two],
+        sync_entry=False,
+        sync_ending=False,
+        sync_each_page=False,
+        entry_anim="none",
+        exit_anim="none",
+        auto_fill_section_time=False,
+        line_lead_in_ms=1_800,
+        line_tail_ms=1_000,
+        line_lane_gap_ms=300,
+    )
+
+    windows = subtitle_painter.display_windows_for_style(
+        track, style, logical_w=1280, logical_h=720
+    )
+
+    # (A0,B0) 同行位不同视觉行：A0 的尾巴原样保留（旧口径会被压掉）。
+    assert windows[0] == (max(1_000 - 1_800, 0), 3_000)
+    # (A1,B0) 同视觉行：重叠 1_700ms 两侧各担 850，A1 消失 3_350、
+    # B0 上屏 3_650，中间正好隔同轨间隔 300。
+    assert windows[1] == (2_200 - 1_800, 3_350)
+    assert windows[3][0] == 3_650
+    # (A2,B1) 同为底行：同样 850/850。
+    assert windows[2] == (3_400 - 1_800, 4_550)
+    assert windows[4][0] == 4_850
+    # 同轨间隔在两对上都成立。
+    assert windows[1][1] + 300 == windows[3][0]
+    assert windows[2][1] + 300 == windows[4][0]
+
+
 def test_cross_page_line_ink_height_excludes_layout_line_gap(qapp):
     line = TimingLine(chars=[TimingChar("Ag", 1_000)], end_ms=2_000)
     track = TimingTrack(lines=[line])
