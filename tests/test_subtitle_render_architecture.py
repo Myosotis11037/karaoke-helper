@@ -1148,7 +1148,6 @@ def test_qt_line_geometry_has_no_painter_dependency() -> None:
         for alias in node.names
     }
     assert "resolved_char_intervals_for_line" in imported
-    assert "resolved_guide_anchor_bounds_for_line" in imported
 
 
 def test_page_offset_plan_has_no_painter_dependency() -> None:

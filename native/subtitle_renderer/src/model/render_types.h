@@ -256,8 +256,6 @@ struct TextLine {
     // 本标记让走字反向（横排 rtl 翻转 / 竖排自下而上），与 Painter 同口径。
     bool wipeReverse = false;
     int compositeOrder = 0;
-    std::optional<float> guideAnchorLeft;
-    std::optional<float> guideAnchorRight;
     bool centerOverride = false;
     bool staticOverlay = false;
     int fadeInMs = 0;

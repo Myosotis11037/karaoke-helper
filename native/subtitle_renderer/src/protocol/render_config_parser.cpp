@@ -1322,19 +1322,6 @@ std::optional<RenderConfig> parseRenderConfig(const QJsonObject &ir, QString *er
                     );
                 }
             }
-            const QJsonArray guideAnchorBounds = lineObject.value(
-                QStringLiteral("guide_anchor_bounds")
-            ).toArray();
-            if (guideAnchorBounds.size() == 2
-                && guideAnchorBounds.at(0).isDouble()
-                && guideAnchorBounds.at(1).isDouble()) {
-                const double left = guideAnchorBounds.at(0).toDouble();
-                const double right = guideAnchorBounds.at(1).toDouble();
-                if (std::isfinite(left) && std::isfinite(right) && right > left) {
-                    line.guideAnchorLeft = left;
-                    line.guideAnchorRight = right;
-                }
-            }
             cfg.lines.push_back(std::move(line));
         }
 

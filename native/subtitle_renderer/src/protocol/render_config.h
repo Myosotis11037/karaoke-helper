@@ -78,8 +78,6 @@ struct TimingLine {
     std::vector<krok::subtitle::native::PlacementWindow> placementWindows;
     std::optional<int> displayStartMs;
     std::optional<int> displayEndMs;
-    std::optional<double> guideAnchorLeft;
-    std::optional<double> guideAnchorRight;
     bool centerOverride = false;
     QString entryAnimation = QStringLiteral("none");
     int entryDurationMs = 0;

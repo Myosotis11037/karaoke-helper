@@ -38,7 +38,6 @@ from krok_helper.subtitle_render.engine.layout.display.signal import (
 )
 from krok_helper.subtitle_render.engine.layout.line.qt_geometry import (
     resolved_char_intervals_for_line,
-    resolved_guide_anchor_bounds_for_line,
 )
 from krok_helper.subtitle_render.engine.timing.timeline import DisplayLine
 from krok_helper.subtitle_render.engine.value_signature import (
@@ -143,16 +142,12 @@ def resolve_track_layout_plan(
         render_lines: list = []
         layout_styles: list = []
         resolved_intervals: list = []
-        guide_anchor_bounds: list = []
         animation_styles: list = []
         for index, line in enumerate(track.lines):
             rendered = render_line_with_guide_symbols(line)
             render_lines.append(rendered)
             layout_styles.append(style_for_line(style, line))
             resolved_intervals.append(resolved_char_intervals_for_line(rendered, style))
-            guide_anchor_bounds.append(
-                resolved_guide_anchor_bounds_for_line(track, line, style)
-            )
             animation_styles.append(
                 style_for_line_display_window(
                     style,
@@ -175,7 +170,6 @@ def resolve_track_layout_plan(
             layout_styles=layout_styles,
             animation_styles=animation_styles,
             resolved_intervals=resolved_intervals,
-            guide_anchor_bounds=guide_anchor_bounds,
         )
     if layout_cache_enabled():
         # Retain the mutable owners because the key contains track identity.

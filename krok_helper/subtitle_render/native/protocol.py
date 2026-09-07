@@ -254,7 +254,6 @@ def timing_line_to_ir(
     render_line: TimingLine | None = None,
     layout_style: Style | None = None,
     resolved_intervals: list[tuple[int, int]] | None = None,
-    guide_anchor_bounds: tuple[int, int] | None = None,
     page_index: int = -1,
     page_line_count: int = 0,
     section_index: int = -1,
@@ -366,11 +365,6 @@ def timing_line_to_ir(
             if resolved_intervals is not None
             else None
         ),
-        "guide_anchor_bounds": (
-            [int(guide_anchor_bounds[0]), int(guide_anchor_bounds[1])]
-            if guide_anchor_bounds is not None
-            else None
-        ),
     }
 
 
@@ -438,7 +432,6 @@ def track_to_ir(
         layout_styles = [item.layout_style for item in layout_plan.lines]
         render_lines = [item.render_line for item in layout_plan.lines]
         resolved_intervals = [list(item.resolved_intervals) for item in layout_plan.lines]
-        guide_anchor_bounds = [item.guide_anchor_bounds for item in layout_plan.lines]
         page_indices = {item.track_index: item.page_index for item in layout_plan.lines}
         section_indices = {
             item.track_index: item.section_index for item in layout_plan.lines
@@ -454,7 +447,6 @@ def track_to_ir(
         layout_styles = []
         render_lines = []
         resolved_intervals = []
-        guide_anchor_bounds = []
         page_indices = {}
         section_indices = {}
         page_offset_windows = {}
@@ -480,9 +472,6 @@ def track_to_ir(
                 layout_style=(layout_styles[index] if style is not None else None),
                 resolved_intervals=(
                     resolved_intervals[index] if style is not None else None
-                ),
-                guide_anchor_bounds=(
-                    guide_anchor_bounds[index] if style is not None else None
                 ),
                 page_index=page_indices.get(index, -1),
                 page_line_count=page_line_counts.get(index, 0),

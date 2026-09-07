@@ -1310,17 +1310,11 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 }
             }
         }
-        const bool hasBitmapGuide = std::any_of(
-            line->chars.begin(), line->chars.end(),
-            [](const Impl::CachedChar &ch) { return ch.bitmapGuide.has_value(); }
-        );
-        if (line->guideAnchorLeft.has_value()
-            && line->guideAnchorRight.has_value()
-            && !style.vertical
-            && !hasBitmapGuide) {
-            lyricLeft = *line->guideAnchorLeft;
-            lyricRight = *line->guideAnchorRight;
-        }
+        // Guide-symbol lines must keep anchoring this complete layout box:
+        // fillBounds spans [0, cursor] over every layout cell (vector guide
+        // glyphs included) and the branches above add ruby overhang.  A
+        // source-text-only anchor box would push right-aligned lines one
+        // guide advance past the right margin.
         // The Painter no longer pads the horizontal line box with the stroke
         // extent under legacy semantics either -- both now anchor N3's logical
         // DrawLineLeft/Right, so mixed-role lines keep the glyph box as well.

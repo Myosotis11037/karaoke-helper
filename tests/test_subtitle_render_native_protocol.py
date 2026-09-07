@@ -2876,7 +2876,7 @@ def test_build_render_ir_serializes_bitmap_guide_symbol(tmp_path: Path):
     assert bitmap["margin_right_px"] == 7
     assert bitmap["margin_bottom_px"] == 20
     assert bitmap["before_size"] == 3
-    assert line["guide_anchor_bounds"] is None
+    assert "guide_anchor_bounds" not in line
     assert gpu_unsupported_features(track, Style()) == ()
 
 

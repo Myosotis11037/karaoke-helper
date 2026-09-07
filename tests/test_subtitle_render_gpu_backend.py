@@ -4229,6 +4229,72 @@ def test_gpu_g4_guide_symbols_follow_painter_vector_glyphs(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_right_aligned_vector_guide_keeps_right_margin(monkeypatch) -> None:
+    """Right-aligned rows carrying SVG guides must anchor the full layout box.
+
+    回归闸：GPU 曾用「源正文锚点盒」替换整行边界做右对齐，坐标系少算一个
+    导唱符 advance，导致靠右行越过错右余白、直接溢出画布（SVG 导唱符 +
+    无字体角色的行才会触发）。修复后两条后端都按完整布局盒（含导唱符
+    单元格）对齐，右缘回到 W − 右余白。
+    """
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    symbol = GuideSymbol(
+        path_commands=(
+            ("M", 100.0, 0.0),
+            ("L", 500.0, -820.0),
+            ("L", 900.0, 0.0),
+            ("Z",),
+        ),
+        duration_ms=400,
+        count=1,
+    )
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar("短", 0), TimingChar("い", 700)],
+                end_ms=2_000,
+            ),
+            TimingLine(
+                chars=[TimingChar("何", 2_000), TimingChar("度", 2_600)],
+                end_ms=3_400,
+                guide_symbol=symbol,
+            ),
+        ]
+    )
+    style = _g1_style(
+        font_family="Meiryo",
+        font_family_latin="Meiryo",
+        font_size_px=64,
+        dual_line_layout=True,
+        line_horizontal_layout="asymmetric",
+        line_y_position="bottom",
+        horizontal_margin_px=90,
+        decoration_kind="none",
+    )
+    timestamps = (2_400, 3_200)
+    painter = [
+        _render_painter_oracle(style, t_ms=t_ms, track=track)
+        for t_ms in timestamps
+    ]
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        _, gpu = _render_g1_frames(
+            renderer, style, timestamps, force_warp=True, track=track
+        )
+
+    # 90 px 余白按 1080 参考高度授权，360 画布上应为 30 px；
+    # +8 容纳描边墨水越过布局盒的部分。
+    for t_ms, gpu_frame, painter_frame in zip(timestamps, gpu, painter):
+        gpu_bounds = _payload_alpha_bounds(gpu_frame)
+        painter_bounds = _payload_alpha_bounds(painter_frame)
+        assert painter_bounds[2] <= 640 - 30 + 8, (t_ms, painter_bounds)
+        assert abs(gpu_bounds[2] - painter_bounds[2]) <= 12, (
+            t_ms,
+            gpu_bounds,
+            painter_bounds,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_detailed_svg_guide_symbol_configures_within_budget(monkeypatch) -> None:
     """精细 SVG（数千轮廓命令）× 多行导唱符必须在 configure 超时预算内完成。
 
@@ -4300,13 +4366,6 @@ def test_gpu_bitmap_guide_symbol_renders_during_utopia_exit(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from krok_helper.subtitle_render.engine import painter as subtitle_painter
-
-    monkeypatch.setattr(
-        subtitle_painter,
-        "resolved_guide_anchor_bounds_for_line",
-        lambda *_args, **_kwargs: (320, 321),
-    )
     image_path = tmp_path / "avatar.png"
     avatar = QImage(24, 18, QImage.Format.Format_RGBA8888)
     avatar.fill(QColor(255, 0, 0, 255))

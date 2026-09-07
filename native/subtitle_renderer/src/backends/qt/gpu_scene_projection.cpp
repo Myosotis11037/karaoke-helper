@@ -493,15 +493,6 @@ krok::subtitle::native::RenderScene gpuSceneFromConfig(const RenderConfig &confi
         // 标题钉在最下层（compositeOrder = kTitleCompositeOrder），所以源之间不必
         // 再为它预留 1 号槽位：主字幕 0，副源依次 1、2……
         line.compositeOrder = sourceLine.sourceIndex;
-        if (sourceLine.guideAnchorLeft.has_value()
-            && sourceLine.guideAnchorRight.has_value()) {
-            line.guideAnchorLeft = static_cast<float>(
-                *sourceLine.guideAnchorLeft * scale
-            );
-            line.guideAnchorRight = static_cast<float>(
-                *sourceLine.guideAnchorRight * scale
-            );
-        }
         const auto verticalCharacterAnimation = [&](const QString &animation) {
             return config.vertical && (
                 animation == QStringLiteral("char_fade")

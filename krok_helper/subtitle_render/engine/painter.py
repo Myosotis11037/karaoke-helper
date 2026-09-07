@@ -257,7 +257,6 @@ from krok_helper.subtitle_render.engine.text import (
 )
 from krok_helper.subtitle_render.engine.layout.line.qt_geometry import (
     resolved_char_intervals_for_line,
-    resolved_guide_anchor_bounds_for_line,
 )
 from krok_helper.subtitle_render.engine.layout.plan.page_offsets import (
     MeasuredPageLine,

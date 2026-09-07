@@ -134,8 +134,6 @@ struct Direct2DGpuBackend::Impl {
         bool hasN3CharBox = false;
         bool hasInlineStyles = false;
         bool hasInlineLaneGeometryOverride = false;
-        std::optional<float> guideAnchorLeft;
-        std::optional<float> guideAnchorRight;
         bool centerOverride = false;
         D2D1_RECT_F bounds{};
         D2D1_RECT_F fillBounds{};

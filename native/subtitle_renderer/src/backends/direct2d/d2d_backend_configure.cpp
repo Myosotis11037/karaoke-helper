@@ -596,8 +596,6 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         cached.compositeOrder = sourceLine.compositeOrder;
         cached.signalHead = sourceLine.signalHead;
         cached.wipeReverse = sourceLine.wipeReverse;
-        cached.guideAnchorLeft = sourceLine.guideAnchorLeft;
-        cached.guideAnchorRight = sourceLine.guideAnchorRight;
         cached.centerOverride = sourceLine.centerOverride;
         cached.staticOverlay = sourceLine.staticOverlay;
         cached.fadeInMs = sourceLine.fadeInMs;

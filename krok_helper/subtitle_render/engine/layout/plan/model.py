@@ -21,7 +21,6 @@ class LineLayoutPlan:
     layout_style: Style
     animation_style: Style
     resolved_intervals: tuple[tuple[int, int], ...]
-    guide_anchor_bounds: tuple[int, int] | None
     page_index: int = -1
     page_line_count: int = 0
     section_index: int = -1
