@@ -9,6 +9,8 @@ work can migrate painter features without changing the process protocol shape.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -56,16 +58,36 @@ class VectorGlyphTable:
             return None
         units = max(int(symbol.units_per_em), 1)
         advance = max(float(symbol.advance_width), 0.0)
-        key = (tuple(symbol.path_commands), units, advance)
+        normalized_commands = tuple(
+            (
+                str(command[0]),
+                *(
+                    0.0 if float(value) == 0.0 else float(value)
+                    for value in command[1:]
+                ),
+            )
+            for command in symbol.path_commands
+        )
+        key = (normalized_commands, units, advance)
         glyph_id = self._ids.get(key)
         if glyph_id is None:
-            glyph_id = f"g{len(self._ids)}"
-            self._ids[key] = glyph_id
-            self.payload[glyph_id] = {
-                "path_commands": [list(command) for command in symbol.path_commands],
+            payload = {
+                "path_commands": [list(command) for command in normalized_commands],
                 "units_per_em": units,
                 "advance_width": advance,
             }
+            canonical = json.dumps(
+                payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("ascii")
+            # Content-derived IDs stay stable when an unrelated symbol is inserted
+            # earlier in a later IR.  The full digest also makes an accidental ID
+            # collision unsuitable as a stale native resource-cache alias.
+            glyph_id = "g_" + hashlib.sha256(canonical).hexdigest()
+            self._ids[key] = glyph_id
+            self.payload[glyph_id] = payload
         return glyph_id
 
     @property

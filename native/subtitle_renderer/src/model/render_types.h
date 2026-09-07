@@ -139,7 +139,15 @@ struct VectorGlyph {
     std::vector<VectorPathCommand> commands;
     float unitsPerEm = 1000.0f;
     float advanceWidth = 1000.0f;
-    bool operator==(const VectorGlyph &) const = default;
+    // Parsed content fingerprint used only for backend resource identity.  It
+    // is deliberately excluded from render equality: commands and metrics are
+    // the rendering semantics, while the fingerprint is their derived key.
+    std::string resourceKey;
+    bool operator==(const VectorGlyph &other) const {
+        return commands == other.commands
+            && unitsPerEm == other.unitsPerEm
+            && advanceWidth == other.advanceWidth;
+    }
 };
 
 struct BitmapGuide {
@@ -433,6 +441,18 @@ struct BackendDiagnostics {
     std::uint64_t glyphStrokeCacheMisses = 0;
     double glyphGeometryBuildMs = 0.0;
     double glyphStrokeBuildMs = 0.0;
+    std::uint64_t vectorGlyphCacheHits = 0;
+    std::uint64_t vectorGlyphCacheMisses = 0;
+    std::uint64_t vectorGlyphCacheSize = 0;
+    std::uint64_t vectorGlyphCacheEvictions = 0;
+    std::uint64_t vectorGlyphCacheCapacity = 0;
+    double vectorGlyphBuildMs = 0.0;
+    std::uint64_t imageCacheHits = 0;
+    std::uint64_t imageCacheMisses = 0;
+    std::uint64_t imageCacheSize = 0;
+    std::uint64_t imageCacheEvictions = 0;
+    std::uint64_t imageCacheCapacity = 0;
+    double imageBuildMs = 0.0;
     std::uint64_t rubyCount = 0;
     std::uint64_t styleCount = 0;
     bool videoMemoryInfoAvailable = false;

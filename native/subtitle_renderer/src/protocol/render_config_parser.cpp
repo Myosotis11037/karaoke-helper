@@ -3,7 +3,12 @@
 #include "json_protocol.h"
 #include "json_value.h"
 
+#include <QtCore/QByteArray>
+#include <QtCore/QCryptographicHash>
+
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -343,6 +348,27 @@ std::optional<krok::subtitle::native::VectorGlyph> parseVectorGlyph(
         }
         glyph.commands.push_back(std::move(command));
     }
+    QByteArray fingerprintSource;
+    const auto appendWord = [&](std::uint32_t value) {
+        fingerprintSource.append(
+            reinterpret_cast<const char *>(&value),
+            static_cast<qsizetype>(sizeof(value))
+        );
+    };
+    appendWord(std::bit_cast<std::uint32_t>(glyph.unitsPerEm));
+    appendWord(std::bit_cast<std::uint32_t>(glyph.advanceWidth));
+    appendWord(static_cast<std::uint32_t>(glyph.commands.size()));
+    for (const auto &command : glyph.commands) {
+        fingerprintSource.append(command.kind);
+        appendWord(static_cast<std::uint32_t>(command.values.size()));
+        for (float value : command.values) {
+            appendWord(std::bit_cast<std::uint32_t>(value));
+        }
+    }
+    glyph.resourceKey = QCryptographicHash::hash(
+        fingerprintSource,
+        QCryptographicHash::Sha256
+    ).toHex().toStdString();
     return glyph.commands.empty()
         ? std::nullopt
         : std::optional<krok::subtitle::native::VectorGlyph>(std::move(glyph));

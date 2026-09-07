@@ -73,6 +73,51 @@ void appendGpuDiagnostics(
         QStringLiteral("glyph_stroke_build_ms"),
         diagnostics.glyphStrokeBuildMs
     );
+    out->insert(
+        QStringLiteral("vector_glyph_cache_hits"),
+        static_cast<qint64>(diagnostics.vectorGlyphCacheHits)
+    );
+    out->insert(
+        QStringLiteral("vector_glyph_cache_misses"),
+        static_cast<qint64>(diagnostics.vectorGlyphCacheMisses)
+    );
+    out->insert(
+        QStringLiteral("vector_glyph_cache_size"),
+        static_cast<qint64>(diagnostics.vectorGlyphCacheSize)
+    );
+    out->insert(
+        QStringLiteral("vector_glyph_cache_evictions"),
+        static_cast<qint64>(diagnostics.vectorGlyphCacheEvictions)
+    );
+    out->insert(
+        QStringLiteral("vector_glyph_cache_capacity"),
+        static_cast<qint64>(diagnostics.vectorGlyphCacheCapacity)
+    );
+    out->insert(
+        QStringLiteral("vector_glyph_build_ms"),
+        diagnostics.vectorGlyphBuildMs
+    );
+    out->insert(
+        QStringLiteral("image_cache_hits"),
+        static_cast<qint64>(diagnostics.imageCacheHits)
+    );
+    out->insert(
+        QStringLiteral("image_cache_misses"),
+        static_cast<qint64>(diagnostics.imageCacheMisses)
+    );
+    out->insert(
+        QStringLiteral("image_cache_size"),
+        static_cast<qint64>(diagnostics.imageCacheSize)
+    );
+    out->insert(
+        QStringLiteral("image_cache_evictions"),
+        static_cast<qint64>(diagnostics.imageCacheEvictions)
+    );
+    out->insert(
+        QStringLiteral("image_cache_capacity"),
+        static_cast<qint64>(diagnostics.imageCacheCapacity)
+    );
+    out->insert(QStringLiteral("image_build_ms"), diagnostics.imageBuildMs);
     out->insert(QStringLiteral("cached_rubies"), static_cast<qint64>(diagnostics.rubyCount));
     out->insert(QStringLiteral("cached_styles"), static_cast<qint64>(diagnostics.styleCount));
     out->insert(

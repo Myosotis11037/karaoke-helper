@@ -2397,6 +2397,128 @@ def test_gpu_cross_config_glyph_cache_evicts_lru(monkeypatch) -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+@pytest.mark.parametrize("resource_cache", [True, False])
+def test_gpu_configure_reuses_vector_glyph_geometry_across_scene_changes(
+    monkeypatch, resource_cache: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1" if resource_cache else "0")
+    symbol = GuideSymbol(
+        path_commands=(
+            ("M", 0.0, 0.0),
+            ("C", 250.0, -900.0, 750.0, -900.0, 1000.0, 0.0),
+            ("L", 500.0, -300.0),
+            ("Z",),
+        ),
+        units_per_em=1000,
+        advance_width=1000.0,
+    )
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[
+                    TimingChar("\uFFFC", row * 1000, vector_glyph=symbol)
+                    for row in range(6)
+                ],
+                end_ms=6000,
+            )
+        ]
+    )
+    state = KaraokeColorState(
+        text=PaintFill(mode="solid", color="#80FFFFFF"),
+        stroke=PaintFill(mode="solid", color="#FF0000"),
+    )
+    style = _g1_style(
+        stroke_width_px=10,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        karaoke_colors=KaraokeColors(before=state, after=state),
+    )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first = renderer.configure_gpu(
+            track, style, width=640, height=360, fps=60,
+            force_warp=True, realization_enabled=False,
+        )
+        first_frame = renderer.render_gpu_frame(2500, force_warp=True)
+        second = renderer.configure_gpu(
+            track,
+            replace(style, viewport_offset_x=1),
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+        second_frame = renderer.render_gpu_frame(2500, force_warp=True)
+
+    assert first["vector_glyph_cache_misses"] == 1
+    assert first["vector_glyph_cache_hits"] == 5
+    assert second["vector_glyph_cache_misses"] == (0 if resource_cache else 1)
+    assert second["vector_glyph_cache_hits"] == (6 if resource_cache else 5)
+    assert (second["vector_glyph_build_ms"] == 0.0) is resource_cache
+    assert second["vector_glyph_cache_size"] == 1
+    assert second["vector_glyph_cache_evictions"] == 0
+    assert second["vector_glyph_cache_capacity"] == (
+        256 if resource_cache else 0
+    )
+    assert second["glyph_stroke_cache_misses"] == (0 if resource_cache else 1)
+    assert first_frame["checksum"] != second_frame["checksum"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_cross_config_vector_glyph_cache_evicts_lru(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1")
+    monkeypatch.setenv("KROK_GPU_VECTOR_GLYPH_CAPACITY", "1")
+    first_symbol = GuideSymbol(
+        path_commands=(("M", 0.0, 0.0), ("L", 1000.0, -1000.0), ("Z",))
+    )
+    second_symbol = GuideSymbol(
+        path_commands=(("M", 0.0, -1000.0), ("L", 1000.0, 0.0), ("Z",))
+    )
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[
+                    TimingChar("\uFFFC", 0, vector_glyph=first_symbol),
+                    TimingChar("\uFFFC", 500, vector_glyph=second_symbol),
+                ],
+                end_ms=1000,
+            )
+        ]
+    )
+    style = _g1_style(
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first = renderer.configure_gpu(
+            track, style, width=640, height=360, fps=60,
+            force_warp=True, realization_enabled=False,
+        )
+        second = renderer.configure_gpu(
+            track,
+            replace(style, viewport_offset_x=1),
+            width=640,
+            height=360,
+            fps=60,
+            force_warp=True,
+            realization_enabled=False,
+        )
+
+    assert first["vector_glyph_cache_misses"] == 2
+    assert first["vector_glyph_cache_size"] == 1
+    assert first["vector_glyph_cache_evictions"] == 1
+    assert first["vector_glyph_cache_capacity"] == 1
+    assert second["vector_glyph_cache_misses"] == 1
+    assert second["vector_glyph_cache_hits"] == 1
+    assert second["vector_glyph_cache_size"] == 1
+    assert second["vector_glyph_cache_evictions"] == 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_configure_skips_unused_widened_stroke_geometry(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("KROK_GPU_DYNAMIC_DIRECT_STROKE", "1")
@@ -4086,6 +4208,64 @@ def test_gpu_bitmap_guide_symbol_renders_during_utopia_exit(
     assert abs(gpu_red_bounds[3] - painter_red_bounds[3]) <= 8
     assert red_pixels(painter[1]) > 0
     assert red_pixels(gpu[1]) > 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+@pytest.mark.parametrize("resource_cache", [True, False])
+def test_gpu_gif_guide_frames_survive_cross_config_resource_cache(
+    monkeypatch, resource_cache: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1" if resource_cache else "0")
+    gif_path = Path(__file__).parent / "data" / "guide_anim_3frames.gif"
+    symbol = GuideSymbol(
+        name="anim",
+        kind="bitmap",
+        bitmap_before_path=str(gif_path),
+        bitmap_after_path=str(gif_path),
+        duration_ms=400,
+        count=1,
+    )
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[TimingChar(" ", 1000), TimingChar("GPU", 1100)],
+                end_ms=1600,
+                inline_guide_symbols={0: symbol},
+            )
+        ]
+    )
+    style = _g1_style(
+        font_size_px=48,
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        dual_line_layout=False,
+    )
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first_configured, first_frames = _render_g1_frames(
+            renderer, style, (1050, 1150), force_warp=True, track=track
+        )
+        second_configured, second_frames = _render_g1_frames(
+            renderer,
+            replace(style, viewport_offset_x=1),
+            (1050, 1150),
+            force_warp=True,
+            track=track,
+        )
+
+    assert first_configured["image_cache_misses"] == 1
+    assert first_configured["image_cache_hits"] >= 1
+    assert second_configured["image_cache_misses"] == (0 if resource_cache else 1)
+    assert second_configured["image_cache_hits"] >= 1
+    assert (second_configured["image_build_ms"] == 0.0) is resource_cache
+    assert second_configured["image_cache_size"] == 1
+    assert second_configured["image_cache_capacity"] == (
+        64 if resource_cache else 0
+    )
+    # Both the cold and reused entry must retain the animated frame sequence.
+    assert first_frames[0] != first_frames[1]
+    assert second_frames[0] != second_frames[1]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
@@ -8947,6 +9127,9 @@ def test_gpu_g3_image_fill_file_signature_invalidates_scene_cache(
         )
 
     assert second_configured["cache_misses"] == first_configured["cache_misses"] + 1
+    assert first_configured["image_cache_misses"] == 1
+    assert second_configured["image_cache_misses"] == 1
+    assert second_configured["image_cache_size"] == 2
     assert first[0] != second[0]
     assert any(
         first[0][index] > first[0][index + 2] + 100 and first[0][index + 3] > 0
@@ -8956,6 +9139,104 @@ def test_gpu_g3_image_fill_file_signature_invalidates_scene_cache(
         second[0][index + 2] > second[0][index] + 100 and second[0][index + 3] > 0
         for index in range(0, len(second[0]), 4)
     )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+@pytest.mark.parametrize("resource_cache", [True, False])
+def test_gpu_png_fill_survives_cross_config_resource_cache(
+    monkeypatch, tmp_path, resource_cache: bool
+) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1" if resource_cache else "0")
+    image_path = tmp_path / "persistent-fill.png"
+    image = QImage(8, 8, QImage.Format.Format_RGBA8888)
+    image.fill(QColor("#20A0FF"))
+    assert image.save(str(image_path))
+    fill = PaintFill(mode="image", image_path=str(image_path), image_scale_pct=100)
+    state = KaraokeColorState(text=fill)
+    style = _g1_style(
+        font_family="Meiryo",
+        font_size_px=100,
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        dual_line_layout=False,
+        karaoke_colors=KaraokeColors(before=state, after=state),
+    )
+    track = _g3_fill_track()
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first_configured, first = _render_g1_frames(
+            renderer, style, (100,), force_warp=True, track=track
+        )
+        second_configured, second = _render_g1_frames(
+            renderer,
+            replace(style, viewport_offset_x=1),
+            (100,),
+            force_warp=True,
+            track=track,
+        )
+
+    assert first_configured["image_cache_misses"] == 1
+    assert second_configured["image_cache_misses"] == (0 if resource_cache else 1)
+    assert second_configured["image_cache_hits"] >= 1
+    assert (second_configured["image_build_ms"] == 0.0) is resource_cache
+    assert second_configured["image_cache_size"] == 1
+    assert first[0] != second[0]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_cross_config_image_cache_evicts_lru(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("KROK_GPU_RESOURCE_CACHE", "1")
+    monkeypatch.setenv("KROK_GPU_IMAGE_CACHE_CAPACITY", "1")
+
+    def make_image(name: str, color: str) -> Path:
+        path = tmp_path / name
+        image = QImage(4, 4, QImage.Format.Format_RGBA8888)
+        image.fill(QColor(color))
+        assert image.save(str(path))
+        return path
+
+    red = make_image("red.png", "#FF2020")
+    blue = make_image("blue.png", "#2040FF")
+
+    def image_style(path: Path, offset: int) -> Style:
+        fill = PaintFill(mode="image", image_path=str(path), image_scale_pct=100)
+        state = KaraokeColorState(text=fill)
+        return _g1_style(
+            font_size_px=100,
+            stroke_width_px=0,
+            stroke2_enabled=False,
+            decoration_kind="none",
+            dual_line_layout=False,
+            viewport_offset_x=offset,
+            karaoke_colors=KaraokeColors(before=state, after=state),
+        )
+
+    track = _g3_fill_track()
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        first = renderer.configure_gpu(
+            track, image_style(red, 0), width=640, height=360, fps=60,
+            force_warp=True, realization_enabled=False,
+        )
+        second = renderer.configure_gpu(
+            track, image_style(blue, 1), width=640, height=360, fps=60,
+            force_warp=True, realization_enabled=False,
+        )
+        third = renderer.configure_gpu(
+            track, image_style(red, 2), width=640, height=360, fps=60,
+            force_warp=True, realization_enabled=False,
+        )
+
+    assert first["image_cache_misses"] == 1
+    assert first["image_cache_evictions"] == 0
+    assert second["image_cache_misses"] == 1
+    assert second["image_cache_evictions"] == 1
+    assert third["image_cache_misses"] == 1
+    assert third["image_cache_evictions"] == 1
+    assert third["image_cache_size"] == 1
+    assert third["image_cache_capacity"] == 1
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")

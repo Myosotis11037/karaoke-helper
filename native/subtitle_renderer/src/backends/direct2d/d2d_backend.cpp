@@ -32,6 +32,8 @@ Direct2DGpuBackend::Direct2DGpuBackend(bool forceWarp)
     impl_->diagnostics.resourceCacheEnabled = impl_->resourceCacheEnabled;
     impl_->diagnostics.brushCacheCapacity = Impl::brushCapacity;
     impl_->diagnostics.glyphGeometryCacheCapacity = impl_->glyphGeometryCapacity;
+    impl_->diagnostics.vectorGlyphCacheCapacity = impl_->vectorGlyphCapacity;
+    impl_->diagnostics.imageCacheCapacity = impl_->imageCapacity;
     impl_->diagnostics.realizationEnabled = impl_->realizationActive;
     impl_->diagnostics.realizationCapacity = Impl::defaultRealizationCapacity;
     impl_->diagnostics.glowDirtyRectEnabled = impl_->glowDirtyRectEnabled;
@@ -57,6 +59,8 @@ Direct2DGpuBackend::Direct2DGpuBackend(
     impl_->diagnostics.resourceCacheEnabled = impl_->resourceCacheEnabled;
     impl_->diagnostics.brushCacheCapacity = Impl::brushCapacity;
     impl_->diagnostics.glyphGeometryCacheCapacity = impl_->glyphGeometryCapacity;
+    impl_->diagnostics.vectorGlyphCacheCapacity = impl_->vectorGlyphCapacity;
+    impl_->diagnostics.imageCacheCapacity = impl_->imageCapacity;
     impl_->diagnostics.realizationEnabled = impl_->realizationActive;
     impl_->diagnostics.realizationCapacity = Impl::defaultRealizationCapacity;
     impl_->diagnostics.glowDirtyRectEnabled = impl_->glowDirtyRectEnabled;

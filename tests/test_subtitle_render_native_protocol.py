@@ -54,6 +54,7 @@ from krok_helper.subtitle_render.native.backend import (
 )
 from krok_helper.subtitle_render.native.protocol import (
     RENDER_IR_SCHEMA,
+    VectorGlyphTable,
     gpu_unsupported_feature_labels,
     gpu_unsupported_features,
     track_to_ir,
@@ -2806,6 +2807,18 @@ def test_build_render_ir_deduplicates_shared_guide_outlines():
     ir2 = build_render_ir(track2, Style(), width=640, height=360, fps=60)
     assert len(ir2["vector_glyphs"]) == 1
     assert ir2["vector_glyphs"] != table
+
+    first_order = VectorGlyphTable()
+    original_id = first_order.reference(symbol)
+    other_id = first_order.reference(other_outline)
+    reverse_order = VectorGlyphTable()
+    assert reverse_order.reference(other_outline) == other_id
+    assert reverse_order.reference(symbol) == original_id
+    integer_outline = GuideSymbol(
+        path_commands=(("M", 1, 2), ("L", 3, 4), ("Z",)),
+        duration_ms=400,
+    )
+    assert VectorGlyphTable().reference(integer_outline) == other_id
 
 
 def test_track_to_ir_without_table_keeps_inline_vector_glyph():

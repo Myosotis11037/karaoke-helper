@@ -29,6 +29,8 @@ struct Direct2DGpuBackend::Impl {
         // metrics.AnimatedGuideImage.frame_at 是同一契约。
         std::vector<Microsoft::WRL::ComPtr<ID2D1Bitmap1>> frames;
         std::vector<int> frameDelaysMs;
+        bool animationChecked = false;
+        std::uint64_t lastUse = 0;
     };
     struct CachedChar {
         int startMs = 0;
@@ -154,6 +156,7 @@ struct Direct2DGpuBackend::Impl {
     using TextGlyphKey = std::tuple<
         std::uintptr_t, int, std::uint32_t, std::vector<UINT16>
     >;
+    using VectorGlyphKey = std::tuple<std::string, int, std::uint32_t>;
 
     enum class RealizationKind {
         Fill,
@@ -191,12 +194,21 @@ struct Direct2DGpuBackend::Impl {
     RenderScene scene;
     std::vector<CachedLine> lines;
     std::vector<CachedImage> images;
+    std::uint64_t imageUseSerial = 0;
+    static constexpr std::size_t defaultImageCapacity = 64;
+    std::size_t imageCapacity = direct2d::environmentSize(
+        "KROK_GPU_IMAGE_CACHE_CAPACITY",
+        defaultImageCapacity,
+        1,
+        1024
+    );
     std::vector<CachedBrush> brushes;
     std::uint64_t brushUseSerial = 0;
     static constexpr std::size_t brushCapacity = 512;
     std::map<FontFaceKey, Microsoft::WRL::ComPtr<IDWriteFontFace>> fontFaces;
     std::vector<Microsoft::WRL::ComPtr<IDWriteFontFace>> fallbackFaces;
     std::map<TextGlyphKey, GlyphGeometryResource> textGlyphResources;
+    std::map<VectorGlyphKey, GlyphGeometryResource> vectorGlyphResources;
     std::uint64_t glyphGeometryUseSerial = 0;
     static constexpr std::size_t defaultGlyphGeometryCapacity = 1024;
     std::size_t glyphGeometryCapacity = direct2d::environmentSize(
@@ -204,6 +216,13 @@ struct Direct2DGpuBackend::Impl {
         defaultGlyphGeometryCapacity,
         1,
         16384
+    );
+    static constexpr std::size_t defaultVectorGlyphCapacity = 256;
+    std::size_t vectorGlyphCapacity = direct2d::environmentSize(
+        "KROK_GPU_VECTOR_GLYPH_CAPACITY",
+        defaultVectorGlyphCapacity,
+        1,
+        4096
     );
     Microsoft::WRL::ComPtr<ID2D1DeviceContext1> realizationContext;
     std::uint64_t realizationCount = 0;

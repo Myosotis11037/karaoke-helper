@@ -16,6 +16,7 @@
 #include <cmath>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -107,6 +108,20 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
     impl_->diagnostics.glyphStrokeCacheMisses = 0;
     impl_->diagnostics.glyphGeometryBuildMs = 0.0;
     impl_->diagnostics.glyphStrokeBuildMs = 0.0;
+    impl_->diagnostics.vectorGlyphCacheHits = 0;
+    impl_->diagnostics.vectorGlyphCacheMisses = 0;
+    impl_->diagnostics.vectorGlyphCacheSize = 0;
+    impl_->diagnostics.vectorGlyphCacheEvictions = 0;
+    impl_->diagnostics.vectorGlyphCacheCapacity =
+        impl_->resourceCacheEnabled ? impl_->vectorGlyphCapacity : 0;
+    impl_->diagnostics.vectorGlyphBuildMs = 0.0;
+    impl_->diagnostics.imageCacheHits = 0;
+    impl_->diagnostics.imageCacheMisses = 0;
+    impl_->diagnostics.imageCacheSize = 0;
+    impl_->diagnostics.imageCacheEvictions = 0;
+    impl_->diagnostics.imageCacheCapacity =
+        impl_->resourceCacheEnabled ? impl_->imageCapacity : 0;
+    impl_->diagnostics.imageBuildMs = 0.0;
     const float layoutScale = std::max(scene.layoutReferenceScale, 0.01f);
     const std::uint32_t layoutScaleKey = std::bit_cast<std::uint32_t>(layoutScale);
     const bool scaledPreviewLayout = std::abs(layoutScale - 1.0f) > 0.000001f;
@@ -162,7 +177,83 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
     impl_->diagnostics.realizationEnabled = impl_->realizationActive;
     impl_->lines.clear();
     impl_->lines.reserve(scene.lines.size());
-    impl_->images.clear();
+    if (!impl_->resourceCacheEnabled) {
+        impl_->images.clear();
+        impl_->imageUseSerial = 0;
+    }
+    using ImageKey = std::tuple<std::wstring, std::uint64_t, std::uint64_t>;
+    std::set<ImageKey> activeImages;
+    auto cacheImage = [&] (
+        const std::wstring &path,
+        std::uint64_t modifiedMs,
+        std::uint64_t size,
+        bool animatedGuide
+    ) -> Impl::CachedImage * {
+        if (path.empty()) {
+            return nullptr;
+        }
+        const ImageKey key{path, modifiedMs, size};
+        activeImages.insert(key);
+        auto found = std::find_if(
+            impl_->images.begin(), impl_->images.end(),
+            [&](const Impl::CachedImage &image) {
+                return image.path == path
+                    && image.modifiedMs == modifiedMs
+                    && image.size == size;
+            }
+        );
+        if (found != impl_->images.end()) {
+            ++impl_->diagnostics.imageCacheHits;
+            found->lastUse = ++impl_->imageUseSerial;
+            // A file first encountered as an image fill only needs frame zero.
+            // Upgrade that same persistent entry once if it is later used as a
+            // bitmap guide, so GIF animation is not accidentally frozen.
+            if (animatedGuide && !found->animationChecked) {
+                const auto buildStart = Clock::now();
+                direct2d::AnimatedBitmapFrames animated =
+                    direct2d::loadWicAnimatedBitmaps(
+                        device_.d2dContext(), path, 60
+                    );
+                if (!animated.bitmaps.empty()) {
+                    found->bitmap = animated.bitmaps.front();
+                    found->frames = std::move(animated.bitmaps);
+                    found->frameDelaysMs = std::move(animated.delaysMs);
+                }
+                found->animationChecked = true;
+                impl_->diagnostics.imageBuildMs += elapsedMs(buildStart);
+            }
+            return &*found;
+        }
+
+        ++impl_->diagnostics.imageCacheMisses;
+        const auto buildStart = Clock::now();
+        Impl::CachedImage image;
+        image.path = path;
+        image.modifiedMs = modifiedMs;
+        image.size = size;
+        image.animationChecked = animatedGuide;
+        if (animatedGuide) {
+            direct2d::AnimatedBitmapFrames animated =
+                direct2d::loadWicAnimatedBitmaps(
+                    device_.d2dContext(), path, 60
+                );
+            if (!animated.bitmaps.empty()) {
+                image.bitmap = animated.bitmaps.front();
+                image.frames = std::move(animated.bitmaps);
+                image.frameDelaysMs = std::move(animated.delaysMs);
+            }
+        }
+        if (!image.bitmap) {
+            image.bitmap = loadWicBitmap(device_.d2dContext(), path);
+        }
+        impl_->diagnostics.imageBuildMs += elapsedMs(buildStart);
+        if (!image.bitmap) {
+            return nullptr;
+        }
+        image.lastUse = ++impl_->imageUseSerial;
+        impl_->images.push_back(std::move(image));
+        return &impl_->images.back();
+    };
     auto cacheStyleImages = [&](const TextStyle &style) {
         const PaintStyle *paints[] = {
             &style.beforeFillPaint, &style.afterFillPaint,
@@ -178,60 +269,18 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
             if (paint->mode != "image" || paint->imagePath.empty()) {
                 continue;
             }
-            const bool cached = std::any_of(
-                impl_->images.begin(), impl_->images.end(),
-                [&](const Impl::CachedImage &image) {
-                    return image.path == paint->imagePath
-                        && image.modifiedMs == paint->imageModifiedMs
-                        && image.size == paint->imageSize;
-                }
+            cacheImage(
+                paint->imagePath,
+                paint->imageModifiedMs,
+                paint->imageSize,
+                false
             );
-            if (!cached) {
-                impl_->images.push_back(Impl::CachedImage{
-                    paint->imagePath,
-                    paint->imageModifiedMs,
-                    paint->imageSize,
-                    loadWicBitmap(device_.d2dContext(), paint->imagePath),
-                });
-            }
         }
     };
     auto cacheBitmapImage = [&](const std::wstring &path,
                                 std::uint64_t modifiedMs,
                                 std::uint64_t size) {
-        if (path.empty()) {
-            return;
-        }
-        const bool cached = std::any_of(
-            impl_->images.begin(), impl_->images.end(),
-            [&](const Impl::CachedImage &image) {
-                return image.path == path
-                    && image.modifiedMs == modifiedMs
-                    && image.size == size;
-            }
-        );
-        if (!cached) {
-            // GIF 先解多帧（帧上限与 Python GUIDE_ANIM_MAX_FRAMES 一致，
-            // 头像级小图 ×60 的解码在 configure 预算内）；静态格式回退
-            // 单帧。动图首帧直接复用为 bitmap，避免二次解码。
-            direct2d::AnimatedBitmapFrames animated = direct2d::loadWicAnimatedBitmaps(
-                device_.d2dContext(), path, 60
-            );
-            Microsoft::WRL::ComPtr<ID2D1Bitmap1> single;
-            if (animated.bitmaps.empty()) {
-                single = direct2d::loadWicBitmap(device_.d2dContext(), path);
-            } else {
-                single = animated.bitmaps.front();
-            }
-            impl_->images.push_back(Impl::CachedImage{
-                path,
-                modifiedMs,
-                size,
-                std::move(single),
-                std::move(animated.bitmaps),
-                std::move(animated.delaysMs),
-            });
-        }
+        cacheImage(path, modifiedMs, size, true);
     };
     cacheStyleImages(scene.style);
     for (const TextStyle &style : scene.lineStyles) {
@@ -314,25 +363,34 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         return found == impl_->images.end() ? nullptr : found->bitmap.Get();
     };
 
-    // Vector guide glyphs share one immutable outline per render IR (schema 2),
-    // and one outline may be instanced by hundreds of characters. Building the
-    // path, its preview-scale simplification and the widened strokes per
-    // character is O(chars x outline segments) and can exceed the GPU configure
-    // timeout by orders of magnitude, so they are cached per (glyph, unit) and
-    // instanced with cheap lazy translation wrappers per character.
+    // Vector guide glyphs carry a content fingerprint computed while parsing
+    // the IR.  It is stable across configure generations even when table order
+    // changes, so expensive SVG paths and widened/protected stroke geometries
+    // survive ordinary scene rebuilds just like text glyph resources.
     using GlyphGeometryResource = Impl::GlyphGeometryResource;
-    std::map<std::pair<const krok::subtitle::native::VectorGlyph *, int>, GlyphGeometryResource>
-        vectorGlyphRealizations;
+    std::map<Impl::VectorGlyphKey, GlyphGeometryResource> configureVectorResources;
+    auto &vectorGlyphRealizations = impl_->resourceCacheEnabled
+        ? impl_->vectorGlyphResources
+        : configureVectorResources;
     auto vectorRealizationFor = [&](
         const std::shared_ptr<const krok::subtitle::native::VectorGlyph> &glyph,
         int unit
     ) -> GlyphGeometryResource & {
-        const auto key = std::make_pair(glyph.get(), unit);
+        const Impl::VectorGlyphKey key{
+            glyph->resourceKey,
+            unit,
+            layoutScaleKey,
+        };
         const auto found = vectorGlyphRealizations.find(key);
         if (found != vectorGlyphRealizations.end()) {
+            ++impl_->diagnostics.vectorGlyphCacheHits;
+            found->second.lastUse = ++impl_->glyphGeometryUseSerial;
             return found->second;
         }
+        ++impl_->diagnostics.vectorGlyphCacheMisses;
+        const auto buildStart = Clock::now();
         GlyphGeometryResource realization;
+        realization.lastUse = ++impl_->glyphGeometryUseSerial;
         auto path = vectorGlyphGeometry(
             device_.d2dFactory(), *glyph, static_cast<float>(unit), device_
         );
@@ -361,6 +419,7 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         }
         realization.path = path;
         realization.hasBounds = hasBounds;
+        impl_->diagnostics.vectorGlyphBuildMs += elapsedMs(buildStart);
         return vectorGlyphRealizations
             .emplace(key, std::move(realization))
             .first->second;
@@ -2459,9 +2518,54 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
             textGlyphRealizations.erase(victim);
             ++impl_->diagnostics.glyphGeometryCacheEvictions;
         }
+        while (vectorGlyphRealizations.size() > impl_->vectorGlyphCapacity) {
+            const auto victim = std::min_element(
+                vectorGlyphRealizations.begin(), vectorGlyphRealizations.end(),
+                [](const auto &left, const auto &right) {
+                    return left.second.lastUse < right.second.lastUse;
+                }
+            );
+            if (victim == vectorGlyphRealizations.end()) {
+                break;
+            }
+            vectorGlyphRealizations.erase(victim);
+            ++impl_->diagnostics.vectorGlyphCacheEvictions;
+        }
     }
+    if (impl_->resourceCacheEnabled) {
+        while (impl_->images.size() > impl_->imageCapacity) {
+            const auto victim = std::min_element(
+                impl_->images.begin(), impl_->images.end(),
+                [&](const Impl::CachedImage &left, const Impl::CachedImage &right) {
+                    const ImageKey leftKey{left.path, left.modifiedMs, left.size};
+                    const ImageKey rightKey{right.path, right.modifiedMs, right.size};
+                    const bool leftActive = activeImages.contains(leftKey);
+                    const bool rightActive = activeImages.contains(rightKey);
+                    if (leftActive != rightActive) {
+                        return !leftActive;
+                    }
+                    return left.lastUse < right.lastUse;
+                }
+            );
+            if (victim == impl_->images.end()) {
+                break;
+            }
+            const ImageKey victimKey{
+                victim->path, victim->modifiedMs, victim->size
+            };
+            if (activeImages.contains(victimKey)) {
+                // The active scene may legitimately reference more resources
+                // than the retention cap; correctness wins over the soft cap.
+                break;
+            }
+            impl_->images.erase(victim);
+            ++impl_->diagnostics.imageCacheEvictions;
+        }
+    }
+    impl_->diagnostics.imageCacheSize = impl_->images.size();
     impl_->diagnostics.lineCount = impl_->lines.size();
     impl_->diagnostics.glyphGeometryCacheSize = textGlyphRealizations.size();
+    impl_->diagnostics.vectorGlyphCacheSize = vectorGlyphRealizations.size();
     impl_->diagnostics.charCount = 0;
     impl_->diagnostics.geometryCount = 0;
     impl_->diagnostics.rubyCount = 0;
@@ -2473,12 +2577,25 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         + scene.charStyles.capacity() * sizeof(TextStyle);
     for (const Impl::CachedImage &image : impl_->images) {
         impl_->diagnostics.estimatedCacheBytes += sizeof(Impl::CachedImage)
-            + image.path.capacity() * sizeof(wchar_t);
-        if (image.bitmap) {
-            const D2D1_SIZE_U size = image.bitmap->GetPixelSize();
+            + image.path.capacity() * sizeof(wchar_t)
+            + image.frameDelaysMs.capacity() * sizeof(int)
+            + image.frames.capacity()
+                * sizeof(Microsoft::WRL::ComPtr<ID2D1Bitmap1>);
+        const auto addBitmapBytes = [&](ID2D1Bitmap1 *bitmap) {
+            if (bitmap == nullptr) {
+                return;
+            }
+            const D2D1_SIZE_U size = bitmap->GetPixelSize();
             impl_->diagnostics.estimatedCacheBytes += static_cast<std::uint64_t>(
                 size.width
             ) * static_cast<std::uint64_t>(size.height) * 4;
+        };
+        if (image.frames.empty()) {
+            addBitmapBytes(image.bitmap.Get());
+        } else {
+            for (const auto &frame : image.frames) {
+                addBitmapBytes(frame.Get());
+            }
         }
     }
     for (const Impl::CachedLine &line : impl_->lines) {
