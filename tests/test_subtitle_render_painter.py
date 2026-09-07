@@ -11319,9 +11319,8 @@ def test_page_sync_defaults_to_section_edges_and_can_run_on_every_page():
     ]
 
 
-def test_section_time_fill_matches_next_page_by_nearest_main_text_box(
-    monkeypatch
-):
+def test_section_time_fill_matches_next_page_same_visual_row(monkeypatch):
+    """填充匹配相邻页的同视觉行句子（行盒与 lane 故意交叉时以视觉行为准）。"""
     lines = [
         TimingLine(chars=[TimingChar(text, start)], end_ms=end)
         for text, start, end in (
@@ -11380,16 +11379,17 @@ def test_section_time_fill_matches_next_page_by_nearest_main_text_box(
         display_lines,
     )
 
-    # A matches D by height, B matches C; page order is deliberately opposite.
+    # A(row0) matches D(row0), B(row1) matches C(row1); page order is
+    # deliberately opposite to prove matching follows the visual row.
     assert [item.display_end_ms for item in filled[:2]] == [6_700, 4_700]
     # The three-line tail page fills its middle line as well as its first line.
     assert [item.display_end_ms for item in filled[2:]] == [10_000, 10_000, 10_000]
     assert disabled == display_lines
 
 
-def test_section_time_fill_uses_strict_unique_matches_after_page_shift(
-    monkeypatch,
-):
+def test_section_time_fill_matches_adjacent_page_same_visual_row(monkeypatch):
+    """填充只配「相邻页、同视觉行」的句子：行盒/位移排序不再让配对交叉。"""
+
     lines = [
         TimingLine(chars=[TimingChar(text, start)], end_ms=end)
         for text, start, end in (
@@ -11408,9 +11408,9 @@ def test_section_time_fill_uses_strict_unique_matches_after_page_shift(
         DisplayLine(lines[3], 0, 6_000, 7_000, 0, 1, 2),
         DisplayLine(lines[4], 1, 8_000, 9_000, 0, 1, 2),
     ]
-    # Before the page displacement, C is closest to both A and B.  The final
-    # +40 px placement makes C a valid match for B only; D remains too far
-    # away from every source.  Thus C may be consumed once and A stays put.
+    # 视觉行：A(0-40) 与 C(5-45) 同行；B(50-90)、X(100-140) 在下一页
+    # 没有同行句子（D 在 200-240）。旧的几何最优分配会按中心距离把 B
+    # 配给 C（位移排序后），同视觉行口径下 B 不挂靠。
     axis_boxes = ((0, 40), (50, 90), (100, 140), (5, 45), (200, 240))
     measured = [
         (
@@ -11435,10 +11435,67 @@ def test_section_time_fill_uses_strict_unique_matches_after_page_shift(
         "measure_collision_bands",
         lambda *_args, **_kwargs: measured,
     )
+
+    filled = subtitle_painter._apply_measured_section_time_fill(
+        1_280,
+        720,
+        track,
+        Style(line_lane_gap_ms=300),
+        display_lines,
+    )
+
+    # A 挂到同行的 C 入场前（6_000 − 300）；B / X 下一页无同行句，不挂。
+    assert filled[0].display_end_ms == 5_700
+    assert filled[1].display_end_ms == 3_500
+    assert filled[2].display_end_ms == 4_500
+    # 段尾页对齐到本页最晚结束。
+    assert [item.display_end_ms for item in filled[3:]] == [9_000, 9_000]
+
+
+def test_section_time_fill_never_crosses_section_boundary(monkeypatch):
+    """填充的相邻页必须同段：段尾页只对齐本页最晚结束，不挂到下一段。"""
+
+    lines = [
+        TimingLine(chars=[TimingChar(text, start)], end_ms=end)
+        for text, start, end in (
+            ("A", 1_000, 2_000),
+            ("B", 2_000, 3_000),
+            ("C", 6_000, 7_000),
+            ("D", 7_000, 8_000),
+        )
+    ]
+    track = TimingTrack(lines=lines)
+    display_lines = [
+        DisplayLine(lines[0], 0, 500, 2_500, 0, 0, 2),
+        DisplayLine(lines[1], 1, 1_500, 3_500, 0, 0, 2),
+        DisplayLine(lines[2], 0, 6_000, 7_000, 1, 0, 2),
+        DisplayLine(lines[3], 1, 7_000, 8_000, 1, 0, 2),
+    ]
+    # A 与 C 同视觉行、B 与 D 同视觉行——若相邻页不校验段号，A 会被
+    # 挂到 C 入场前（6_000 − 300 = 5_700）、B 挂到 D 前（6_700）。
+    axis_boxes = ((0, 40), (100, 140), (5, 45), (105, 145))
+    measured = [
+        (
+            index,
+            (int(item.section_index), item.page_index),
+            subtitle_painter.LineVisualBand(
+                index,
+                (int(item.section_index), item.page_index),
+                item.display_start_ms,
+                item.display_end_ms,
+                float(axis_min),
+                float(axis_max),
+            ),
+            0.0,
+        )
+        for index, (item, (axis_min, axis_max)) in enumerate(
+            zip(display_lines, axis_boxes)
+        )
+    ]
     monkeypatch.setattr(
-        display_resolver,
-        "solve_page_axis_offsets",
-        lambda *_args, **_kwargs: {(0, 0): 0.0, (0, 1): 40.0},
+        subtitle_painter,
+        "measure_collision_bands",
+        lambda *_args, **_kwargs: measured,
     )
 
     filled = subtitle_painter._apply_measured_section_time_fill(
@@ -11449,10 +11506,12 @@ def test_section_time_fill_uses_strict_unique_matches_after_page_shift(
         display_lines,
     )
 
-    assert filled[0].display_end_ms == 2_500
-    assert filled[1].display_end_ms == 5_700
-    assert filled[2].display_end_ms == 4_500
-    assert [item.display_end_ms for item in filled[3:]] == [9_000, 9_000]
+    # 两个段各只有一页：都是段尾页，只对齐到本页最晚结束（3_500 /
+    # 8_000），绝不挂到下一段的句子。
+    assert filled[0].display_end_ms == 3_500
+    assert filled[1].display_end_ms == 3_500
+    assert filled[2].display_end_ms == 8_000
+    assert filled[3].display_end_ms == 8_000
 
 
 def test_all_automatic_timing_options_preserve_stable_lane_gap(qapp):

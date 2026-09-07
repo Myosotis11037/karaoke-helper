@@ -2637,7 +2637,6 @@ def _apply_measured_section_time_fill(
         display_lines,
         style,
         measured,
-        viewport_max=float(logical_w if style.vertical else logical_h),
         time_window=time_window,
     )
 

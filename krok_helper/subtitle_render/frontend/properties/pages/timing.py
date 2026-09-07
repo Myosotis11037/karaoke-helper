@@ -262,8 +262,9 @@ class TimingPropertyPageBuilder:
             section,
         )
         host._auto_fill_section_time_check.setToolTip(
-            "开启时，非段尾页的每句按主文字行盒高度匹配下一页最近的行，并延长到"
-            "该行入场前的同轨间隔；段尾页填充到本页自然结束。\n"
+            "开启时，段内非段尾页的每句挂到下一页同视觉行句子的入场前"
+            "（隔一个同轨间隔），下一页没有同行句子则不挂；段尾页填充到"
+            "本页自然结束。\n"
             "关闭时，每句仅保留自己的退场窗口。"
         )
         host._auto_fill_section_time_check.toggled.connect(

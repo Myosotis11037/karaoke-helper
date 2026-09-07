@@ -322,10 +322,17 @@ def fill_section_time_from_measurements(
     style: Style,
     measured: MeasuredCollisionBands,
     *,
-    viewport_max: float,
     time_window: str,
 ) -> DisplayLines:
-    """Extend automatic exits using final measured page placement."""
+    """Extend automatic exits using final measured page placement.
+
+    匹配对 = **同一段内的相邻页、同位置句**：本页每句挂到下一段内下一页
+    中与其共享布局轴（同一视觉行）的句子入场前；同视觉行有多句时按页内
+    顺序保序一一配对。相邻页的界定要求段号相同（``next_page`` 里
+    ``following[0] == page_id[0]``）——跨段的下一页视为无下一页，段尾
+    页只对齐到本页最晚结束，绝不挂到别的段的句子上。不做几何最优分
+    配——行盒高度 / 页位移排序会把配对交叉到别的行。
+    """
 
     if not style.auto_fill_section_time or not display_lines:
         return display_lines
@@ -351,130 +358,12 @@ def fill_section_time_from_measurements(
             if position + 1 < len(page_order)
             else None
         )
+        # 相邻页必须同段：段号不同的下一页按「无下一页」处理。
         next_page[page_id] = (
             following
             if following is not None and following[0] == page_id[0]
             else None
         )
-
-    page_entries: dict[tuple[int, int], list[tuple[LineVisualBand, float]]] = {}
-    for _render_index, page_id, band, gap in measured:
-        page_entries.setdefault(page_id, []).append((band, gap))
-    pages: list[PageVisualBands] = []
-    for page_id in page_order:
-        entries = page_entries.get(page_id, [])
-        if not entries:
-            continue
-        page_style = style_for_line(
-            style,
-            display_lines[page_indices[page_id][0]].line,
-        )
-        position = page_style.line_y_position
-        anchor = (
-            "start"
-            if position == "top"
-            else "center"
-            if position == "center"
-            else "end"
-        )
-        if style.vertical:
-            anchor = "end"
-        pages.append(
-            PageVisualBands(
-                page_id=page_id,
-                bands=tuple(band for band, _gap in entries),
-                gap_px=max((gap for _band, gap in entries), default=0.0),
-                anchor=anchor,
-            )
-        )
-    page_offsets = solve_page_axis_offsets(
-        pages,
-        viewport_min=0.0,
-        viewport_max=float(viewport_max),
-    )
-    bands = {
-        index: band.shifted(float(page_offsets.get(band.page_id, 0.0)))
-        for index, band in bands.items()
-    }
-
-    def match_page_bands(
-        source_indices: list[int],
-        candidate_indices: list[int],
-    ) -> dict[int, int]:
-        sources = [index for index in source_indices if index in bands]
-        candidates = [index for index in candidate_indices if index in bands]
-        if not sources or not candidates:
-            return {}
-        costs: dict[tuple[int, int], float] = {}
-        for source_pos, source_index in enumerate(sources):
-            source = bands[source_index]
-            source_height = max(float(source.axis_max - source.axis_min), 1.0)
-            source_center = (source.axis_min + source.axis_max) / 2.0
-            for candidate_pos, candidate_index in enumerate(candidates):
-                candidate = bands[candidate_index]
-                candidate_height = max(
-                    float(candidate.axis_max - candidate.axis_min),
-                    1.0,
-                )
-                candidate_center = (candidate.axis_min + candidate.axis_max) / 2.0
-                center_distance = abs(candidate_center - source_center)
-                tolerance = max(source_height, candidate_height)
-                if center_distance > tolerance:
-                    continue
-                height_delta = abs(candidate_height - source_height)
-                costs[(source_pos, candidate_pos)] = (
-                    center_distance / tolerance
-                    + 0.25 * height_delta / tolerance
-                )
-
-        memo: dict[
-            tuple[int, int],
-            tuple[int, float, tuple[tuple[int, int], ...]],
-        ] = {}
-
-        def solve(
-            source_pos: int,
-            used_mask: int,
-        ) -> tuple[int, float, tuple[tuple[int, int], ...]]:
-            key = source_pos, used_mask
-            cached = memo.get(key)
-            if cached is not None:
-                return cached
-            if source_pos >= len(sources):
-                return 0, 0.0, ()
-            best = solve(source_pos + 1, used_mask)
-            for candidate_pos in range(len(candidates)):
-                bit = 1 << candidate_pos
-                cost = costs.get((source_pos, candidate_pos))
-                if used_mask & bit or cost is None:
-                    continue
-                count, total, pairs = solve(source_pos + 1, used_mask | bit)
-                proposal = (
-                    count + 1,
-                    total + cost,
-                    ((source_pos, candidate_pos),) + pairs,
-                )
-                if (
-                    proposal[0] > best[0]
-                    or (
-                        proposal[0] == best[0]
-                        and proposal[1] < best[1] - 1e-9
-                    )
-                    or (
-                        proposal[0] == best[0]
-                        and abs(proposal[1] - best[1]) <= 1e-9
-                        and proposal[2] < best[2]
-                    )
-                ):
-                    best = proposal
-            memo[key] = best
-            return best
-
-        _count, _cost, pairs = solve(0, 0)
-        return {
-            sources[source_pos]: candidates[candidate_pos]
-            for source_pos, candidate_pos in pairs
-        }
 
     changed = list(display_lines)
     gap_ms = max(int(style.line_lane_gap_ms), 0)
@@ -494,16 +383,28 @@ def fill_section_time_from_measurements(
                 continue
             targets = {index: page_collision_end for index in indices}
         else:
+            # 相邻页、同视觉行、组内保序；下一页没有同行的句子则不挂靠。
             candidates = [
                 index for index in page_indices[following] if index in bands
             ]
-            if not candidates:
-                continue
-            matches = match_page_bands(indices, candidates)
-            targets = {
-                index: int(bands[matched].display_start_ms) - gap_ms
-                for index, matched in matches.items()
-            }
+            used: set[int] = set()
+            targets = {}
+            for index in indices:
+                if index not in bands:
+                    continue
+                same_row = [
+                    candidate
+                    for candidate in candidates
+                    if candidate not in used
+                    and bands_share_layout_axis(
+                        bands[index], bands[candidate]
+                    )
+                ]
+                if not same_row:
+                    continue
+                matched = same_row[0]
+                used.add(matched)
+                targets[index] = int(bands[matched].display_start_ms) - gap_ms
 
         for index, collision_end in targets.items():
             item = changed[index]
