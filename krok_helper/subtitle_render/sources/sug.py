@@ -32,6 +32,7 @@ from krok_helper.subtitle_render.domain.timing import (
 from krok_helper.subtitle_render.sources.subtitles import (
     _blank_after_variation_strip,
     _emoji_guide_symbol,
+    _line_text_indices,
     _parse_emoji_specs,
     _shift_ruby_char_targets,
 )
@@ -408,11 +409,19 @@ def timing_track_from_sug_project(
 def _apply_sug_emoji_guides(track: TimingTrack, base_dir: Path | None) -> None:
     """按歌手切换点原位插入 ``@Emoji`` 头像（仅当 ``.sug`` 自带 @Emoji 配置）。
 
-    ``.sug`` 没有 ``【歌手名】`` 文本标签——歌手是逐字符数据，SUG 导出 LRC
+    ``.sug`` 没有 ``【歌手名】`` 文本标签——歌手是逐字数据，SUG 导出 LRC
     时才写成标签。这里复刻导出器的默认插入规则（演唱者变化处插标签、纯空白
     段跳过、标签跨行延续），再按 LRC 同一语义原位换成头像：头像插在该歌手
     首个字符之前、起点与该字符相同。无名（默认占位）歌手没有标签，也不插；
     ``.sug`` 未保存过 @Emoji 配置时（custom 为空）行为与原先完全一致。
+
+    与 LRC 路径对齐的两条补充口径：
+
+    - 普通触发字符（``@Emoji=♪,...`` 替换词）在正文字符上原位替换图片，
+      不插新字符、打轴时间不变（LRC 侧 :func:`_line_text_indices` 同款）；
+    - 触发词同时接受 ``【歌手名】`` 与裸名 ``歌手名`` 两种形式（SUG 分轴
+      导出的 @Emoji 过滤本就按两种形式认定归属，见
+      ``export_interface._build_axis_tag_data``）。
     """
     if base_dir is None:
         return
@@ -424,6 +433,15 @@ def _apply_sug_emoji_guides(track: TimingTrack, base_dir: Path | None) -> None:
     for row, line in enumerate(track.lines):
         if line.is_blank or not line.chars:
             continue
+        # 普通触发字符：正文里与触发串整字相等的字符原位换成头像（不插字符、
+        # 不改下标）；后续标签插入的键位平移会把它们一并挪到正确位置。
+        for trigger, spec in specs_by_trigger.items():
+            if not trigger:
+                continue
+            for index in _line_text_indices(line, trigger):
+                line.inline_guide_symbols[index] = _emoji_guide_symbol(
+                    spec, anchored=False
+                )
         # 先按原始下标划分同一歌手的连续段，再按累计偏移插入，避免边插边走错位。
         runs: list[tuple[int, int, str | None]] = []
         index = 0
@@ -441,7 +459,9 @@ def _apply_sug_emoji_guides(track: TimingTrack, base_dir: Path | None) -> None:
                 not char.text.isspace()
                 for char in line.chars[start + offset : end + offset]
             ):
-                spec = specs_by_trigger.get(f"【{label}】")
+                spec = specs_by_trigger.get(f"【{label}】") or specs_by_trigger.get(
+                    label
+                )
                 if spec is not None:
                     insert_index = start + offset
                     line.inline_guide_symbols = {

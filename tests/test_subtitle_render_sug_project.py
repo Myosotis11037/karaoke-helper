@@ -210,6 +210,80 @@ def test_sug_emoji_guides_skip_whitespace_runs(tmp_path: Path) -> None:
     )
 
 
+def test_sug_emoji_guides_replace_visible_trigger_chars(tmp_path: Path) -> None:
+    """.sug 直读把普通触发字符（替换词）原位替换为 @Emoji 图片，与 LRC 同口径。
+
+    回归：SUG 路径曾只实现 ``【歌手名】`` 标签插入，``@Emoji=♪`` 这类替换词
+    在 .sug 直读时是死配置，同一工程导出 .lrc 加载却能替换。
+    """
+    note = Character(
+        char="♪",
+        check_count=1,
+        timestamps=[1000],
+        sentence_end_ts=1200,
+        is_sentence_end=True,
+        is_line_end=True,
+        singer_id="main",
+    )
+    ai = Character(
+        char="愛",
+        ruby=Ruby(parts=[RubyPart("あ")]),
+        check_count=1,
+        timestamps=[1300],
+        sentence_end_ts=1800,
+        is_sentence_end=True,
+        is_line_end=True,
+        singer_id="main",
+    )
+    main = Singer(id="main", name="主唱", color="#ff0000", is_default=True, backend_number=1)
+    project = Project(
+        metadata=ProjectMetadata(),
+        singers=[main],
+        sentences=[
+            Sentence(singer_id="main", characters=[note, ai]),
+        ],
+        audio_duration_ms=2000,
+    )
+    track = timing_track_from_sug_project(
+        project,
+        nicokara_tags={
+            "custom": [
+                "@Emoji=【主唱】,lead.png",
+                "@Emoji=♪,note.png",
+            ]
+        },
+        base_dir=tmp_path,
+    )
+
+    # 标签头像插在行首并把 ♪ 的原位替换顶到下标 1；字符数只多出标签字符本身
+    line = track.lines[0]
+    assert [c.text for c in line.chars] == ["【主唱】", "♪", "愛"]
+    assert line.inline_guide_symbols[0].bitmap_before_path == str(tmp_path / "lead.png")
+    assert line.inline_guide_symbols[1].bitmap_before_path == str(tmp_path / "note.png")
+    # 原位替换不改打轴时间
+    assert [(c.text, c.start_ms) for c in line.chars] == [
+        ("【主唱】", 1000),
+        ("♪", 1000),
+        ("愛", 1300),
+    ]
+
+
+def test_sug_emoji_guides_match_bare_singer_name_trigger(tmp_path: Path) -> None:
+    """裸名触发词（``@Emoji=主唱``）与 ``【主唱】`` 等价（对齐 SUG 分轴过滤口径）。"""
+    track = timing_track_from_sug_project(
+        _sample_sug_project(),
+        nicokara_tags={"custom": ["@Emoji=主唱,bare.png", "@Emoji=和声,bare2.png"]},
+        base_dir=tmp_path,
+    )
+
+    first = track.lines[0]
+    assert [c.text for c in first.chars] == ["【主唱】", "愛"]
+    assert first.inline_guide_symbols[0].bitmap_before_path == str(tmp_path / "bare.png")
+    second = track.lines[1]
+    assert [c.text for c in second.chars] == ["【和声】", "空"]
+    assert second.inline_guide_symbols[0].bitmap_before_path == str(tmp_path / "bare2.png")
+
+
 def test_sug_adapter_merges_nicokara_metadata_and_custom_tags() -> None:
     track = timing_track_from_sug_project(
         _sample_sug_project(),
