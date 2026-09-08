@@ -12,9 +12,11 @@ from krok_helper.subtitle_render.engine.render_progress import yield_to_gui
 _SIG_FIELD_NAMES_BY_TYPE: dict[type, tuple[str, ...]] = {}
 _SIG_EXCLUDED_NAMES_BY_TYPE: dict[Hashable, tuple[str, ...]] = {}
 
-_LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS = frozenset({
+_LYRIC_LAYOUT_TITLE_ONLY_EXCLUDED_STYLE_FIELDS = frozenset({
     "title_overlays",
     "hidden_builtin_layout_ids",
+})
+_LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS = _LYRIC_LAYOUT_TITLE_ONLY_EXCLUDED_STYLE_FIELDS | frozenset({
     "base_color",
     "fill_color",
     "fill_gradient_enabled",
@@ -91,7 +93,7 @@ def value_signature(value) -> Hashable:
     return repr(value)
 
 
-def lyric_layout_style_signature(style) -> Hashable:
+def lyric_layout_style_signature(style, *, include_paint_fields: bool = False) -> Hashable:
     """Style signature restricted to fields that can affect lyric layout.
 
     与 :func:`value_signature` 的区别：剔除 ``_LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS``
@@ -99,11 +101,22 @@ def lyric_layout_style_signature(style) -> Hashable:
     缓存的 key——标题属性编辑不再整份作废这些缓存。
     局部复用永远以本签名为准（签名不匹配即回退重建），调用方传入的
     「只改了标题/颜色」只是性能提示，不是正确性依据。
+
+    ``include_paint_fields=True`` 时保留颜色/填充类字段（仅剔除标题字段）：
+    供**缓存值携带样式引用**的消费者使用（如 CPU 行布局缓存的
+    ``_LineLayout.glyphs`` 各自带解析后的有效样式）——它们的 key 必须能
+    区分任何改变绘制结果的输入，否则换色命中旧布局会用旧样式绘制。
+    布局计划 / 显示行解析 / 页偏移缓存的值是纯几何与时间结构，用默认
+    的颜色剔除版即可在颜色编辑时安全复用。
     """
-    return _lyric_layout_value_signature(style, root=True)
+    return _lyric_layout_value_signature(
+        style, root=True, include_paint_fields=include_paint_fields
+    )
 
 
-def _lyric_layout_value_signature(value, *, root: bool = False) -> Hashable:
+def _lyric_layout_value_signature(
+    value, *, root: bool = False, include_paint_fields: bool = False
+) -> Hashable:
     """Recursively sign layout inputs while omitting nested paint-only fields."""
 
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -111,21 +124,36 @@ def _lyric_layout_value_signature(value, *, root: bool = False) -> Hashable:
     if isinstance(value, GuideSymbol):
         return value
     if isinstance(value, (list, tuple)):
-        return tuple(_lyric_layout_value_signature(item) for item in value)
+        return tuple(
+            _lyric_layout_value_signature(
+                item, include_paint_fields=include_paint_fields
+            )
+            for item in value
+        )
     if isinstance(value, dict):
         return tuple(
-            (key, _lyric_layout_value_signature(item))
+            (
+                key,
+                _lyric_layout_value_signature(
+                    item, include_paint_fields=include_paint_fields
+                ),
+            )
             for key, item in sorted(value.items(), key=lambda item: str(item[0]))
         )
     if is_dataclass(value) and not isinstance(value, type):
         value_type = type(value)
-        excluded = (
-            _LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS
-            if root
-            else _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS
-            if value_type.__name__ == "SubtitleStyleScheme"
-            else frozenset()
-        )
+        if include_paint_fields:
+            excluded = (
+                _LYRIC_LAYOUT_TITLE_ONLY_EXCLUDED_STYLE_FIELDS if root else frozenset()
+            )
+        else:
+            excluded = (
+                _LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS
+                if root
+                else _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS
+                if value_type.__name__ == "SubtitleStyleScheme"
+                else frozenset()
+            )
         cache_key = (value_type, excluded)
         names = _SIG_EXCLUDED_NAMES_BY_TYPE.get(cache_key)
         if names is None:
@@ -136,7 +164,10 @@ def _lyric_layout_value_signature(value, *, root: bool = False) -> Hashable:
             )
             _SIG_EXCLUDED_NAMES_BY_TYPE[cache_key] = names
         return (value_type.__name__,) + tuple(
-            _lyric_layout_value_signature(getattr(value, name)) for name in names
+            _lyric_layout_value_signature(
+                getattr(value, name), include_paint_fields=include_paint_fields
+            )
+            for name in names
         )
     return repr(value)
 

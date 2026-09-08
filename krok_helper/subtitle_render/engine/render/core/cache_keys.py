@@ -98,10 +98,12 @@ def layout_cache_signature(
     if not layout_cache_enabled() or display_style.vertical:
         return None
     # 样式侧只签歌词布局相关字段：标题属性（title_overlays 等）不进 key，
-    # 否则改标题会把全部歌词行布局缓存连带作废、整轨重排。
+    # 否则改标题会把全部歌词行布局缓存连带作废、整轨重排。颜色/填充字段
+    # 必须保留——_LineLayout 的 glyphs 携带解析后的有效样式引用，缓存值
+    # 随颜色变化，key 不区分颜色会让换色命中旧布局、按旧样式绘制。
     return (
         track_layout_signature(track),
-        lyric_layout_style_signature(display_style),
+        lyric_layout_style_signature(display_style, include_paint_fields=True),
     )
 
 

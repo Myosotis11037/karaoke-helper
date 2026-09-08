@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from krok_helper.subtitle_render.engine.layout.display.schedule import (
@@ -77,6 +77,58 @@ class LayoutPlanResolvers:
     page_offset_windows: PageOffsetWindowsResolver
 
 
+def _rebind_plan_line_styles(
+    plan: TrackLayoutPlan,
+    track: TimingTrack,
+    style: Style,
+) -> TrackLayoutPlan:
+    """把缓存 plan 里逐行携带的样式引用重绑到当前 ``style``。
+
+    plan 的 key 是颜色剔除版布局签名（颜色编辑时几何部分照常复用），
+    但 :class:`LineLayoutPlan` 的 ``layout_style`` / ``animation_style``
+    是解析后的完整样式引用，携带颜色与角色叠加——不重绑会让换色命中
+    旧 plan、按旧样式绘制。逐行重跑 :func:`style_for_line` 系列只是
+    dataclass 级替换，远便宜于整轨重排；样式未变时返回原 plan，保持
+    paint-scope 复用测试所依赖的对象同一性。
+    """
+
+    if not plan.lines:
+        return plan
+    with layout_pass():
+        section_edge_context(track, style)
+        new_lines = []
+        changed = False
+        for line_plan in plan.lines:
+            index = line_plan.track_index
+            if index < 0 or index >= len(track.lines):
+                new_lines.append(line_plan)
+                continue
+            line = track.lines[index]
+            layout_style = style_for_line(style, line)
+            animation_style = style_for_line_display_window(
+                style,
+                line,
+                line_plan.display_start_ms,
+                line_plan.display_end_ms,
+            )
+            # style_for_line 每次调用都 replace 出新对象，按值比较判断
+            # 是否真的变化：未变时保持 plan 对象同一性（缓存复用方依赖）。
+            if (
+                layout_style != line_plan.layout_style
+                or animation_style != line_plan.animation_style
+            ):
+                changed = True
+                line_plan = replace(
+                    line_plan,
+                    layout_style=layout_style,
+                    animation_style=animation_style,
+                )
+            new_lines.append(line_plan)
+    if not changed:
+        return plan
+    return replace(plan, lines=tuple(new_lines))
+
+
 def resolve_track_layout_plan(
     track: TimingTrack,
     style: Style,
@@ -103,7 +155,7 @@ def resolve_track_layout_plan(
     if use_cache and layout_cache_enabled():
         cached = cached_track_layout_plan(cache_key)
         if cached is not None:
-            return cached
+            return _rebind_plan_line_styles(cached, track, style)
 
     # 段首/段尾页标记必须先于逐行样式解析注册；包一层 layout_pass 保证
     # 无外层 pass 的调用方（IR 构建等）也能拿到同样的替换结果。
