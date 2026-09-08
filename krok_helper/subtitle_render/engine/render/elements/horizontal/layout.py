@@ -435,6 +435,7 @@ def clamp_role_baseline_y(
 def glyph_run_signature(glyph: GlyphLayout) -> tuple:
     colors = effective_karaoke_colors(glyph.style)
     return (
+        getattr(glyph, "role_label", None),
         karaoke_state_signature(colors.before),
         karaoke_state_signature(colors.after),
         glyph.style.shadow_offset_x,
@@ -455,10 +456,11 @@ def glyph_runs(layout: TextLayout) -> list[list[GlyphLayout]]:
     signature_cache: dict[int, tuple] = {}
     for glyph in layout.glyphs:
         style_id = id(glyph.style)
-        signature = signature_cache.get(style_id)
-        if signature is None:
-            signature = glyph_run_signature(glyph)
-            signature_cache[style_id] = signature
+        style_signature = signature_cache.get(style_id)
+        if style_signature is None:
+            style_signature = glyph_run_signature(glyph)[1:]
+            signature_cache[style_id] = style_signature
+        signature = (glyph.role_label, *style_signature)
         if not current or signature == current_signature:
             current.append(glyph)
             current_signature = signature
@@ -501,10 +503,11 @@ def glyph_runs_for_indices(
         if glyph is None:
             continue
         style_id = id(glyph.style)
-        signature = signature_cache.get(style_id)
-        if signature is None:
-            signature = glyph_run_signature(glyph)
-            signature_cache[style_id] = signature
+        style_signature = signature_cache.get(style_id)
+        if style_signature is None:
+            style_signature = glyph_run_signature(glyph)[1:]
+            signature_cache[style_id] = style_signature
+        signature = (glyph.role_label, *style_signature)
         if current and signature != current_signature:
             runs.append(current)
             current = []
@@ -604,8 +607,43 @@ def glyph_run_rect(glyphs: list[GlyphLayout], baseline_y: int) -> QRectF:
     )
 
 
+def glyph_ink_x_bounds(
+    glyphs: list[GlyphLayout], baseline_y: int
+) -> tuple[float, float] | None:
+    """Return the visible horizontal ink union for a glyph collection."""
+
+    ink_left: float | None = None
+    ink_right: float | None = None
+    for glyph in glyphs:
+        if glyph_is_bitmap_guide(glyph):
+            symbol = glyph.vector_glyph
+            content_width, _content_height = bitmap_guide_content_size(
+                symbol, glyph.style
+            )
+            left = float(glyph.left + int(symbol.bitmap_margin_left_px))
+            right = left + float(max(int(content_width), 1))
+        else:
+            bounds = glyph_path(glyph, baseline_y).boundingRect()
+            if bounds.isEmpty():
+                continue
+            left = float(bounds.left())
+            right = float(bounds.right())
+        ink_left = left if ink_left is None else min(ink_left, left)
+        ink_right = right if ink_right is None else max(ink_right, right)
+    if ink_left is None or ink_right is None or ink_right <= ink_left:
+        return None
+    return ink_left, ink_right
+
+
 def n3_main_fill_rect(layout: TextLayout, baseline_y: int) -> QRectF:
-    """Return N3's shared vertical brush area for one main-text line."""
+    """Return the shared brush area for one main-text line.
+
+    The vertical extent keeps the established N3 ``DrawLineInfo`` semantics,
+    while the horizontal extent follows the union of visible glyph ink.  The
+    latter deliberately excludes advances, whitespace, and letter spacing;
+    inline SVG guide symbols participate through :func:`glyph_path`, and
+    bitmap guides use their visible content box.
+    """
     glyphs = layout.glyphs
     if not glyphs:
         return QRectF(layout.line_rect)
@@ -628,12 +666,46 @@ def n3_main_fill_rect(layout: TextLayout, baseline_y: int) -> QRectF:
     inset = float((anchor_edge + anchor_edge2) // 2)
     top = draw_top + inset
     bottom = draw_bottom - inset
+
+    ink_bounds = glyph_ink_x_bounds(glyphs, baseline_y)
+    if ink_bounds is None:
+        ink_left = float(layout.line_rect.left())
+        ink_right = float(layout.line_rect.right())
+    else:
+        ink_left, ink_right = ink_bounds
     return QRectF(
-        float(layout.line_rect.left()),
+        ink_left,
         top,
-        float(max(layout.line_rect.width(), 1.0)),
+        max(ink_right - ink_left, 1.0),
         float(max(bottom - top, 1.0)),
     )
+
+
+def role_main_fill_rects(
+    layout: TextLayout, baseline_y: int
+) -> dict[str | None, QRectF]:
+    """Return one shared horizontal gradient box per role in the line.
+
+    Non-contiguous glyphs carrying the same role label deliberately share a
+    single ink union.  This lets every role's independent paint traverse its
+    complete 0..100% gradient instead of sampling only its position within the
+    whole line.  The N3 vertical brush extent remains common to all roles.
+    """
+
+    line_rect = n3_main_fill_rect(layout, baseline_y)
+    grouped: dict[str | None, list[GlyphLayout]] = {}
+    for glyph in layout.glyphs:
+        grouped.setdefault(glyph.role_label, []).append(glyph)
+    result: dict[str | None, QRectF] = {}
+    for role_label, glyphs in grouped.items():
+        bounds = glyph_ink_x_bounds(glyphs, baseline_y)
+        rect = QRectF(line_rect)
+        if bounds is not None:
+            left, right = bounds
+            rect.setLeft(left)
+            rect.setRight(right)
+        result[role_label] = rect
+    return result
 
 
 def layout_line_uncached(

@@ -64,6 +64,7 @@ from krok_helper.subtitle_render.engine.render.elements.horizontal.layout import
     glyph_run_path,
     glyph_run_rect,
     n3_main_fill_rect,
+    role_main_fill_rects,
     text_glyph_runs,
 )
 from krok_helper.subtitle_render.engine.render.elements.horizontal.transitions import (
@@ -469,6 +470,10 @@ def paint_line_direct(
     runs = text_glyph_runs(layout.text_layout, layout.has_inline_styles)
     baseline_y = layout.baseline_y
     fill_rect = n3_main_fill_rect(layout.text_layout, baseline_y)
+    role_fill_rects = role_main_fill_rects(layout.text_layout, baseline_y)
+    fill_rect_for = lambda glyphs: role_fill_rects.get(
+        glyphs[0].role_label, fill_rect
+    )
     combined_glow_runs = [
         run for run in runs if glyph_run_can_combine_split_glow(run)
     ]
@@ -482,7 +487,7 @@ def paint_line_direct(
             layout.fill_segments,
             t_ms,
             layout.rtl,
-            fill_rect=fill_rect,
+            fill_rect=fill_rect_for(run),
         )
     for run in runs:
         if id(run) in combined_run_ids or not glyph_run_needs_before_glow_split(
@@ -507,7 +512,7 @@ def paint_line_direct(
             before_band,
             rtl=layout.rtl,
             complete=complete,
-            fill_rect=fill_rect,
+            fill_rect=fill_rect_for(run),
         )
 
     for run in runs:
@@ -545,7 +550,7 @@ def paint_line_direct(
                     glyph_band,
                     rtl=layout.rtl,
                     complete=glyph_released,
-                    fill_rect=fill_rect,
+                    fill_rect=fill_rect_for(glyph_run),
                 )
 
     for run in runs:
@@ -556,7 +561,7 @@ def paint_line_direct(
                 run,
                 baseline_y,
                 after=False,
-                fill_rect=fill_rect,
+                fill_rect=fill_rect_for(run),
             )
             continue
         before_band = glyph_ports.fill_clip_band_for_glyphs(
@@ -578,7 +583,7 @@ def paint_line_direct(
                 run,
                 baseline_y,
                 after=False,
-                fill_rect=fill_rect,
+                fill_rect=fill_rect_for(run),
                 draw_glow=not split_glow,
             )
             continue
@@ -590,7 +595,7 @@ def paint_line_direct(
                 run,
                 baseline_y,
                 after=False,
-                fill_rect=fill_rect,
+                fill_rect=fill_rect_for(run),
                 draw_glow=not split_glow,
             )
         finally:
@@ -602,6 +607,7 @@ def paint_line_direct(
         t_ms,
         after=False,
         ports=bitmap_ports,
+        gradient_rects=role_fill_rects,
         anim_ms=anim_ms,
     )
 
@@ -636,7 +642,7 @@ def paint_line_direct(
                     glyph_run,
                     baseline_y,
                     after=True,
-                    fill_rect=fill_rect,
+                    fill_rect=fill_rect_for(glyph_run),
                 )
                 continue
             painter.save()
@@ -649,7 +655,7 @@ def paint_line_direct(
                     glyph_run,
                     baseline_y,
                     after=True,
-                    fill_rect=fill_rect,
+                    fill_rect=fill_rect_for(glyph_run),
                 )
             finally:
                 painter.restore()
@@ -660,6 +666,7 @@ def paint_line_direct(
         t_ms,
         after=True,
         ports=bitmap_ports,
+        gradient_rects=role_fill_rects,
         anim_ms=anim_ms,
     )
 
@@ -896,6 +903,10 @@ def line_layer_stack(
     runs = text_glyph_runs(layout.text_layout, layout.has_inline_styles)
     y = layout.baseline_y
     fill_rect = n3_main_fill_rect(layout.text_layout, y)
+    role_fill_rects = role_main_fill_rects(layout.text_layout, y)
+    fill_rect_for = lambda glyphs: role_fill_rects.get(
+        glyphs[0].role_label, fill_rect
+    )
     combined_glow_runs = [
         run for run in runs if glyph_run_can_combine_split_glow(run)
     ]
@@ -907,7 +918,7 @@ def line_layer_stack(
             layout.fill_segments,
             t_ms,
             layout.rtl,
-            fill_rect=fill_rect,
+            fill_rect=fill_rect_for(run),
         )
         for run in combined_glow_runs
     ]
@@ -918,7 +929,7 @@ def line_layer_stack(
             layout.fill_segments,
             t_ms,
             layout.rtl,
-            fill_rect=fill_rect,
+            fill_rect=fill_rect_for(run),
         )
         for run in runs
         if id(run) not in combined_run_ids
@@ -932,7 +943,7 @@ def line_layer_stack(
             t_ms,
             layout.rtl,
             after=False,
-            fill_rect=fill_rect,
+            fill_rect=fill_rect_for(run),
         )
         for run in runs
     ]
@@ -946,6 +957,7 @@ def line_layer_stack(
             after=False,
             z_index=len(runs) * 2,
             guide_anim_anchor_ms=guide_anim_anchor_ms,
+            gradient_rect=role_fill_rects.get(glyph.role_label, fill_rect),
         )
         for glyph in bitmap_guide_glyphs(layout.text_layout)
     ]
@@ -975,7 +987,7 @@ def line_layer_stack(
                         layout.rtl,
                         clip_band=after_band,
                         z_index=z_index,
-                        fill_rect=fill_rect,
+                        fill_rect=fill_rect_for(glyph_run),
                     )
                 )
                 z_index += 1
@@ -989,7 +1001,7 @@ def line_layer_stack(
                     after=True,
                     clip_band=after_band,
                     z_index=z_index,
-                    fill_rect=fill_rect,
+                    fill_rect=fill_rect_for(glyph_run),
                 )
             )
             z_index += 1
@@ -1004,6 +1016,7 @@ def line_layer_stack(
                 after=True,
                 z_index=z_index,
                 guide_anim_anchor_ms=guide_anim_anchor_ms,
+                gradient_rect=role_fill_rects.get(glyph.role_label, fill_rect),
             )
         )
         z_index += 1
@@ -1029,6 +1042,7 @@ def char_transition_layer_stack(
     y = layout.baseline_y
     rtl = layout.rtl
     fill_rect = n3_main_fill_rect(layout.text_layout, y)
+    role_fill_rects = role_main_fill_rects(layout.text_layout, y)
     is_spin = transition.effect == "spin_flip"
     is_drip = transition.effect == "char_drip"
     before_glow_layers: list = []
@@ -1062,6 +1076,7 @@ def char_transition_layer_stack(
         else:
             transform = None
         run = [glyph]
+        glyph_fill_rect = role_fill_rects.get(glyph.role_label, fill_rect)
         if glyph_run_needs_before_glow_split(run):
             before_glow_layers.append(
                 ports.glyph_run_before_glow_layer(
@@ -1073,7 +1088,7 @@ def char_transition_layer_stack(
                     z_index=z,
                     fade_opacity=opacity,
                     transform=transform,
-                    fill_rect=fill_rect,
+                    fill_rect=glyph_fill_rect,
                 )
             )
         body_layers.append(
@@ -1087,7 +1102,7 @@ def char_transition_layer_stack(
                 z_index=z,
                 fade_opacity=opacity,
                 transform=transform,
-                fill_rect=fill_rect,
+                fill_rect=glyph_fill_rect,
             )
         )
         z += 1
@@ -1111,7 +1126,7 @@ def char_transition_layer_stack(
                     z_index=z,
                     fade_opacity=opacity,
                     transform=transform,
-                    fill_rect=fill_rect,
+                    fill_rect=glyph_fill_rect,
                 )
             )
             z += 1
@@ -1127,7 +1142,7 @@ def char_transition_layer_stack(
                 z_index=z,
                 fade_opacity=opacity,
                 transform=transform,
-                fill_rect=fill_rect,
+                fill_rect=glyph_fill_rect,
             )
         )
         z += 1
@@ -1489,6 +1504,7 @@ def paint_bitmap_guide_glyphs(
     ports: BitmapGuidePorts,
     *,
     after: bool,
+    gradient_rects: dict[str | None, QRectF] | None = None,
     anim_ms: int | None = None,
 ) -> None:
     for glyph in bitmap_guide_glyphs(layout.text_layout):
@@ -1502,7 +1518,11 @@ def paint_bitmap_guide_glyphs(
             after=after,
             band=band,
             rtl=layout.rtl,
-            gradient_rect=layout.line_rect,
+            gradient_rect=(
+                gradient_rects.get(glyph.role_label, layout.line_rect)
+                if gradient_rects is not None
+                else layout.line_rect
+            ),
             anim_ms=anim_ms,
         )
 
@@ -1594,6 +1614,7 @@ class BitmapGuideLayer:
     z_index: int = 0
     scope: str = SCOPE_LINE
     anim_anchor_ms: int = 0
+    gradient_rect: QRectF | None = None
 
     def active_window(self, ctx: LayerContext) -> list[tuple[int, int]]:
         return []
@@ -1637,6 +1658,7 @@ class BitmapGuideLayer:
             after=self.after,
             band=band,
             rtl=self.rtl,
+            gradient_rect=self.gradient_rect,
             anim_ms=self.t_ms - self.anim_anchor_ms,
         )
 

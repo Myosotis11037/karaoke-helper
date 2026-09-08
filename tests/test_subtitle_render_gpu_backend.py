@@ -939,6 +939,65 @@ def test_native_cpu_renders_distinct_native_emoji_outlines() -> None:
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_mixed_roles_restart_horizontal_gradient_on_each_role(monkeypatch) -> None:
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    gradient = PaintFill(
+        mode="gradient_horizontal",
+        color="#FF0000",
+        gradient_stops=[(0, "#FF0000"), (100, "#0000FF")],
+    )
+    transparent = PaintFill(mode="solid", color="#00000000")
+    state = KaraokeColorState(
+        text=gradient,
+        stroke=transparent,
+        stroke2=transparent,
+        shadow=transparent,
+    )
+    role = SubtitleStyleScheme(
+        karaoke_colors=KaraokeColors(before=state, after=state),
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+    )
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[
+                    TimingChar("█", 0, role_label="A"),
+                    TimingChar("█", 500, role_label="B"),
+                ],
+                end_ms=1_000,
+            )
+        ]
+    )
+    style = _g1_style(
+        font_family="Arial",
+        font_family_latin="Arial",
+        letter_spacing_px=50,
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        custom_style_schemes={"A": role, "B": role},
+    )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        _, frames = _render_g1_frames(
+            renderer, style, (500,), force_warp=True, track=track
+        )
+
+    pixels = np.frombuffer(frames[0], dtype=np.uint8).reshape(360, 640, 4)
+    occupied = np.flatnonzero(np.any(pixels[:, :, 3] > 128, axis=0))
+    gaps = np.flatnonzero(np.diff(occupied) > 1)
+    assert gaps.size == 1
+    groups = np.split(occupied, gaps + 1)
+    means = []
+    for columns in groups:
+        region = pixels[:, columns, :]
+        means.append(region[region[:, :, 3] > 128, :3].mean(axis=0))
+    assert np.max(np.abs(means[0] - means[1])) < 12
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_horizontal_ruby_gradient_uses_main_line_bounds_by_default(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
 

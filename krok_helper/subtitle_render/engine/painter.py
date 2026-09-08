@@ -3597,6 +3597,7 @@ def _BitmapGuideLayer(
     z_index: int = 0,
     scope: str = SCOPE_LINE,
     guide_anim_anchor_ms: int = 0,
+    gradient_rect: QRectF | None = None,
 ) -> _HorizontalBitmapGuideLayer:
     return _HorizontalBitmapGuideLayer(
         glyph=glyph,
@@ -3609,6 +3610,7 @@ def _BitmapGuideLayer(
         z_index=z_index,
         scope=scope,
         anim_anchor_ms=guide_anim_anchor_ms,
+        gradient_rect=gradient_rect,
     )
 
 

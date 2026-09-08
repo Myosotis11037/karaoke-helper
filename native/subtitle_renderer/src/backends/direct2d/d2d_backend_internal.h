@@ -137,6 +137,9 @@ struct Direct2DGpuBackend::Impl {
         bool centerOverride = false;
         D2D1_RECT_F bounds{};
         D2D1_RECT_F fillBounds{};
+        // Visible main-glyph ink union per resolved role style.  Key -1 is
+        // the line/default role; SVG and bitmap guide geometry participates.
+        std::map<int, D2D1_RECT_F> horizontalFillBoundsByStyle;
         std::vector<CachedChar> chars;
         std::vector<Microsoft::WRL::ComPtr<ID2D1Geometry>> geometries;
         std::vector<CachedRuby> rubies;

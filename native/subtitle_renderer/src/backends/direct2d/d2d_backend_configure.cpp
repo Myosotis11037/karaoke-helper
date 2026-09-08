@@ -2109,32 +2109,85 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 }
             }
         }
-        if (!cached.rubies.empty()) {
-            D2D1_RECT_F sharedHorizontalBounds = cached.fillBounds;
-            for (const Impl::CachedRuby &ruby : cached.rubies) {
-                sharedHorizontalBounds.top = std::min(
-                    sharedHorizontalBounds.top, ruby.fillBounds.top
+        cached.horizontalFillBoundsByStyle.clear();
+        for (const Impl::CachedChar &ch : cached.chars) {
+            D2D1_RECT_F inkBounds{};
+            bool hasInk = false;
+            if (ch.geometry) {
+                checkHr(
+                    ch.geometry->GetBounds(nullptr, &inkBounds),
+                    "ID2D1Geometry::GetBounds(role horizontal fill)",
+                    device_
                 );
-                sharedHorizontalBounds.bottom = std::max(
-                    sharedHorizontalBounds.bottom, ruby.fillBounds.bottom
+                hasInk = inkBounds.right > inkBounds.left;
+            } else if (ch.bitmapGuide.has_value()
+                       && ch.bitmapRect.right > ch.bitmapRect.left) {
+                inkBounds = ch.bitmapRect;
+                hasInk = true;
+            }
+            if (!hasInk) {
+                continue;
+            }
+            const auto found = cached.horizontalFillBoundsByStyle.find(
+                ch.styleIndex
+            );
+            if (found == cached.horizontalFillBoundsByStyle.end()) {
+                cached.horizontalFillBoundsByStyle.emplace(
+                    ch.styleIndex,
+                    D2D1::RectF(
+                        inkBounds.left,
+                        cached.fillBounds.top,
+                        std::max(inkBounds.right, inkBounds.left + 1.0f),
+                        cached.fillBounds.bottom
+                    )
+                );
+            } else {
+                found->second.left = std::min(
+                    found->second.left, inkBounds.left
+                );
+                found->second.right = std::max(
+                    found->second.right, inkBounds.right
                 );
             }
-            sharedHorizontalBounds.right = std::max(
-                sharedHorizontalBounds.right,
-                sharedHorizontalBounds.left + 1.0f
-            );
-            sharedHorizontalBounds.bottom = std::max(
-                sharedHorizontalBounds.bottom,
-                sharedHorizontalBounds.top + 1.0f
+        }
+        if (!cached.rubies.empty()) {
+            D2D1_RECT_F sharedVerticalBounds = cached.fillBounds;
+            for (const Impl::CachedRuby &ruby : cached.rubies) {
+                sharedVerticalBounds.top = std::min(
+                    sharedVerticalBounds.top, ruby.fillBounds.top
+                );
+                sharedVerticalBounds.bottom = std::max(
+                    sharedVerticalBounds.bottom, ruby.fillBounds.bottom
+                );
+            }
+            sharedVerticalBounds.bottom = std::max(
+                sharedVerticalBounds.bottom,
+                sharedVerticalBounds.top + 1.0f
             );
             for (Impl::CachedRuby &ruby : cached.rubies) {
                 const TextStyle &rubyStyle = ruby.styleIndex >= 0
                     && ruby.styleIndex < static_cast<int>(scene.charStyles.size())
                     ? scene.charStyles[static_cast<std::size_t>(ruby.styleIndex)]
                     : style;
+                D2D1_RECT_F localHorizontalBounds = ruby.fillBounds;
+                if (ruby.bounds.right > ruby.bounds.left) {
+                    localHorizontalBounds.left = ruby.bounds.left;
+                    localHorizontalBounds.right = ruby.bounds.right;
+                }
+                D2D1_RECT_F sharedHorizontalBounds = sharedVerticalBounds;
+                const auto roleBounds = cached.horizontalFillBoundsByStyle.find(
+                    ruby.styleIndex
+                );
+                if (roleBounds != cached.horizontalFillBoundsByStyle.end()) {
+                    sharedHorizontalBounds.left = roleBounds->second.left;
+                    sharedHorizontalBounds.right = roleBounds->second.right;
+                } else if (cached.bounds.right > cached.bounds.left) {
+                    sharedHorizontalBounds.left = cached.bounds.left;
+                    sharedHorizontalBounds.right = cached.bounds.right;
+                }
                 ruby.horizontalFillBounds = rubyStyle.rubyHorizontalGradientWithMain
                     ? sharedHorizontalBounds
-                    : ruby.fillBounds;
+                    : localHorizontalBounds;
             }
         }
         if (!lineHasBounds) {

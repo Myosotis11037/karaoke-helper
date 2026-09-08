@@ -1834,9 +1834,22 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             }
             return found->bitmap.Get();
         };
+        const auto roleMainFillBounds = [&](int styleIndex) {
+            const auto found = line->horizontalFillBoundsByStyle.find(styleIndex);
+            if (found != line->horizontalFillBoundsByStyle.end()) {
+                return found->second;
+            }
+            D2D1_RECT_F bounds = line->fillBounds;
+            if (line->bounds.right > line->bounds.left) {
+                bounds.left = line->bounds.left;
+                bounds.right = line->bounds.right;
+            }
+            return bounds;
+        };
         auto paintBrushAt = [&](const PaintStyle &paint, const D2D1_RECT_F &rect,
-                                const RgbaColor &fallback,
-                                float offsetX, float offsetY) {
+                                 const RgbaColor &fallback,
+                                 float offsetX, float offsetY) {
+            D2D1_RECT_F effectiveRect = rect;
             ID2D1Bitmap1 *image = imageForPaint(paint);
             const float canvasDx = dx + offsetX;
             const float canvasDy = dy + offsetY;
@@ -1845,10 +1858,10 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 || paint.mode == "split_vertical";
             const auto samePosition = [&](const Impl::CachedBrush &entry) {
                 if (gradientPositionDependent) {
-                    return entry.rect.left == rect.left
-                        && entry.rect.top == rect.top
-                        && entry.rect.right == rect.right
-                        && entry.rect.bottom == rect.bottom;
+                    return entry.rect.left == effectiveRect.left
+                        && entry.rect.top == effectiveRect.top
+                        && entry.rect.right == effectiveRect.right
+                        && entry.rect.bottom == effectiveRect.bottom;
                 }
                 if (paint.mode == "image") {
                     return entry.canvasDx == canvasDx
@@ -1878,7 +1891,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         ++impl_->diagnostics.brushCacheMisses;
                     }
                     brush = createPaintBrush(
-                        context, paint, rect, fallback, device_, image,
+                        context, paint, effectiveRect, fallback, device_, image,
                         canvasDx, canvasDy,
                         impl_->countersEnabled
                             ? &frameDiagnostics.brushCreated
@@ -1901,7 +1914,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         paint,
                         fallback,
                         image,
-                        rect,
+                        effectiveRect,
                         canvasDx,
                         canvasDy,
                         brush,
@@ -1910,7 +1923,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 }
             } else {
                 brush = createPaintBrush(
-                    context, paint, rect, fallback, device_, image,
+                    context, paint, effectiveRect, fallback, device_, image,
                     canvasDx, canvasDy,
                     impl_->countersEnabled
                         ? &frameDiagnostics.brushCreated
@@ -1919,7 +1932,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             }
             if (brush) {
                 updatePaintBrush(
-                    brush.Get(), paint, rect, canvasDx, canvasDy
+                    brush.Get(), paint, effectiveRect, canvasDx, canvasDy
                 );
                 brush->SetOpacity(globalOpacity);
             }
@@ -1929,29 +1942,34 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                               const RgbaColor &fallback) {
             return paintBrushAt(paint, rect, fallback, 0.0f, 0.0f);
         };
+        const auto mainPaintBounds = [&](const PaintStyle &paint, int styleIndex) {
+            return paint.mode == "gradient_horizontal"
+                ? roleMainFillBounds(styleIndex)
+                : line->fillBounds;
+        };
         Microsoft::WRL::ComPtr<ID2D1Brush> beforeFill = paintBrush(
-            style.beforeFillPaint, line->fillBounds, style.beforeFill
+            style.beforeFillPaint, mainPaintBounds(style.beforeFillPaint, -1), style.beforeFill
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> afterFill = paintBrush(
-            style.afterFillPaint, line->fillBounds, style.afterFill
+            style.afterFillPaint, mainPaintBounds(style.afterFillPaint, -1), style.afterFill
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> beforeStroke = paintBrush(
-            style.beforeStrokePaint, line->fillBounds, style.beforeStroke
+            style.beforeStrokePaint, mainPaintBounds(style.beforeStrokePaint, -1), style.beforeStroke
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> afterStroke = paintBrush(
-            style.afterStrokePaint, line->fillBounds, style.afterStroke
+            style.afterStrokePaint, mainPaintBounds(style.afterStrokePaint, -1), style.afterStroke
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> beforeStroke2 = paintBrush(
-            style.beforeStroke2Paint, line->fillBounds, style.beforeStroke2
+            style.beforeStroke2Paint, mainPaintBounds(style.beforeStroke2Paint, -1), style.beforeStroke2
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> afterStroke2 = paintBrush(
-            style.afterStroke2Paint, line->fillBounds, style.afterStroke2
+            style.afterStroke2Paint, mainPaintBounds(style.afterStroke2Paint, -1), style.afterStroke2
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> beforeDecor = paintBrush(
-            style.beforeDecorPaint, line->fillBounds, style.beforeDecor
+            style.beforeDecorPaint, mainPaintBounds(style.beforeDecorPaint, -1), style.beforeDecor
         );
         Microsoft::WRL::ComPtr<ID2D1Brush> afterDecor = paintBrush(
-            style.afterDecorPaint, line->fillBounds, style.afterDecor
+            style.afterDecorPaint, mainPaintBounds(style.afterDecorPaint, -1), style.afterDecor
         );
 
         const bool reverseVertical = style.vertical && line->wipeReverse;
@@ -2619,7 +2637,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             // 千层 / 贴图统一支持，剪影平移到偏移位置（src→dest 隐含缩放）。
             if (isShadow) {
                 Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
-                    paint, line->fillBounds, decor
+                    paint, mainPaintBounds(paint, ch.styleIndex), decor
                 );
                 if (!brush) {
                     return;
@@ -2659,7 +2677,7 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             // ColorMatrix 主色（贴图模式与 shadow 的画刷路径存在差异）。
             Microsoft::WRL::ComPtr<ID2D1Image> tintOutput;
             ID2D1Bitmap1 *gradientRaster = decorGradientBitmap(
-                paint, line->fillBounds, ch.bitmapRect, pixelW, pixelH
+                paint, mainPaintBounds(paint, ch.styleIndex), ch.bitmapRect, pixelW, pixelH
             );
             if (gradientRaster != nullptr) {
                 ID2D1Effect *composite = acquireDecorEffect(
@@ -3527,7 +3545,10 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             }
             Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
                 after ? charStyle.afterDecorPaint : charStyle.beforeDecorPaint,
-                line->fillBounds,
+                mainPaintBounds(
+                    after ? charStyle.afterDecorPaint : charStyle.beforeDecorPaint,
+                    styleIndex
+                ),
                 after ? charStyle.afterDecor : charStyle.beforeDecor
             );
             const float sourceWidth = std::max(charStyle.strokeWidth, 0.0f)
@@ -3915,7 +3936,11 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     }
                     Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrushAt(
                         after ? charStyle.afterDecorPaint : charStyle.beforeDecorPaint,
-                        line->fillBounds,
+                        mainPaintBounds(
+                            after ? charStyle.afterDecorPaint
+                                  : charStyle.beforeDecorPaint,
+                            ch.styleIndex
+                        ),
                         after ? charStyle.afterDecor : charStyle.beforeDecor,
                         charStyle.shadowOffsetX,
                         charStyle.shadowOffsetY
@@ -3999,7 +4024,10 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             } else if (style.decorationKind == "shadow") {
                 Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrushAt(
                     after ? style.afterDecorPaint : style.beforeDecorPaint,
-                    line->fillBounds,
+                    mainPaintBounds(
+                        after ? style.afterDecorPaint : style.beforeDecorPaint,
+                        -1
+                    ),
                     after ? style.afterDecor : style.beforeDecor,
                     style.shadowOffsetX,
                     style.shadowOffsetY
@@ -4272,7 +4300,9 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         ? (after ? afterStroke.Get() : beforeStroke.Get())
                         : (after ? afterFill.Get() : beforeFill.Get()));
             } else {
-                ownedBrush = paintBrush(paint, line->fillBounds, color);
+                ownedBrush = paintBrush(
+                    paint, mainPaintBounds(paint, ch.styleIndex), color
+                );
                 brush = ownedBrush.Get();
             }
             brush->SetOpacity(globalOpacity * characterOpacityAt(charIndex));

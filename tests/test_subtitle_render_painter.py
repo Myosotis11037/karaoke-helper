@@ -2320,7 +2320,11 @@ def test_n3_vertical_gradient_uses_render_target_local_height(qapp):
     )
 
 
-def test_n3_main_fill_rect_uses_shared_integer_line_box(qapp):
+def test_main_fill_rect_uses_glyph_ink_x_and_n3_vertical_box(qapp):
+    from krok_helper.subtitle_render.engine.render.elements.horizontal import (
+        layout as horizontal_layout,
+    )
+
     line = TimingLine(
         chars=[
             TimingChar(text="A", start_ms=1000, role_label="small"),
@@ -2372,6 +2376,14 @@ def test_n3_main_fill_rect_uses_shared_integer_line_box(qapp):
     assert fill_rect.top() == pytest.approx(draw_bottom - draw_height + inset)
     assert fill_rect.bottom() == pytest.approx(draw_bottom - inset)
     assert fill_rect.height() == pytest.approx(draw_height - inset * 2)
+    ink = QPainterPath()
+    for glyph in layout.text_layout.glyphs:
+        ink.addPath(subtitle_painter._glyph_path(glyph, layout.baseline_y))
+    ink_bounds = ink.boundingRect()
+    assert fill_rect.left() == pytest.approx(ink_bounds.left())
+    assert fill_rect.right() == pytest.approx(ink_bounds.right())
+    assert fill_rect.left() > layout.line_rect.left()
+    assert fill_rect.right() < layout.line_rect.right()
 
     layers = _line_layer_stack(layout, 1750)
     glyph_layers = [
@@ -2380,7 +2392,200 @@ def test_n3_main_fill_rect_uses_shared_integer_line_box(qapp):
         if isinstance(layer, (_GlyphRunLayer, _GlyphRunAfterGlowLayer))
     ]
     assert glyph_layers
-    assert all(layer.fill_rect == fill_rect for layer in glyph_layers)
+    role_rects = horizontal_layout.role_main_fill_rects(
+        layout.text_layout, layout.baseline_y
+    )
+    assert all(
+        layer.fill_rect == role_rects[layer.glyphs[0].role_label]
+        for layer in glyph_layers
+    )
+
+
+def test_main_horizontal_gradient_ink_bounds_include_svg_guide(qapp):
+    from krok_helper.subtitle_render.domain.timing import (
+        guide_symbol_with_role_labels,
+    )
+    from krok_helper.subtitle_render.engine.render.elements.horizontal.layout import (
+        role_main_fill_rects,
+    )
+
+    symbol = GuideSymbol(
+        path_commands=(
+            ("M", 120.0, -100.0),
+            ("L", 500.0, -850.0),
+            ("L", 880.0, -100.0),
+            ("Z",),
+        ),
+        advance_width=1200.0,
+        duration_ms=400,
+    )
+    symbol = guide_symbol_with_role_labels(symbol, ("guide",))
+    line = TimingLine(
+        chars=[TimingChar(text="A", start_ms=1000, role_label="text")],
+        end_ms=2000,
+        guide_symbol=symbol,
+    )
+    style = Style(font_size_px=72, letter_spacing_px=24)
+    layout = _layout_line(
+        TimingTrack(lines=[line]), line, style, 500, 280, baseline_y=180
+    )
+    assert layout is not None
+    svg_glyph = next(
+        glyph for glyph in layout.text_layout.glyphs if glyph.vector_glyph is symbol
+    )
+    svg_bounds = subtitle_painter._glyph_path(
+        svg_glyph, layout.baseline_y
+    ).boundingRect()
+    text_bounds = subtitle_painter._glyph_path(
+        layout.text_layout.glyphs[-1], layout.baseline_y
+    ).boundingRect()
+
+    fill_rect = subtitle_painter._n3_main_fill_rect(
+        layout.text_layout, layout.baseline_y
+    )
+
+    assert fill_rect.left() == pytest.approx(
+        min(svg_bounds.left(), text_bounds.left())
+    )
+    assert fill_rect.right() == pytest.approx(
+        max(svg_bounds.right(), text_bounds.right())
+    )
+    assert fill_rect.left() > layout.line_rect.left()
+    assert fill_rect.right() < layout.line_rect.right()
+    role_rects = role_main_fill_rects(layout.text_layout, layout.baseline_y)
+    assert svg_glyph.role_label == "guide"
+    assert role_rects["guide"].left() == pytest.approx(svg_bounds.left())
+    assert role_rects["guide"].right() == pytest.approx(svg_bounds.right())
+    assert role_rects["text"].left() == pytest.approx(text_bounds.left())
+    assert role_rects["text"].right() == pytest.approx(text_bounds.right())
+
+
+def test_mixed_roles_use_independent_shared_ink_gradient_bounds(qapp):
+    from krok_helper.subtitle_render.engine.render.elements.horizontal.layout import (
+        glyph_ink_x_bounds,
+        role_main_fill_rects,
+    )
+
+    line = TimingLine(
+        chars=[
+            TimingChar(text="A", start_ms=1000, role_label="lead"),
+            TimingChar(text="B", start_ms=1500, role_label="back"),
+            TimingChar(text="C", start_ms=2000, role_label="lead"),
+        ],
+        end_ms=3000,
+    )
+    gradient = KaraokeColors(
+        before=KaraokeColorState(
+            text=PaintFill(
+                mode="gradient_horizontal",
+                gradient_stops=((0, "#FF0000"), (100, "#0000FF")),
+            )
+        )
+    )
+    style = Style(
+        font_family="Arial",
+        font_family_latin="Arial",
+        font_size_px=72,
+        custom_style_schemes={
+            "lead": SubtitleStyleScheme(karaoke_colors=gradient),
+            "back": SubtitleStyleScheme(karaoke_colors=gradient),
+        },
+    )
+    layout = _layout_line(TimingTrack(lines=[line]), line, style, 640, 280)
+    assert layout is not None
+
+    rects = role_main_fill_rects(layout.text_layout, layout.baseline_y)
+    lead_glyphs = [
+        glyph for glyph in layout.text_layout.glyphs if glyph.role_label == "lead"
+    ]
+    back_glyphs = [
+        glyph for glyph in layout.text_layout.glyphs if glyph.role_label == "back"
+    ]
+    lead_bounds = glyph_ink_x_bounds(lead_glyphs, layout.baseline_y)
+    back_bounds = glyph_ink_x_bounds(back_glyphs, layout.baseline_y)
+    assert lead_bounds is not None and back_bounds is not None
+    assert (rects["lead"].left(), rects["lead"].right()) == pytest.approx(
+        lead_bounds
+    )
+    assert (rects["back"].left(), rects["back"].right()) == pytest.approx(
+        back_bounds
+    )
+    assert rects["lead"] != rects["back"]
+
+    before_layers = [
+        layer
+        for layer in _line_layer_stack(layout, 500)
+        if isinstance(layer, _GlyphRunLayer) and not layer.after
+    ]
+    assert [layer.glyphs[0].role_label for layer in before_layers] == [
+        "lead",
+        "back",
+        "lead",
+    ]
+    assert before_layers[0].fill_rect == rects["lead"]
+    assert before_layers[1].fill_rect == rects["back"]
+    assert before_layers[2].fill_rect == rects["lead"]
+
+
+def test_horizontal_ink_bounds_feed_fill_strokes_and_glow(qapp, monkeypatch):
+    from krok_helper.subtitle_render.engine.render.effects import raster
+
+    def gradient(color: str) -> PaintFill:
+        return PaintFill(
+            mode="gradient_horizontal",
+            color=color,
+            gradient_stops=((0, color), (100, "#FFFFFF")),
+        )
+
+    state = KaraokeColorState(
+        text=gradient("#110000"),
+        stroke=gradient("#220000"),
+        stroke2=gradient("#330000"),
+        shadow=gradient("#440000"),
+    )
+    ink_rect = QRectF(31.25, 40.0, 87.5, 52.0)
+    path = QPainterPath()
+    path.addRect(QRectF(45.0, 50.0, 60.0, 30.0))
+    sampled: dict[str, list[QRectF]] = {}
+    original = raster.brush_for_fill
+
+    def capture(fill: PaintFill, rect: QRectF):
+        sampled.setdefault(fill.color, []).append(QRectF(rect))
+        return original(fill, rect)
+
+    monkeypatch.setattr(raster, "brush_for_fill", capture)
+    image = QImage(180, 130, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+    try:
+        raster.paint_text_layer_stack(
+            painter,
+            path,
+            QRectF(20.0, 35.0, 120.0, 65.0),
+            state,
+            Style(
+                decoration_kind="glow",
+                glow_radius_px=4,
+                stroke_width_px=6,
+                stroke2_enabled=True,
+                stroke2_width_px=3,
+            ),
+            stroke_width=6,
+            stroke2_width=3,
+            shadow_dx=0,
+            shadow_dy=0,
+            glow_radius=4,
+            fill_rect=ink_rect,
+        )
+    finally:
+        painter.end()
+
+    assert set(sampled) == {"#110000", "#220000", "#330000", "#440000"}
+    assert all(
+        rect.width() == pytest.approx(ink_rect.width())
+        for rects in sampled.values()
+        for rect in rects
+    )
 
 
 def test_paint_frame_gradient_stops_change_rendered_frame(qapp):
@@ -5544,18 +5749,28 @@ def test_ruby_gradient_reference_uses_n3_ruby_line_box(qapp):
     assert ruby_layers
     ruby_layout = ruby_layers[0].ruby_layout
 
-    expected = subtitle_painter._n3_ruby_fill_rect(
+    vertical_expected = subtitle_painter._n3_ruby_fill_rect(
         ruby_layout.x,
         ruby_layout.target_width,
         ruby_layout.baseline_y,
         layout.ruby_metrics,
         ruby_layout.style,
     )
-    assert ruby_layout.gradient_rect == expected
-    assert ruby_layout.gradient_rect.left() == pytest.approx(ruby_layout.x)
-    assert ruby_layout.gradient_rect.width() == pytest.approx(
-        ruby_layout.target_width
+    ruby_path, _layout_rect = horizontal_ruby.ruby_text_path_and_rect(
+        ruby_layout.ruby.reading,
+        ruby_layout.font,
+        ruby_layout.metrics,
+        ruby_layout.x,
+        ruby_layout.baseline_y,
+        ruby_layout.target_width,
+        ruby_layout.style,
+        ruby_layout.ruby.kanji,
     )
+    ink_bounds = ruby_path.boundingRect()
+    assert ruby_layout.gradient_rect.top() == pytest.approx(vertical_expected.top())
+    assert ruby_layout.gradient_rect.bottom() == pytest.approx(vertical_expected.bottom())
+    assert ruby_layout.gradient_rect.left() == pytest.approx(ink_bounds.left())
+    assert ruby_layout.gradient_rect.right() == pytest.approx(ink_bounds.right())
     assert ruby_layout.gradient_rect.height() < layout.line_rect.height()
 
 

@@ -48,6 +48,7 @@ from krok_helper.subtitle_render.engine.render.elements.horizontal.contracts imp
 )
 from krok_helper.subtitle_render.engine.render.elements.horizontal.layout import (
     n3_main_fill_rect,
+    role_main_fill_rects,
 )
 from krok_helper.subtitle_render.engine.ruby import (
     build_ruby_font_for_text,
@@ -675,6 +676,20 @@ def layout_rubies(
             style=ruby_style,
             base_text=paint_ruby.kanji,
         )
+        ruby_path, _ruby_layout_rect = ruby_text_path_and_rect(
+            paint_ruby.reading,
+            target_ruby_font,
+            target_ruby_metrics,
+            left,
+            baseline_y,
+            target_width,
+            ruby_style,
+            paint_ruby.kanji,
+        )
+        ruby_ink = ruby_path.boundingRect()
+        if not ruby_ink.isEmpty():
+            gradient_rect.setLeft(float(ruby_ink.left()))
+            gradient_rect.setRight(float(ruby_ink.right()))
         wipe_segments, wipe_left, wipe_right, geometry_signature = (
             ports.ruby_wipe_geometry(
                 paint_ruby,
@@ -709,6 +724,10 @@ def layout_rubies(
         )
     if text_layout is not None and layouts:
         main_rect = n3_main_fill_rect(text_layout, main_baseline_y)
+        role_rects = role_main_fill_rects(text_layout, main_baseline_y)
+        roles_by_index = {
+            glyph.index: glyph.role_label for glyph in text_layout.glyphs
+        }
         top = min(
             float(main_rect.top()),
             *(float(layout.gradient_rect.top()) for layout in layouts),
@@ -717,23 +736,34 @@ def layout_rubies(
             float(main_rect.bottom()),
             *(float(layout.gradient_rect.bottom()) for layout in layouts),
         )
-        shared_rect = QRectF(
-            float(main_rect.left()),
-            top,
-            float(max(main_rect.width(), 1.0)),
-            float(max(bottom - top, 1.0)),
-        )
-        layouts = [
-            replace(
-                layout,
-                horizontal_gradient_rect=(
-                    shared_rect
-                    if layout.style.ruby_horizontal_gradient_with_main
-                    else None
+        resolved_layouts: list[RubyLayout] = []
+        for layout in layouts:
+            role_label = next(
+                (
+                    roles_by_index[index]
+                    for index in layout.indices
+                    if index in roles_by_index
                 ),
+                None,
             )
-            for layout in layouts
-        ]
+            role_rect = role_rects.get(role_label, main_rect)
+            shared_rect = QRectF(
+                float(role_rect.left()),
+                top,
+                float(max(role_rect.width(), 1.0)),
+                float(max(bottom - top, 1.0)),
+            )
+            resolved_layouts.append(
+                replace(
+                    layout,
+                    horizontal_gradient_rect=(
+                        shared_rect
+                        if layout.style.ruby_horizontal_gradient_with_main
+                        else None
+                    ),
+                )
+            )
+        layouts = resolved_layouts
     return layouts
 
 
