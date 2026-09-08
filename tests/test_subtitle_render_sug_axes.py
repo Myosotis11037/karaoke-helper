@@ -34,6 +34,7 @@ from krok_helper.subtitle_render.sources.sug import (
 )
 from krok_helper.subtitle_render.sources.sug_axes import (
     AxisSlotState,
+    combine_axis_reload_plans,
     plan_single_axis_reload,
     plan_split_axis_reload,
 )
@@ -458,6 +459,56 @@ def test_axis_reload_noop_when_source_unchanged() -> None:
         axes=axes,
     )
     assert not plan.changed
+
+
+def test_combine_axis_reload_plans_merges_disjoint_slots() -> None:
+    """整份副源的单轴计划并入分轴计划：槽位互不相交时字段各自合并。"""
+    project = _split_project()
+    axes = sug_axis_tracks_from_project(project)
+
+    # 新解析微调了和声行时间，让分轴计划本身也有变化
+    changed_project = _split_project()
+    changed_project.sentences[2].characters[0].timestamps = [2100]
+    changed_axes = sug_axis_tracks_from_project(changed_project)
+
+    split_plan = plan_split_axis_reload(
+        primary=None,
+        primary_axis=changed_axes[0],
+        axis_extra_slots=[
+            (
+                0,
+                AxisSlotState(
+                    track=deepcopy(axes[1].track),
+                    baseline=deepcopy(axes[1].track),
+                    name="副轴",
+                    singer_ids=frozenset({"b"}),
+                ),
+            )
+        ],
+        axes=changed_axes,
+    )
+    changed_candidate = deepcopy(axes[0].track)
+    changed_candidate.lines[0].chars[0].start_ms += 500
+    plain_plan = plan_single_axis_reload(
+        primary=None,
+        candidate=changed_candidate,
+        extra_slots=[
+            (
+                1,
+                AxisSlotState(
+                    track=deepcopy(axes[0].track),
+                    baseline=deepcopy(axes[0].track),
+                ),
+            )
+        ],
+    )
+    assert split_plan.changed and plain_plan.changed
+
+    combined = combine_axis_reload_plans(split_plan, plain_plan)
+    assert {update.index for update in combined.extra_updates} == {0, 1}
+    assert combined.primary_merge is None
+    assert not combined.extra_additions
+    assert not combined.removed_extra_indices
 
 
 def test_single_axis_reload_updates_primary_and_plain_extra() -> None:

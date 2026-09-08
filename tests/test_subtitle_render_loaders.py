@@ -412,6 +412,189 @@ def test_workflow_handoff_group_added_after_single_load_splits(qapp, monkeypatch
     assert any("重新分轴" in notice for notice in notices)
 
 
+def _refresh_single_source(win, index: int) -> bool:
+    track = win._track_by_index(index)
+    assert track is not None
+    return win._refresh_track_indices(
+        [index],
+        {index: (track.loading_settings_mode, win._effective_loading_settings(track))},
+    )
+
+
+def test_manual_refresh_axis_extra_keeps_group_filter(qapp, monkeypatch, tmp_path):
+    """刷新分组副源：只重读该分组的行，不混入其他分组，轴基线正确推进。"""
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    win._extra_sources[0].track.lines[0].chars[0].role_label = "手工角色"
+    win._project_dirty = False
+    monkeypatch.setattr(
+        mw,
+        "fluent_question",
+        lambda *args, **kwargs: pytest.fail("纯时间刷新不应要求确认"),
+    )
+
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1300, 1700), ("b", "酱", 2300, 2700)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    assert _refresh_single_source(win, 1)
+
+    extra = win._extra_sources[0]
+    texts = [
+        "".join(ch.text for ch in line.chars) for line in extra.track.lines
+    ]
+    # 只有和声组自己的行，且新时间生效、本地角色保留
+    assert texts == ["酱"]
+    assert extra.track.lines[0].chars[0].start_ms == 2300
+    assert extra.track.lines[0].chars[0].role_label == "手工角色"
+    # 主轴不受刷新影响；轴基线推进到新解析
+    assert win._timing_track.lines[0].chars[0].start_ms == 1000
+    assert extra.source_baseline.lines[0].chars[0].start_ms == 2300
+
+
+def test_manual_refresh_split_primary_keeps_group_filter(qapp, monkeypatch, tmp_path):
+    """刷新分轴主字幕：只重读主分组的行，其他分组不会混进主轨道。"""
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    win._timing_track.lines[0].layout_index = 2
+    monkeypatch.setattr(
+        mw,
+        "fluent_question",
+        lambda *args, **kwargs: pytest.fail("纯时间刷新不应要求确认"),
+    )
+
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1300, 1700), ("b", "酱", 2300, 2700)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    assert _refresh_single_source(win, 0)
+
+    texts = [
+        "".join(ch.text for ch in line.chars) for line in win._timing_track.lines
+    ]
+    assert texts == ["君"]
+    assert win._timing_track.lines[0].chars[0].start_ms == 1300
+    # 手动刷新按加载设置重生成段落/页面：行布局归零是既有语义（只保内容侧编辑）
+    assert win._timing_track.lines[0].layout_index == 0
+    # 主轴基线推进；同路径的 watch 基线不得被过滤解析污染（热重载仍按主轴口径比对）
+    assert win._primary_source_baseline.lines[0].chars[0].start_ms == 1300
+    watch_state = win._source_watch_runtime.state(win._subtitle_source_key(sug))
+    assert watch_state is None or watch_state.baseline.lines[0].chars[0].start_ms != 1300
+
+
+def test_manual_refresh_then_hot_reload_uses_advanced_baseline(
+    qapp, monkeypatch, tmp_path
+):
+    """刷新推进基线后，文件再变化的热重载按新基线合并（不重复/不回退）。"""
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    monkeypatch.setattr(
+        mw,
+        "fluent_question",
+        lambda *args, **kwargs: pytest.fail("纯时间变化不应要求确认"),
+    )
+    monkeypatch.setattr(mw.InfoBar, "success", lambda **kwargs: None)
+
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1300, 1700), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    assert _refresh_single_source(win, 0)
+    assert win._timing_track.lines[0].chars[0].start_ms == 1300
+
+    # 文件再次变化：热重载应从 1300 合并到 1500，而不是从过期的 1000 重放
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1500, 1900), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win._reload_external_subtitle_source(win._subtitle_source_key(sug))
+    assert win._timing_track.lines[0].chars[0].start_ms == 1500
+
+
+def test_hot_reload_updates_plain_extra_on_grouped_sug(qapp, monkeypatch, tmp_path):
+    """同路径挂整份（普通）副源时，分组文件的变化也要热重载到它。"""
+    from krok_helper.subtitle_render.project.session import ExtraSubtitleSource
+
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    plain_track = win._subtitle_source_loader.load_sug(sug, software_compensation_ms=0)
+    win._extra_sources.append(
+        ExtraSubtitleSource(name="整份", path=sug, track=plain_track)
+    )
+    win._sync_subtitle_source_watcher()
+    monkeypatch.setattr(
+        mw,
+        "fluent_question",
+        lambda *args, **kwargs: pytest.fail("纯时间变化不应要求确认"),
+    )
+    monkeypatch.setattr(mw.InfoBar, "success", lambda **kwargs: None)
+
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1300, 1700), ("b", "酱", 2300, 2700)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win._reload_external_subtitle_source(win._subtitle_source_key(sug))
+
+    plain = win._extra_sources[1]
+    assert plain.sug_axis_singer_ids is None
+    assert plain.track.lines[0].chars[0].start_ms == 1300
+    assert plain.track.lines[1].chars[0].start_ms == 2300
+    # 分轴副源仍按自己的口径更新
+    assert win._extra_sources[0].track.lines[0].chars[0].start_ms == 2300
+
+
+def test_replace_source_file_clears_stale_axis_identity(qapp, monkeypatch, tmp_path):
+    """轴副源换文件后旧的分组歌手集合失效：清为整份语义，不再按旧轴过滤。"""
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    plain = tmp_path / "plain.sug"
+    _save_timing_sug(plain, [("词", 500, 900)])
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+
+    win._replace_source_file(1, plain)
+
+    source = win._extra_sources[0]
+    assert source.path == plain
+    assert source.sug_axis_singer_ids is None
+    assert [
+        "".join(ch.text for ch in line.chars) for line in source.track.lines
+    ] == ["词"]
+
+
 def test_project_reopen_restores_axis_filters_from_snapshot(qapp, monkeypatch, tmp_path):
     """.yurika 快照里的主/副轴过滤在工程打开时按各自口径重建。"""
     sug = tmp_path / "grouped.sug"

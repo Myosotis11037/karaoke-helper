@@ -369,6 +369,7 @@ from krok_helper.subtitle_render.sources.sug_axes import (
     AxisSlotState,
     plan_single_axis_reload,
     plan_split_axis_reload,
+    combine_axis_reload_plans,
 )
 from krok_helper.subtitle_render.project.session import (
     ExtraSubtitleSource,
@@ -3376,16 +3377,18 @@ class SubtitleRenderWindow(QWidget):
                 None,
             )
         parsed: Optional[list[SugAxisTrack]] = None
+        compensation_ms: int = 0
 
         def load_candidate(source_path: Path) -> TimingTrack:
-            nonlocal parsed
+            nonlocal parsed, compensation_ms
+            compensation_ms = (
+                _sug_software_compensation_ms()
+                if self._sug_compensation_enabled_for_track(owner_track)
+                else 0
+            )
             parsed = self._subtitle_source_loader.load_sug_axes(
                 source_path,
-                software_compensation_ms=(
-                    _sug_software_compensation_ms()
-                    if self._sug_compensation_enabled_for_track(owner_track)
-                    else 0
-                ),
+                software_compensation_ms=compensation_ms,
             )
             return parsed[0].track
 
@@ -3433,12 +3436,13 @@ class SubtitleRenderWindow(QWidget):
         axes = parsed or []
         if not axes:
             return
-        self._apply_sug_axis_reload(preparation, axes)
+        self._apply_sug_axis_reload(preparation, axes, compensation_ms)
 
     def _apply_sug_axis_reload(
         self,
         preparation: Any,
         axes: list[SugAxisTrack],
+        compensation_ms: int = 0,
     ) -> None:
         """按新解析的轴集合协调主槽位与轴副源（结构变化时整体重装）。"""
         key = preparation.key
@@ -3536,6 +3540,35 @@ class SubtitleRenderWindow(QWidget):
                 axis_extra_slots=axis_extra_slots,
                 axes=axes,
             )
+            plain_extra_slots = [
+                (
+                    index,
+                    AxisSlotState(
+                        track=source.track,
+                        baseline=source.source_baseline,
+                        name=None,
+                        singer_ids=None,
+                    ),
+                )
+                for index, source in enumerate(self._extra_sources)
+                if source.sug_axis_singer_ids is None
+                and self._subtitle_source_key(source.path) == key
+            ]
+            if plain_extra_slots:
+                # 同路径的整份（普通）.sug 副源：文件带分组时也要热重载，
+                # 否则分轴计划匹配不到它们，改动会被静默忽略。
+                whole_track = self._subtitle_source_loader.load_sug(
+                    path,
+                    software_compensation_ms=compensation_ms,
+                )
+                plan = combine_axis_reload_plans(
+                    plan,
+                    plan_single_axis_reload(
+                        primary=None,
+                        candidate=whole_track,
+                        extra_slots=plain_extra_slots,
+                    ),
+                )
         else:
             state = self._source_watch_runtime.state(key)
             plain_baseline = state.baseline if state is not None else None
@@ -5031,6 +5064,30 @@ class SubtitleRenderWindow(QWidget):
             return self._extra_sources[track_index - 1].path
         return None
 
+    def _sug_axis_filter_for_track_index(
+        self, track_index: int
+    ) -> Optional[frozenset[str]]:
+        """该槽位若是 SUG 分轴，返回其分组歌手集合；普通槽位返回 ``None``。"""
+        if track_index == 0:
+            return self._project_document.subtitle_axis_singer_ids
+        if 1 <= track_index <= len(self._extra_sources):
+            return self._extra_sources[track_index - 1].sug_axis_singer_ids
+        return None
+
+    def _sug_axis_baseline_for_track_index(
+        self, track_index: int
+    ) -> Optional[TimingTrack]:
+        """分轴槽位的合并基线用各自的轴基线；普通槽位返回 ``None`` 走 watch 基线。"""
+        if track_index == 0:
+            if self._project_document.subtitle_axis_singer_ids is not None:
+                return self._primary_source_baseline
+            return None
+        if 1 <= track_index <= len(self._extra_sources):
+            source = self._extra_sources[track_index - 1]
+            if source.sug_axis_singer_ids is not None:
+                return source.source_baseline
+        return None
+
     def _set_track_by_index(self, track_index: int, track: TimingTrack) -> bool:
         return self._project_document.replace_track(track_index, track)
 
@@ -5159,18 +5216,34 @@ class SubtitleRenderWindow(QWidget):
         if current is None:
             raise ValueError("字幕源不存在")
         path = self._source_path_for_track_index(track_index)
+        singer_filter = self._sug_axis_filter_for_track_index(track_index)
         parsed_source: Optional[TimingTrack] = None
         if path is not None and path.is_file():
-            parsed_source = self._load_timing_track_file(
-                path,
-                apply_sug_export_compensation=(
-                    settings.apply_sug_export_compensation
-                ),
-            )
-            state = self._source_watch_runtime.state(
-                self._subtitle_source_key(path)
-            )
-            baseline = state.baseline if state is not None else current
+            if path.suffix.lower() == ".sug" and singer_filter is not None:
+                # 分轴槽位（主轴或轴副源）：与工程打开同口径，按该槽位持久化
+                # 的分组歌手集合过滤解析，不能整份重读（会混入其他分组）。
+                parsed_source = self._subtitle_source_loader.load_sug(
+                    path,
+                    software_compensation_ms=(
+                        _sug_software_compensation_ms()
+                        if settings.apply_sug_export_compensation
+                        else 0
+                    ),
+                    singer_filter=singer_filter,
+                )
+            else:
+                parsed_source = self._load_timing_track_file(
+                    path,
+                    apply_sug_export_compensation=(
+                        settings.apply_sug_export_compensation
+                    ),
+                )
+            baseline = self._sug_axis_baseline_for_track_index(track_index)
+            if baseline is None:
+                state = self._source_watch_runtime.state(
+                    self._subtitle_source_key(path)
+                )
+                baseline = state.baseline if state is not None else current
             merge = merge_reloaded_track(
                 current,
                 baseline,
@@ -5255,8 +5328,20 @@ class SubtitleRenderWindow(QWidget):
         for index, refreshed, parsed in prepared:
             self._set_track_by_index(index, refreshed)
             path = self._source_path_for_track_index(index)
-            if path is not None and parsed is not None:
-                self._set_subtitle_source_baseline(path, parsed)
+            if path is None or parsed is None:
+                continue
+            # 分轴槽位推进各自的轴基线（watch key 按路径共享，写进去会串轴）；
+            # 普通槽位沿用共享 watch 基线。
+            if index == 0:
+                self._primary_source_baseline = deepcopy(parsed)
+                if self._project_document.subtitle_axis_singer_ids is None:
+                    self._set_subtitle_source_baseline(path, parsed)
+            else:
+                source = self._extra_sources[index - 1]
+                if source.sug_axis_singer_ids is not None:
+                    source.source_baseline = deepcopy(parsed)
+                else:
+                    self._set_subtitle_source_baseline(path, parsed)
         after = tuple(
             deepcopy(self._track_by_index(index)) for index in indices
         )
@@ -5470,6 +5555,10 @@ class SubtitleRenderWindow(QWidget):
         renamed = source.name == source.path.stem
         source.path = path
         source.track = track
+        # 换文件后旧轴身份失效：新文件按「整份副源」语义装载（与添加副字幕
+        # 源同口径），不再保留旧 .sug 分组的歌手集合过滤。
+        source.sug_axis_singer_ids = None
+        source.source_baseline = deepcopy(track)
         # 名字是用户可见标识：只在它还是旧文件名（没被改过）时跟着新文件走。
         if renamed:
             source.name = path.stem

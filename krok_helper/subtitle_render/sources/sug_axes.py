@@ -203,6 +203,28 @@ def _plan_merges(
     )
 
 
+def combine_axis_reload_plans(
+    base: AxisReloadPlan, extra: AxisReloadPlan
+) -> AxisReloadPlan:
+    """把一份补充计划并入基础计划（要求两者更新的槽位互不相交）。
+
+    用于同一 ``.sug`` 文件同时挂着分轴副源与整份（普通）副源的热重载：
+    分轴槽位走 ``plan_split_axis_reload``，整份槽位用整份候选走
+    ``plan_single_axis_reload``，再合并成一份计划统一应用。
+    """
+
+    return AxisReloadPlan(
+        primary_merge=base.primary_merge or extra.primary_merge,
+        extra_updates=base.extra_updates + extra.extra_updates,
+        extra_additions=base.extra_additions + extra.extra_additions,
+        removed_extra_indices=(
+            base.removed_extra_indices + extra.removed_extra_indices
+        ),
+        conflicts=tuple(dict.fromkeys(base.conflicts + extra.conflicts)),
+        structure_changed=base.structure_changed or extra.structure_changed,
+    )
+
+
 def _match_axis_candidate(
     candidates: list[SugAxisTrack],
     matched_positions: set[int],
