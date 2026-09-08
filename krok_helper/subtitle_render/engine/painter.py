@@ -2173,11 +2173,20 @@ def _resolve_sayatoo_line_layouts(
             # volume/lit X offset nudges only the indicator, not the text layout:
             # ``volume_offset_x`` therefore moves the bars (``signal_x``) while
             # ``text_x`` stays put, which is what the offset control should do.
+            #
+            # Only the volume bars sit beside the text and therefore widen the
+            # anchored line box.  Shape lamps float above the text start, so
+            # they never contribute horizontal room: their span stays outside
+            # the union and they overhang freely at ``lit_offset_x``.
             draw_left = _signal_local_x(signal_metrics, line_style)
-            natural_left = draw_left - _signal_offset_x(line_style)
-            natural_right = natural_left + signal_metrics.group_width
-            union_left = min(-float(left_ext), natural_left)
-            union_right = max(float(text_w) + right_ext, natural_right)
+            if signal_metrics.is_volume:
+                natural_left = draw_left - _signal_offset_x(line_style)
+                natural_right = natural_left + signal_metrics.group_width
+                union_left = min(-float(left_ext), natural_left)
+                union_right = max(float(text_w) + right_ext, natural_right)
+            else:
+                union_left = -float(left_ext)
+                union_right = float(text_w) + right_ext
             union_w = max(int(round(union_right - union_left)), 1)
             union_x = _resolve_line_x_smart(
                 img_w, union_w, track, line, line_style, display_line.lane,

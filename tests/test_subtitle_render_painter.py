@@ -1187,6 +1187,32 @@ def test_signal_volume_union_alignment_left_vs_right(qapp):
     assert right_on.signal_x is not None and right_on.signal_x < right_on.text_x
 
 
+def test_signal_shape_lamps_do_not_shift_text(qapp):
+    """形状灯悬在文字上方，不占水平行盒：文字位置与不开灯时一致。
+
+    音量柱在文字左侧同排，计入 union 是 Sayatoo 口径；圆/方/圆角灯骑在
+    行首文字上方，计入水平行盒只会把 smart 页宽撑大、让文字反向偏移。
+    """
+    track = _singer_track(singer_id=0)
+    common = dict(
+        font_size_px=20,
+        line_y_margin_px=10,
+        dual_line_layout=False,
+        line_lead_in_ms=2000,  # t=800 时无论灯开灯关，行都可见
+        lit_shadow=False,
+        signals_duration_ms=1000,
+        lit_style="circle",
+    )
+
+    off = _sayatoo_layout_for(track, Style(**common, lit_enabled=False), 800)
+    on = _sayatoo_layout_for(track, Style(**common, lit_enabled=True), 800)
+
+    # 灯组（默认 4 颗、组宽远大于单字 "A"）不再把锚定盒撑宽。
+    assert on.text_x == off.text_x
+    # 灯仍以 lit_offset_x（默认 0）相对文字起点悬挂，只是不再推动排版。
+    assert on.signal_x == pytest.approx(float(on.text_x))
+
+
 def test_signal_volume_offset_x_moves_bars_not_text(qapp):
     track = _singer_track(singer_id=0)
 

@@ -1326,10 +1326,10 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
             // The volume offset moves only the bars afterwards.
             unionLeft = std::min(unionLeft, -signalGeometry.groupWidth);
             unionRight = std::max(unionRight, 0.0f);
-        } else if (signalLayoutActive) {
-            unionLeft = std::min(unionLeft, 0.0f);
-            unionRight = std::max(unionRight, shapeGeometry.groupWidth);
         }
+        // Shape lamps ride above the text start, so they reserve no horizontal
+        // room: the Painter keeps their span outside the anchored union and
+        // lets them overhang freely at their offset.
         auto alignedDx = [&](float left, float right) {
             const float inkWidth = right - left;
             float value = (static_cast<float>(scene.width) - inkWidth) * 0.5f
@@ -1383,7 +1383,12 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 }
                 return std::max(candidate.style.fontSize, 1.0f);
             };
-            const float ownWidth = layoutWidth(*line);
+            // The Painter feeds the signal-union width into its smart pass for
+            // the lamp line itself, so mirror that here: smart thresholds and
+            // page maxima stay backend-consistent while the bars widen a line.
+            const float ownWidth = signalLayoutActive
+                ? std::max(unionRight - unionLeft, 1.0f)
+                : layoutWidth(*line);
             const float ownFontSize = firstCharFontSize(*line);
             float smartDx = 0.0f;
             if (style.smartHorizontal == "center_position") {
