@@ -122,9 +122,7 @@ class RolePropertyPageBuilder:
             lambda checked: host._update_style(italic=checked)
         )
         host._ruby_anchor_check = CheckBox("参与注音高度计算", section)
-        host._ruby_anchor_check.setToolTip(
-            "关闭后，使用当前角色的字符仍正常绘制和占位，但不会把整行注音向上顶高。"
-        )
+        host._ruby_anchor_check.setToolTip("该角色的注音参与高度计算")
         host._ruby_anchor_check.toggled.connect(
             lambda checked: host._update_style(affects_ruby_anchor=checked)
         )
