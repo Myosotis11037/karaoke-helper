@@ -226,6 +226,67 @@ def _restore_page_state(track: TimingTrack, style: Style, data: dict) -> None:
     project_page_plan_to_legacy_fields(track, style)
 
 
+_EMOJI_SYMBOL_NAME_PREFIX = "N3 Emoji "
+
+
+def _emoji_label_positions(line: TimingLine) -> set[int]:
+    """源解析插入的 ``@Emoji`` 标签字符位（合成字符，加载期自动产生）。
+
+    只认「触发词是完整 ``【…】`` 标签且该位字符文本恰为触发词」的头像——
+    即标签插入产生的合成字符。普通替换词（``@Emoji=♪``）的头像挂在真实
+    字符上，不移动坐标，不算标签位。
+    """
+
+    positions: set[int] = set()
+    for index, symbol in line.inline_guide_symbols.items():
+        if not isinstance(symbol, GuideSymbol):
+            continue
+        name = str(symbol.name)
+        if not name.startswith(_EMOJI_SYMBOL_NAME_PREFIX):
+            continue
+        trigger = name[len(_EMOJI_SYMBOL_NAME_PREFIX):]
+        if (
+            len(trigger) > 2
+            and trigger.startswith("【")
+            and trigger.endswith("】")
+            and 0 <= index < len(line.chars)
+            and line.chars[index].text == trigger
+        ):
+            positions.add(index)
+    return positions
+
+
+def _zip_shift_drifted_labels(
+    line: TimingLine, labels: list[object], emoji_positions: set[int]
+) -> bool:
+    """检测中间版本存盘固化的「zip 漂移」逐字角色签名。
+
+    ``dcb1cc0``（@Emoji 标签字符插入）与本对齐修复之间保存过的工程：加载时
+    旧的 n_real 条角色被 zip 到新的 n_chars 字符序列上（整体右移、尾部保留
+    解析值），错位结果再次存盘固化。签名：前 n_real 条与「剔除标签位后的
+    新鲜解析角色」逐位相等，其余条目与新鲜角色相等；超出当前字符数的尾巴
+    （行尾空白被后续版本丢弃等）对齐末位新鲜角色。正常用户编辑几乎不可能
+    恰好凑出这个形状；命中即视为漂移行，不回放（保留源解析角色）。
+    """
+
+    fresh = [char.role_label for char in line.chars]
+    if not fresh:
+        return False
+    real = [
+        fresh[index] for index in range(len(fresh)) if index not in emoji_positions
+    ]
+    for index, label in enumerate(labels):
+        if index < len(real):
+            if label != real[index]:
+                return False
+        elif index < len(fresh):
+            if label != fresh[index]:
+                return False
+        elif label != fresh[-1]:
+            return False
+    return True
+
+
 def _apply_char_role_labels(track: TimingTrack, payload: object) -> bool:
     if not isinstance(payload, list):
         return False
@@ -233,7 +294,24 @@ def _apply_char_role_labels(track: TimingTrack, payload: object) -> bool:
     for line, labels in zip(track.lines, payload):
         if not isinstance(labels, list):
             continue
-        for char, label in zip(line.chars, labels):
+        emoji_positions = _emoji_label_positions(line)
+        if emoji_positions and len(labels) == len(line.chars) - len(emoji_positions):
+            # @Emoji 标签插入特性之前的存量工程：逐字角色按「无合成标签字符」
+            # 的字符序列保存。按位跳过标签位对齐，避免整体右移一位。
+            targets = [
+                index for index in range(len(line.chars)) if index not in emoji_positions
+            ]
+        elif (
+            emoji_positions
+            and len(labels) >= len(line.chars)
+            and _zip_shift_drifted_labels(line, labels, emoji_positions)
+        ):
+            # 中间版本已固化的漂移行：跳过回放，保留源解析角色（下次存盘即修复）。
+            continue
+        else:
+            targets = list(range(len(line.chars)))
+        for index, label in zip(targets, labels):
+            char = line.chars[index]
             new_label = str(label) if label else None
             if char.role_label != new_label:
                 char.role_label = new_label
@@ -273,7 +351,7 @@ def _apply_inline_guide_symbols(
     if not isinstance(payload, list):
         return
     for line, value in zip(track.lines, payload):
-        symbols: dict[int, GuideSymbol] = {}
+        parsed: list[tuple[int, GuideSymbol]] = []
         if isinstance(value, dict):
             for raw_index, raw_symbol in value.items():
                 try:
@@ -281,9 +359,35 @@ def _apply_inline_guide_symbols(
                 except (TypeError, ValueError):
                     continue
                 symbol = guide_symbol_from_dict(resolve_row(raw_symbol))
-                if 0 <= index < len(line.chars) and guide_symbol_has_visual(symbol):
-                    symbols[index] = symbol
-        line.inline_guide_symbols = symbols
+                if guide_symbol_has_visual(symbol):
+                    parsed.append((index, symbol))
+        emoji_positions = _emoji_label_positions(line)
+        payload_has_emoji = any(
+            str(symbol.name).startswith(_EMOJI_SYMBOL_NAME_PREFIX)
+            for _index, symbol in parsed
+        )
+        if emoji_positions and not payload_has_emoji:
+            # @Emoji 标签插入特性之前的存量工程：行内符号按「无合成标签字符」
+            # 的坐标保存（多数行为空）。直接整体替换会把源解析带入的透明头像
+            # 一并抹掉，【角色名】标签字符随即以正文文字露出。跳过标签位重映射
+            # 旧坐标，并保留源解析的标签头像（与热重载的「源拥有 vs 本地编辑」
+            # 口径一致：dcb1cc0 起保存的工程快照里本就含这些符号，走整体替换）。
+            remap = [
+                index for index in range(len(line.chars)) if index not in emoji_positions
+            ]
+            symbols = {index: line.inline_guide_symbols[index] for index in emoji_positions}
+            symbols.update(
+                (remap[index], symbol)
+                for index, symbol in parsed
+                if 0 <= index < len(remap)
+            )
+            line.inline_guide_symbols = symbols
+            continue
+        line.inline_guide_symbols = {
+            index: symbol
+            for index, symbol in parsed
+            if 0 <= index < len(line.chars)
+        }
 
 
 def _apply_display_overrides(track: TimingTrack, payload: object) -> None:

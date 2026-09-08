@@ -428,3 +428,209 @@ def test_anchored_guide_rows_report_mismatch_after_source_rewrap() -> None:
 
     assert result.guide_symbol_mismatches == (0,)
     assert restored.lines[0].guide_symbol is None
+
+
+def _emoji_label_avatar(name: str = "N3 Emoji 【主唱】") -> GuideSymbol:
+    from krok_helper.subtitle_render.domain.timing import GuideSymbol
+
+    return GuideSymbol(
+        name=name,
+        kind="bitmap",
+        bitmap_before_path="avatar.png",
+        bitmap_no_decor=True,
+    )
+
+
+def _user_vector_symbol() -> GuideSymbol:
+    from krok_helper.subtitle_render.domain.timing import GuideSymbol
+
+    return GuideSymbol(
+        name="风车",
+        path_commands=(("M", 0.0, 0.0), ("L", 5.0, -5.0), ("Z",)),
+    )
+
+
+def _line_with_synthetic_label() -> TimingLine:
+    """模拟 dcb1cc0 起 .sug/.lrc 加载产出的行：行首合成【主唱】标签字符。"""
+
+    return TimingLine(
+        chars=[
+            TimingChar("【主唱】", 1000, role_label="主唱"),
+            TimingChar("甲", 1000, role_label="主唱"),
+            TimingChar("乙", 1200, role_label="主唱"),
+            TimingChar("丙", 1400, role_label="副唱"),
+        ],
+        inline_guide_symbols={0: _emoji_label_avatar()},
+        end_ms=1600,
+    )
+
+
+def test_pre_emoji_project_replay_keeps_label_avatars_and_remaps_indices() -> None:
+    """dcb1cc0 之前保存的工程：行内符号/逐字角色按「无合成标签字符」坐标回放。
+
+    回归：整体替换行内符号会把源解析带入的透明头像抹掉，【主唱】标签字符
+    随即以正文文字露出；逐字角色 zip 也会整体右移一位。
+    """
+    from krok_helper.subtitle_render.serialization.timing import guide_symbol_to_dict
+
+    track = TimingTrack(lines=[_line_with_synthetic_label()])
+
+    apply_track_project_data(
+        track,
+        Style(),
+        {
+            # 保存时行内只有用户加的风车（落在真实首字「甲」上，旧坐标 0）
+            "line_inline_guide_symbols": [
+                {0: guide_symbol_to_dict(_user_vector_symbol())}
+            ],
+            # 保存时逐字角色 3 条 = 真实字符数（无合成标签字符）
+            "char_role_labels": [["主唱", "主唱", "副唱"]],
+        },
+    )
+
+    line = track.lines[0]
+    # 标签头像保留（标签字符不会以文字露出），用户符号重映射到「甲」而非标签字符
+    assert set(line.inline_guide_symbols) == {0, 1}
+    assert line.inline_guide_symbols[0].name.startswith("N3 Emoji ")
+    assert line.inline_guide_symbols[1].name == "风车"
+    # 逐字角色按旧坐标对齐：丙拿到「副唱」，乙不再被顶位
+    assert [ch.role_label for ch in line.chars] == ["主唱", "主唱", "主唱", "副唱"]
+
+
+def test_pre_emoji_project_empty_symbol_rows_keep_label_avatars() -> None:
+    """旧行数据为空（None/空字典）时同样不能抹掉源解析的标签头像。"""
+
+    track = TimingTrack(
+        lines=[_line_with_synthetic_label(), _line_with_synthetic_label()]
+    )
+
+    apply_track_project_data(
+        track,
+        Style(),
+        {"line_inline_guide_symbols": [None, {}]},
+    )
+
+    for line in track.lines:
+        assert set(line.inline_guide_symbols) == {0}
+        assert line.inline_guide_symbols[0].name.startswith("N3 Emoji ")
+
+
+def test_pre_emoji_project_replay_maps_indices_past_label_but_not_visible_avatars() -> None:
+    """替换词头像挂在真实字符上不移动坐标：旧坐标只跳过标签位。
+
+    区分两种 ``N3 Emoji`` 符号：标签位（合成【角色名】字符，插入后坐标右移）
+    与替换词位（真实字符原位替换，坐标不变）。旧行数据按旧坐标回放时只有
+    前者需要跳过。
+    """
+    from krok_helper.subtitle_render.serialization.timing import guide_symbol_to_dict
+
+    line = TimingLine(
+        chars=[
+            TimingChar("【主唱】", 1000, role_label="主唱"),
+            TimingChar("♪", 1000, role_label="主唱"),
+            TimingChar("愛", 1300, role_label="主唱"),
+        ],
+        inline_guide_symbols={
+            0: _emoji_label_avatar(),
+            1: _emoji_label_avatar("N3 Emoji ♪"),
+        },
+        end_ms=1600,
+    )
+    track = TimingTrack(lines=[line])
+
+    # 旧坐标 0 = 真实首字 ♪（保存时没有标签字符也没有替换词头像）
+    apply_track_project_data(
+        track,
+        Style(),
+        {"line_inline_guide_symbols": [{0: guide_symbol_to_dict(_user_vector_symbol())}]},
+    )
+
+    restored = track.lines[0]
+    # 标签头像保留；用户符号落在 ♪（旧坐标 0 → 新坐标 1，仅跳过标签位）
+    assert set(restored.inline_guide_symbols) == {0, 1}
+    assert restored.inline_guide_symbols[0].name == "N3 Emoji 【主唱】"
+    assert restored.inline_guide_symbols[1].name == "风车"
+
+
+def test_zip_shift_drifted_roles_self_heal_on_replay() -> None:
+    """中间版本固化的「zip 漂移」角色签名命中时不回放，保留源解析角色。
+
+    回归：dcb1cc0（标签字符插入）与旧工程对齐修复之间保存过的工程，加载时
+    旧 n_real 条角色 zip 到新字符序列上产生错位并再次存盘；重开时错位被原样
+    回放，sv1/sv2 交替行的演唱者肉眼可见地漂移。
+    """
+    track = TimingTrack(lines=[_line_with_synthetic_label()])
+    # fresh 角色 [主唱, 主唱, 主唱, 副唱]，real（剔除标签位）[主唱, 主唱, 副唱]；
+    # 漂移产物 = real 逐位 + fresh 尾部
+    drifted = ["主唱", "主唱", "副唱", "副唱"]
+
+    result = apply_track_project_data(
+        track, Style(), {"char_role_labels": [drifted]}
+    )
+
+    # 漂移行自愈：乙不再被错标为「副唱」，保留源解析角色
+    assert [ch.role_label for ch in track.lines[0].chars] == [
+        "主唱",
+        "主唱",
+        "主唱",
+        "副唱",
+    ]
+    assert result.char_role_labels_changed is False
+
+
+def test_user_edited_roles_not_mistaken_for_zip_shift_drift() -> None:
+    """与签名不符的用户编辑照常回放（只有精确命中漂移形状才自愈）。"""
+    track = TimingTrack(lines=[_line_with_synthetic_label()])
+    edited = ["主唱", "副唱", "主唱", "副唱"]
+
+    apply_track_project_data(track, Style(), {"char_role_labels": [edited]})
+
+    assert [ch.role_label for ch in track.lines[0].chars] == edited
+
+
+def test_zip_shift_drift_with_overflow_tail_self_heals() -> None:
+    """旧序列行尾空白被后续版本丢弃：多出的尾部条目按末位新鲜角色对齐签名。"""
+    track = TimingTrack(lines=[_line_with_synthetic_label()])
+    # fresh [主唱,主唱,主唱,副唱]，real [主唱,主唱,副唱]；
+    # 漂移 + 一条超出当前字符数的尾巴（值同末位角色）
+    drifted = ["主唱", "主唱", "副唱", "副唱", "副唱"]
+
+    result = apply_track_project_data(
+        track, Style(), {"char_role_labels": [drifted]}
+    )
+
+    assert [ch.role_label for ch in track.lines[0].chars] == [
+        "主唱",
+        "主唱",
+        "主唱",
+        "副唱",
+    ]
+    assert result.char_role_labels_changed is False
+
+
+def test_post_emoji_project_replay_still_replaces_wholesale() -> None:
+    """dcb1cc0 起保存的工程快照含 N3 Emoji 符号：整体替换语义不变（删除受尊重）。"""
+    from krok_helper.subtitle_render.serialization.timing import guide_symbol_to_dict
+
+    track = TimingTrack(lines=[_line_with_synthetic_label()])
+
+    apply_track_project_data(
+        track,
+        Style(),
+        {
+            # 新快照坐标与加载期一致：保留标签头像，抹掉过期的第 3 位符号
+            "line_inline_guide_symbols": [
+                {
+                    0: guide_symbol_to_dict(_emoji_label_avatar()),
+                    1: guide_symbol_to_dict(_user_vector_symbol()),
+                }
+            ],
+            # 新快照逐字角色长度 = 完整字符数（含合成标签字符）
+            "char_role_labels": [["主唱", "主唱", "主唱", "主唱"]],
+        },
+    )
+
+    line = track.lines[0]
+    assert set(line.inline_guide_symbols) == {0, 1}
+    assert line.inline_guide_symbols[1].name == "风车"
+    assert [ch.role_label for ch in line.chars] == ["主唱"] * 4
