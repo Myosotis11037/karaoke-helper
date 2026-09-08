@@ -375,9 +375,10 @@ class ScreenColorPicker(QWidget):
         )
         desktop_geometry = QRect()
         for screen in QApplication.screens():
-            geometry = screen.geometry()
-            desktop_geometry = desktop_geometry.united(geometry)
-            self._screens.append((geometry, screen.grabWindow(0).toImage()))
+            desktop_geometry = desktop_geometry.united(screen.geometry())
+        # 不在构造时整屏截图：grabWindow(0).toImage() 会把整块帧缓冲深拷贝成
+        # QImage，多显示器/4K 下耗时约一秒且阻塞 UI 线程。取色时按需只抓
+        # 光标处 1x1 像素即可，开销从整屏降为常数。
 
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
@@ -402,6 +403,7 @@ class ScreenColorPicker(QWidget):
         self._hover_timer.start()
 
     def color_at(self, global_position: QPoint) -> QColor:
+        # 测试会预先往 _screens 塞缓存图像；有覆盖该点的缓存时优先使用。
         for geometry, image in self._screens:
             if not geometry.contains(global_position) or image.isNull():
                 continue
@@ -412,7 +414,20 @@ class ScreenColorPicker(QWidget):
             x = min(max(x, 0), image.width() - 1)
             y = min(max(y, 0), image.height() - 1)
             return image.pixelColor(x, y)
-        return QColor()
+        screen = QApplication.screenAt(global_position)
+        if screen is None:
+            return QColor()
+        geometry = screen.geometry()
+        x = global_position.x() - geometry.x()
+        y = global_position.y() - geometry.y()
+        x = min(max(x, 0), max(geometry.width() - 1, 0))
+        y = min(max(y, 0), max(geometry.height() - 1, 0))
+        # grabWindow 的区域坐标是屏幕逻辑坐标（Qt 内部处理 DPR 缩放），
+        # 1x1 抓取返回的图像即为该点像素。
+        image = screen.grabWindow(0, x, y, 1, 1).toImage()
+        if image.isNull():
+            return QColor()
+        return image.pixelColor(0, 0)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton:
@@ -649,10 +664,40 @@ class _ColorDialog(QColorDialog):
             self._position_alpha_slider()
 
 
+_shared_color_dialog: Optional[_ColorDialog] = None
+
+
+def prewarm_color_dialog() -> None:
+    """Build the shared color dialog ahead of the first click.
+
+    constructing a non-native QColorDialog lays out its 140-swatch grid and
+    the custom alpha slider; doing it at panel creation time moves that cost
+    off the first color click entirely.
+    """
+    global _shared_color_dialog
+    if _shared_color_dialog is not None:
+        return
+    dialog = _ColorDialog(QColor("#FFFFFF"))
+    # sizeHint() forces the internal layout pass so the later exec() only
+    # needs to show the already-built widget tree.
+    dialog.sizeHint()
+    _shared_color_dialog = dialog
+
+
 def _select_color(current: QColor, parent: QWidget, title: str) -> QColor:
-    """Open the regular color dialog used by the palette action."""
-    dialog = _ColorDialog(current, parent)
+    """Open the regular color dialog used by the palette action.
+
+    Dialog instances are cached and reused: non-native QColorDialog builds
+    a 140-swatch grid plus the custom alpha slider, so constructing one on
+    every click puts that cost right on the click itself.
+    """
+    global _shared_color_dialog
+    dialog = _shared_color_dialog
+    if dialog is None:
+        dialog = _ColorDialog(current)
+        _shared_color_dialog = dialog
     dialog.setWindowTitle(title)
+    dialog.setCurrentColor(current)
     if dialog.exec() != QDialog.DialogCode.Accepted:
         return QColor()
     return dialog.selectedColor()

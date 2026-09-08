@@ -385,6 +385,7 @@ from krok_helper.subtitle_render.frontend.properties.color_controls import (
     _normalize_hex,
     _parse_hex_color,
     _select_color,
+    prewarm_color_dialog,
 )
 from krok_helper.subtitle_render.frontend.properties.preset_manager import (
     StylePresetManagerDialog,
@@ -726,6 +727,8 @@ class PropertyPanel(QWidget):
         self._pages: list[QWidget] = []
         self._color_edit_style_snapshot: Optional[Style] = None
         self._screen_color_picker: Optional[ScreenColorPicker] = None
+        # 面板创建时后台建好共享取色对话框，首次点击不再付构建成本。
+        prewarm_color_dialog()
         self._n3_template_target_height = 1080
         self._n3_template_lyrics_dir: Optional[Path] = None
 
