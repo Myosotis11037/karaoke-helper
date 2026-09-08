@@ -3469,6 +3469,14 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     after ? charStyle.glowAfterRadius : charStyle.glowBeforeRadius
                 ))
             );
+            // Source visibility follows the per-character wipe phase, like the
+            // body path. The retired reach test compared the line-wide
+            // wipeEdge against ch.left/right, but a character's wipe-left
+            // (ink minus primary edge / 2) lies left of line->bounds.left, so
+            // the first character never counted as unreached and its
+            // after-glow source leaked a blurred sliver through the whole
+            // lead-in (utopia was clean because its branch already used the
+            // phase check below).
             const bool hasVisibleSource = std::any_of(
                 line->chars.begin(), line->chars.end(),
                 [&](const Impl::CachedChar &ch) {
@@ -3484,25 +3492,6 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         if (!ch.geometry) {
                             return false;
                         }
-                        if (useUtopiaTransition) {
-                            const N3WipePhase phase = wipePhaseAt(
-                                line->chars, charIndex
-                            );
-                            return after
-                                ? phase != N3WipePhase::Before
-                                : phase != N3WipePhase::After;
-                        }
-                        return !(rtl
-                            ? ((after && wipeEdge >= ch.right)
-                                || (!after && wipeEdge <= ch.left))
-                            : ((after && wipeEdge <= ch.left)
-                                || (!after && wipeEdge >= ch.right)));
-                    }
-                    if (!charUsesGroupedGlowAt(charIndex)
-                        || charGeometryAt(charIndex) == nullptr) {
-                        return false;
-                    }
-                    if (useUtopiaTransition) {
                         const N3WipePhase phase = wipePhaseAt(
                             line->chars, charIndex
                         );
@@ -3510,11 +3499,16 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                             ? phase != N3WipePhase::Before
                             : phase != N3WipePhase::After;
                     }
-                    return !(rtl
-                        ? ((after && wipeEdge >= ch.right)
-                            || (!after && wipeEdge <= ch.left))
-                        : ((after && wipeEdge <= ch.left)
-                            || (!after && wipeEdge >= ch.right)));
+                    if (!charUsesGroupedGlowAt(charIndex)
+                        || charGeometryAt(charIndex) == nullptr) {
+                        return false;
+                    }
+                    const N3WipePhase phase = wipePhaseAt(
+                        line->chars, charIndex
+                    );
+                    return after
+                        ? phase != N3WipePhase::Before
+                        : phase != N3WipePhase::After;
                 }
             );
             if (charStyle.decorationKind != "glow" || radius <= 0 || !hasVisibleSource) {
@@ -3555,37 +3549,21 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     bool visible = false;
                     if (charOnly >= 0) {
                         if (ch.geometry != nullptr) {
-                            if (useUtopiaTransition) {
-                                const N3WipePhase phase = wipePhaseAt(
-                                    line->chars, charIndex
-                                );
-                                visible = after
-                                    ? phase != N3WipePhase::Before
-                                    : phase != N3WipePhase::After;
-                            } else {
-                                visible = !(rtl
-                                    ? ((after && wipeEdge >= ch.right)
-                                        || (!after && wipeEdge <= ch.left))
-                                    : ((after && wipeEdge <= ch.left)
-                                        || (!after && wipeEdge >= ch.right)));
-                            }
-                        }
-                    } else if (charUsesGroupedGlowAt(charIndex)
-                               && charGeometryAt(charIndex) != nullptr) {
-                        if (useUtopiaTransition) {
                             const N3WipePhase phase = wipePhaseAt(
                                 line->chars, charIndex
                             );
                             visible = after
                                 ? phase != N3WipePhase::Before
                                 : phase != N3WipePhase::After;
-                        } else {
-                            visible = !(rtl
-                                ? ((after && wipeEdge >= ch.right)
-                                    || (!after && wipeEdge <= ch.left))
-                                : ((after && wipeEdge <= ch.left)
-                                    || (!after && wipeEdge >= ch.right)));
                         }
+                    } else if (charUsesGroupedGlowAt(charIndex)
+                               && charGeometryAt(charIndex) != nullptr) {
+                        const N3WipePhase phase = wipePhaseAt(
+                            line->chars, charIndex
+                        );
+                        visible = after
+                            ? phase != N3WipePhase::Before
+                            : phase != N3WipePhase::After;
                     }
                     if (!visible) {
                         continue;
@@ -3652,19 +3630,10 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 if (charOnly >= 0) {
                     // Per-character layer: draw the upright cached glyph and
                     // apply the animation matrix to the blurred result.
-                    N3WipePhase phase = N3WipePhase::Wiping;
-                    if (useUtopiaTransition) {
-                        phase = wipePhaseAt(line->chars, charIndex);
-                    }
+                    const N3WipePhase phase = wipePhaseAt(line->chars, charIndex);
                     if (ch.geometry == nullptr
-                        || (useUtopiaTransition
-                            && ((phase == N3WipePhase::Before && after)
-                                || (phase == N3WipePhase::After && !after)))
-                        || (!useUtopiaTransition && (rtl
-                            ? ((after && wipeEdge >= ch.right)
-                                || (!after && wipeEdge <= ch.left))
-                            : ((after && wipeEdge <= ch.left)
-                                || (!after && wipeEdge >= ch.right))))) {
+                        || (phase == N3WipePhase::Before && after)
+                        || (phase == N3WipePhase::After && !after)) {
                         continue;
                     }
                     brush->SetOpacity(
@@ -3724,21 +3693,14 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     continue;
                 }
                 bool needClip = false;
+                const N3WipePhase phase = wipePhaseAt(line->chars, charIndex);
+                if ((phase == N3WipePhase::Before && after)
+                    || (phase == N3WipePhase::After && !after)) {
+                    continue;
+                }
                 if (useUtopiaTransition) {
-                    const N3WipePhase phase = wipePhaseAt(line->chars, charIndex);
-                    if ((phase == N3WipePhase::Before && after)
-                        || (phase == N3WipePhase::After && !after)) {
-                        continue;
-                    }
                     needClip = phase == N3WipePhase::Wiping;
                 } else {
-                    if (rtl
-                        ? ((after && wipeEdge >= ch.right)
-                            || (!after && wipeEdge <= ch.left))
-                        : ((after && wipeEdge <= ch.left)
-                            || (!after && wipeEdge >= ch.right))) {
-                        continue;
-                    }
                     needClip = !mainWipeComplete;
                 }
                 brush->SetOpacity(
