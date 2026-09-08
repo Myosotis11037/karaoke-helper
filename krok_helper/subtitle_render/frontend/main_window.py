@@ -462,6 +462,16 @@ _PAINT_ONLY_SCHEME_FIELDS: frozenset[str] = frozenset({
     "base_color", "fill_color", "fill_gradient_enabled", "fill_gradient_start_color",
     "fill_gradient_end_color", "fill_gradient_angle_deg", "stroke_color", "shadow_color",
     "ruby_color", "karaoke_colors", "ruby_colors_follow_main", "ruby_karaoke_colors",
+    "ruby_horizontal_gradient_with_main",
+    # 装饰（阴影/发光）参数只影响绘制：跨页避让的碰撞包络按纯主字形
+    # path 测量（``_display_line_horizontal_ink_rect`` ——Ruby、描边、
+    # 阴影、发光全部刻意排除），装饰参数不是布局输入。
+    "decoration_kind", "shadow_offset_x", "shadow_offset_y",
+    "glow_radius_px", "glow_before_radius_px", "glow_after_radius_px",
+    "glow_concentration_level",
+    "ruby_decoration_kind", "ruby_shadow_offset_x", "ruby_shadow_offset_y",
+    "ruby_glow_radius_px", "ruby_glow_before_radius_px", "ruby_glow_after_radius_px",
+    "ruby_glow_concentration_level",
 })
 
 

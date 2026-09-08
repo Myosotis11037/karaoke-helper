@@ -1513,8 +1513,6 @@ def _measure_page_offset_lines(
                 track,
                 display_line,
                 line_style,
-                # Collision avoidance protects only undecorated main glyphs.
-                include_glow=False,
             )
             axis_bounds = (
                 None if ink_rect is None else (ink_rect[0], ink_rect[2])
@@ -1535,8 +1533,6 @@ def _measure_page_offset_lines(
                 baselines,
                 line_layouts,
                 layout_cache_sig=layout_cache_sig,
-                # Collision avoidance protects only undecorated main glyphs.
-                include_glow=False,
             )
             axis_bounds = (
                 None if ink_rect is None else (ink_rect[1], ink_rect[3])
@@ -1650,7 +1646,6 @@ def _display_line_horizontal_ink_rect(
     line_layouts: dict[int, _SayatooLineLayout],
     *,
     layout_cache_sig: tuple | None,
-    include_glow: bool = True,
 ) -> tuple[int, int, int, int] | None:
     """Return the undecorated main-glyph rectangle used by collision checks.
 
@@ -1689,7 +1684,6 @@ def _display_line_horizontal_ink_rect(
             line_x,
             lane,
             layout_cache_sig,
-            include_glow,
         )
         if cache_key in cache:
             return cache[cache_key]
@@ -1811,11 +1805,13 @@ def _line_static_vertical_ink_bounds(
 ) -> tuple[int, int] | None:
     """Return the static painted Y envelope without layout line spacing.
 
-    Placement collisions use actual main-text/Ruby glyph geometry plus stroke,
-    shadow and glow extents.  Font metric cells, ``line_gap_px`` and every
-    entry/exit or per-character animation trajectory are deliberately absent.
-    The solver adds the overlapped layout's line gap exactly once, after these
-    per-line ink bounds have been measured.
+    Counts main-text/Ruby glyph geometry plus stroke, shadow and glow
+    extents. Placement collisions deliberately do NOT consume this any
+    more: they measure undecorated main glyphs only
+    (``_display_line_horizontal_ink_rect`` / ``_display_line_vertical_ink_rect``),
+    so decoration parameters cannot move lyrics; this painted-ink envelope
+    stays as a test reference. Font metric cells and ``line_gap_px`` are
+    absent; consumers add the overlapped layout's line gap at most once.
     """
 
     bounds = _line_static_ink_rect(layout, include_glow=include_glow)
@@ -1961,8 +1957,6 @@ def _display_line_vertical_ink_rect(
     track: TimingTrack,
     display_line: DisplayLine,
     line_style: Style,
-    *,
-    include_glow: bool = True,
 ) -> tuple[int, int, int, int] | None:
     """Return the undecorated main-glyph rectangle for a vertical line."""
 
@@ -2497,8 +2491,6 @@ def measure_collision_bands(
                 track,
                 display_line,
                 line_style,
-                # Collision avoidance protects only undecorated main glyphs.
-                include_glow=False,
             )
             axis_bounds = (
                 None if ink_rect is None else (ink_rect[0], ink_rect[2])
@@ -2520,8 +2512,6 @@ def measure_collision_bands(
                 baselines,
                 line_layouts,
                 layout_cache_sig=layout_cache_sig,
-                # Collision avoidance protects only undecorated main glyphs.
-                include_glow=False,
             )
             axis_bounds = (
                 None if ink_rect is None else (ink_rect[1], ink_rect[3])

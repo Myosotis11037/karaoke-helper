@@ -52,6 +52,24 @@ _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS = frozenset({
     "karaoke_colors",
     "ruby_colors_follow_main",
     "ruby_karaoke_colors",
+    # 装饰（阴影/发光）与注音渐变共享是纯绘制字段：跨页避让的碰撞包络
+    # 按纯主字形 path 测量（Ruby、描边、阴影、发光全部刻意排除），
+    # 装饰参数不影响排版。
+    "decoration_kind",
+    "shadow_offset_x",
+    "shadow_offset_y",
+    "glow_radius_px",
+    "glow_before_radius_px",
+    "glow_after_radius_px",
+    "glow_concentration_level",
+    "ruby_decoration_kind",
+    "ruby_shadow_offset_x",
+    "ruby_shadow_offset_y",
+    "ruby_glow_radius_px",
+    "ruby_glow_before_radius_px",
+    "ruby_glow_after_radius_px",
+    "ruby_glow_concentration_level",
+    "ruby_horizontal_gradient_with_main",
 })
 """纯绘制字段：不参与歌词行的排版/分页/布局计划。
 

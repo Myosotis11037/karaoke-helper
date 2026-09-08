@@ -1157,10 +1157,39 @@ def test_colour_only_edit_skips_window_and_margin_recompute(qapp):
     win._apply_style(replace(win._style, custom_style_schemes=schemes))
     assert not win._margin_check_timer.isActive()
 
+    # 方案的装饰参数（装饰类型/阴影偏移/发光）也是纯上色：碰撞避让包络
+    # 只测纯主字形 path（Ruby、描边、阴影、发光全部排除），装饰不反向
+    # 影响排版。
+    schemes = dict(win._style.custom_style_schemes)
+    schemes[TITLE_SCHEME_NAME] = replace(
+        schemes[TITLE_SCHEME_NAME],
+        decoration_kind="shadow",
+        shadow_offset_x=7,
+        glow_after_radius_px=23,
+    )
+    win._apply_style(replace(win._style, custom_style_schemes=schemes))
+    assert not win._margin_check_timer.isActive()
+    assert not win._tracks_window_refresh_timer.isActive()
+
     # 影响几何的改动照旧重算。
     win._apply_style(replace(win._style, horizontal_margin_px=900))
     assert win._margin_check_timer.isActive()
     assert win._tracks_window_refresh_timer.isActive()
+
+
+def test_paint_only_scheme_whitelist_matches_layout_signature_exclusions() -> None:
+    """主窗口 paint-only 方案白名单与布局签名剔除清单必须逐字段一致。
+
+    只进 paint-only 不进签名剔除 → 跳过重算但签名失配、布局缓存照旧
+    重建（白名单形同虚设）；只进签名剔除不进 paint-only → 预览仍走整轨
+    全量重排（白跑）。装饰字段两边都含：碰撞包络只测纯主字形 path，
+    装饰参数不影响排版。
+    """
+    from krok_helper.subtitle_render.engine.value_signature import (
+        _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS,
+    )
+
+    assert mw._PAINT_ONLY_SCHEME_FIELDS == _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS
 
 
 def test_live_scheme_edits_do_not_auto_save_as_app_defaults(qapp):

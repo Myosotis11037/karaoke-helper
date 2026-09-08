@@ -280,6 +280,59 @@ def test_layout_cache_signature_ignores_title_only_style_fields() -> None:
     assert base != layout_cache_signature(track_changed, Style())
 
 
+def test_lyric_layout_signature_ignores_scheme_decoration_fields() -> None:
+    """角色颜色页的全部属性都不影响排版，编辑不得作废布局缓存。
+
+    碰撞避让包络按纯主字形 path 测量——Ruby、描边、阴影、发光全部刻意
+    排除（``_display_line_horizontal_ink_rect``；行为由
+    ``test_n3_collision_box_uses_only_main_glyph_ink`` 锁定）——装饰参数
+    因此是纯绘制字段。几何字段（字号）仍必须使签名失效。
+    """
+    from krok_helper.subtitle_render.engine.value_signature import (
+        lyric_layout_style_signature,
+    )
+
+    scheme = SubtitleStyleScheme()
+    style = Style(custom_style_schemes={"角色A": scheme})
+
+    def signature_with(changed: SubtitleStyleScheme):
+        return lyric_layout_style_signature(
+            Style(custom_style_schemes={"角色A": changed})
+        )
+
+    base = lyric_layout_style_signature(style)
+    assert base == signature_with(
+        replace(
+            scheme,
+            decoration_kind="shadow",
+            shadow_offset_x=12,
+            shadow_offset_y=-6,
+            glow_radius_px=40,
+            glow_before_radius_px=40,
+            glow_after_radius_px=60,
+            glow_concentration_level=2,
+        )
+    )
+    assert base == signature_with(
+        replace(
+            scheme,
+            ruby_decoration_kind="glow",
+            ruby_shadow_offset_x=9,
+            ruby_shadow_offset_y=4,
+            ruby_glow_radius_px=50,
+            ruby_glow_before_radius_px=50,
+            ruby_glow_after_radius_px=70,
+            ruby_glow_concentration_level=0,
+        )
+    )
+    assert base == signature_with(
+        replace(scheme, ruby_horizontal_gradient_with_main=False)
+    )
+
+    # 字号仍是几何字段，必须使布局签名失效。
+    assert base != signature_with(replace(scheme, font_size_px=64))
+
+
 def test_painter_keeps_horizontal_wipe_compatibility_exports() -> None:
     from krok_helper.subtitle_render.engine.render.elements.horizontal import wipe
 
