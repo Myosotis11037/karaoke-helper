@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -156,6 +157,58 @@ def make_export_spin(
     return spin
 
 
+class ExportSizeEdit(FluentLineEdit):
+    """导出宽/高的纯输入框，保留 SpinBox 兼容的 value/setValue/valueChanged 面。
+
+    不带步进按钮与上下箭头，窄空间下只占文字所需宽度；提交语义与原
+    SpinBox 关闭键盘跟踪后一致——回车或失焦才生效，失焦时无法完整
+    解析的半成品文本回退为已提交值。
+    """
+
+    valueChanged = Signal(int)
+
+    def __init__(self, minimum: int, maximum: int, value: int) -> None:
+        super().__init__()
+        self._minimum = minimum
+        self._maximum = maximum
+        self._value = max(minimum, min(maximum, int(value)))
+        self.setMinimumHeight(32)
+        self.setText(str(self._value))
+        self.editingFinished.connect(self._commit_editing)
+
+    def setRange(self, minimum: int, maximum: int) -> None:
+        self._minimum = minimum
+        self._maximum = maximum
+        self.setValue(self._value)
+
+    def value(self) -> int:
+        return self._value
+
+    def setValue(self, value: int) -> None:
+        clamped = max(self._minimum, min(self._maximum, int(value)))
+        changed = clamped != self._value
+        self._value = clamped
+        if self.text().strip() != str(clamped):
+            self.setText(str(clamped))
+        if changed:
+            self.valueChanged.emit(clamped)
+
+    def _commit_editing(self) -> None:
+        text = self.text().strip()
+        if not text.isdigit():
+            self.setText(str(self._value))
+            return
+        self.setValue(int(text))
+
+    def flush_editing(self) -> None:
+        """导出/保存前兜底提交完整且在范围内的文本；半成品保持原样。"""
+        text = self.text().strip()
+        if text.isdigit():
+            parsed = int(text)
+            if self._minimum <= parsed <= self._maximum:
+                self.setValue(parsed)
+
+
 def make_labeled_export_control(
     label_text: str,
     control: QWidget,
@@ -184,6 +237,22 @@ def sync_export_preset_enabled(encoder_combo, preset_combo) -> None:
     preset_combo.setToolTip(
         "" if cpu_possible else "CPU preset 仅在 CPU / libx264 编码时生效。"
     )
+
+
+class SettingsColumnScrollArea(QScrollArea):
+    """竖向按内容自适应高度的滚动区。
+
+    空间充足时 sizeHint 等于内容高度（配合 Maximum 垂直策略，保持设置列
+    原有的整体垂直居中布局）；窗口高度不足时被布局压矮，出现竖向滚动条，
+    控件不再被挤压或截断。
+    """
+
+    def sizeHint(self) -> QSize:
+        content = self.widget()
+        base = super().sizeHint()
+        if content is None:
+            return base
+        return QSize(base.width(), content.sizeHint().height())
 
 
 class ExportLocationDialog(ModelessDialog):
@@ -439,8 +508,8 @@ class ExportWorkspaceControls:
     name_edit: FluentLineEdit
     format_combo: FluentComboBox
     name_suffix_label: QLabel
-    width_spin: FluentSpinBox
-    height_spin: FluentSpinBox
+    width_spin: ExportSizeEdit
+    height_spin: ExportSizeEdit
     fps_combo: FluentComboBox
     encoder_combo: FluentComboBox
     codec_combo: FluentComboBox
@@ -525,7 +594,24 @@ class ExportWorkspaceView(QWidget):
             settings_col,
             lambda: "#SrExportSettingsCol { background: transparent; }",
         )
-        settings_col.setFixedWidth(430)
+        # 竖向滚动兜底：低分屏 / 高缩放下内容超出可视高度时滚动而不是互相挤压。
+        settings_col.setMinimumWidth(400)
+        settings_scroll = SettingsColumnScrollArea()
+        settings_scroll.setObjectName("SrExportSettingsScroll")
+        themed(
+            settings_scroll,
+            lambda: "#SrExportSettingsScroll { background: transparent; border: none; }",
+        )
+        settings_scroll.setWidget(settings_col)
+        settings_scroll.setWidgetResizable(True)
+        settings_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        settings_scroll.setFixedWidth(430)
+        settings_scroll.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Maximum,
+        )
         settings_layout = QVBoxLayout(settings_col)
         settings_layout.setContentsMargins(0, 0, 0, 0)
         settings_layout.setSpacing(12)
@@ -630,11 +716,8 @@ class ExportWorkspaceView(QWidget):
         params_row = QHBoxLayout()
         params_row.setContentsMargins(0, 0, 0, 0)
         params_row.setSpacing(10)
-        width_spin = make_export_spin(160, 7680, 1920, "")
-        height_spin = make_export_spin(90, 4320, 1080, "")
-        # 关闭键盘跟踪，确保高度变化仅在提交最终值时按 N3 语义重算。
-        width_spin.setKeyboardTracking(False)
-        height_spin.setKeyboardTracking(False)
+        width_spin = ExportSizeEdit(160, 7680, 1920)
+        height_spin = ExportSizeEdit(90, 4320, 1080)
         fps_combo = FluentComboBox()
         fps_combo.setMinimumHeight(32)
         for fps in fps_options:
@@ -775,7 +858,7 @@ class ExportWorkspaceView(QWidget):
         format_label = CaptionLabel("输出格式: MP4 · H.264 (AVC)")
         monitor_layout.addWidget(format_label)
 
-        body_row.addWidget(settings_col, 0, Qt.AlignmentFlag.AlignTop)
+        body_row.addWidget(settings_scroll, 0, Qt.AlignmentFlag.AlignTop)
         body_row.addWidget(monitor_card, 0, Qt.AlignmentFlag.AlignTop)
         body_row.addStretch(1)
         layout.addStretch(1)
@@ -886,6 +969,7 @@ __all__ = [
     "EXPORT_PREVIEW_MIN_WIDTH",
     "ExportLocationDialog",
     "ExportMonitorView",
+    "ExportSizeEdit",
     "ExportWorkspaceControls",
     "ExportWorkspaceView",
     "export_preview_width",

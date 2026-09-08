@@ -15,12 +15,31 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from threading import local as thread_local
 from typing import Callable
 
 
 _REPORTER = thread_local()
+
+_GIL_YIELD_INTERVAL_S = 0.015
+_YIELD_STATE = thread_local()
+
+
+def yield_to_gui() -> None:
+    """整轨重排热点循环的 GIL 让出检查点（按时间节流，线程本地）。
+
+    后台线程的整轨排版是纯 Python CPU 密集段：长段执行不释放 GIL 时，
+    GUI 线程的事件循环会被饿到掉帧。在逐行/逐趟热点循环里调用本函数，
+    至多每 ``_GIL_YIELD_INTERVAL_S`` 秒 ``sleep(0)`` 让出一次时间片；
+    未到间隔时调用只是一次属性查找 + ``perf_counter``，热路径开销可忽略。
+    """
+    now = time.perf_counter()
+    if now - getattr(_YIELD_STATE, "last_yield", 0.0) < _GIL_YIELD_INTERVAL_S:
+        return
+    _YIELD_STATE.last_yield = now
+    time.sleep(0)
 
 ProgressReporter = Callable[[str, int, int], None]
 
@@ -38,6 +57,9 @@ def render_progress_scope(reporter: ProgressReporter | None):
 
 
 def report_render_progress(stage: str, done: int, total: int) -> None:
+    # 整轨重排的逐行/逐趟循环都会经过这里：顺带做节流后的 GIL 让出，
+    # 是覆盖所有热点循环的最便宜插桩点（未挂 reporter 时同样生效）。
+    yield_to_gui()
     reporter = getattr(_REPORTER, "reporter", None)
     if reporter is not None:
         reporter(stage, int(done), int(total))
@@ -69,6 +91,8 @@ def report_display_measure_progress(done: int, total: int) -> None:
     reporter = getattr(_REPORTER, "reporter", None)
     if reporter is None:
         return
+    # 实测循环按行到达这里，同样是 GIL 让出检查点（节流后近乎零开销）。
+    yield_to_gui()
     head = getattr(_REPORTER, "display_phase_head", None)
     if head is None or total <= 0:
         return
@@ -84,4 +108,5 @@ __all__ = [
     "report_display_measure_progress",
     "report_render_progress",
     "set_display_phase_head",
+    "yield_to_gui",
 ]

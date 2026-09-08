@@ -2240,6 +2240,19 @@ def test_preview_window_button_is_anchored_to_preview_tab_only(qapp, monkeypatch
     win.close()
 
 
+def _drain_margin_check(win, qapp, timeout_s: float = 5.0) -> None:
+    """等待余白检查后台线程完成并把结果送回 GUI 线程。
+
+    ``_check_layout_margins`` 已改为后台线程计算 + 队列信号回传；直接同步
+    断言的旧写法拿不到刚算完的结果。
+    """
+    deadline = time.perf_counter() + timeout_s
+    while win._margin_check_busy and time.perf_counter() < deadline:
+        qapp.processEvents()
+        time.sleep(0.01)
+    qapp.processEvents()
+
+
 def test_layout_issue_button_lists_and_jumps_to_problem_line(qapp, monkeypatch):
     win = _make_window(qapp, monkeypatch)
     track = TimingTrack(
@@ -2283,6 +2296,7 @@ def test_layout_issue_button_lists_and_jumps_to_problem_line(qapp, monkeypatch):
 
     win._apply_timing_track(track, None)
     win._check_layout_margins()
+    _drain_margin_check(win, qapp)
     win.resize(1280, 720)
     win._video_settings_panel.set_populated(True)
     win.show()
@@ -2333,6 +2347,7 @@ def test_layout_issue_button_lists_and_jumps_to_problem_line(qapp, monkeypatch):
         lambda *_args: [timing],
     )
     win._check_layout_margins()
+    _drain_margin_check(win, qapp)
     assert win._layout_issues_button.toolTip() == "当前字幕诊断（1 条）"
     assert dialog._list_widget.count() == 1
     assert "时间窗口自动压缩" in dialog._list_widget.item(0).text()
@@ -2349,6 +2364,7 @@ def test_layout_issue_button_lists_and_jumps_to_problem_line(qapp, monkeypatch):
         lambda *_args: [],
     )
     win._check_layout_margins()
+    _drain_margin_check(win, qapp)
     assert win._layout_issues_button.isHidden() is True
     assert dialog._summary_label.text().startswith("未发现字幕布局或时间问题")
     win.close()

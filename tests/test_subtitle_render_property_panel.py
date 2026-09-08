@@ -7823,7 +7823,7 @@ def test_export_height_typing_rescales_once_from_final_value(qapp, monkeypatch):
     direct = _export_screen_window(monkeypatch)
 
     spin = typed._export_height_spin
-    editor = spin.lineEdit()
+    editor = spin
     editor.setSelection(0, len(editor.text()))
     QTest.keyClicks(editor, "1440")
 
@@ -7847,7 +7847,7 @@ def test_flush_export_spin_edits_skips_partial_text(qapp, monkeypatch):
     """flush 只收敛完整可解析文本；半成品留给用户继续输入或失焦处理。"""
     win = _export_screen_window(monkeypatch)
     spin = win._export_height_spin
-    editor = spin.lineEdit()
+    editor = spin
 
     editor.setSelection(0, len(editor.text()))
     QTest.keyClicks(editor, "2160")

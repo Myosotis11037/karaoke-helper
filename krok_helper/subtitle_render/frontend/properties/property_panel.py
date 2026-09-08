@@ -1411,6 +1411,10 @@ class PropertyPanel(QWidget):
         self._letter_spacing_spin.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
         )
+        self._letter_spacing_spin.setToolTip(
+            "同一行内相邻字形之间的额外间距（N3 字間），可为负让文字收紧；"
+            "默认 7px 来自 N3。"
+        )
         self._letter_spacing_spin.valueChanged.connect(
             lambda value: self._update_layout_field(letter_spacing_px=value)
         )
@@ -1420,6 +1424,9 @@ class PropertyPanel(QWidget):
         self._space_width_spin.setFixedWidth(120)
         self._space_width_spin.setSizePolicy(
             QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed
+        )
+        self._space_width_spin.setToolTip(
+            "半角空格的渲染宽度相对原字体的百分比；日文歌词里的英文词间距用它微调。"
         )
         self._space_width_spin.valueChanged.connect(
             lambda value: self._update_layout_field(space_width_percent=value)

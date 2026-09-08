@@ -53,7 +53,6 @@ from PyQt6.QtGui import (
     QImage,
     QKeySequence,
     QShortcut,
-    QValidator,
 )
 from PyQt6.QtWidgets import (
     QApplication,
@@ -75,6 +74,7 @@ from qfluentwidgets import (
     InfoBar,
     InfoBarPosition,
     RoundMenu,
+    StateToolTip,
     TitleLabel,
 )
 
@@ -116,6 +116,15 @@ from krok_helper.subtitle_render.engine.render.adapters.layout_diagnostics impor
     check_layout_margins,
     display_windows_for_style,
     layout_timing_diagnostics_for_style,
+)
+from krok_helper.subtitle_render.engine.render_progress import (
+    render_progress_scope,
+    yield_to_gui,
+)
+from krok_helper.subtitle_render.frontend.preview.preview_async import (
+    _RENDER_STAGE_LABELS,
+    _RENDER_STAGE_SPANS_PAINTER,
+    _render_progress_reporter,
 )
 from krok_helper.subtitle_render.engine.style.title_semantics import (
     resolve_title_text,
@@ -523,6 +532,8 @@ class SubtitleRenderWindow(QWidget):
 
     projectStateChanged = Signal(object)
     _tracksViewWindowsReady = Signal(int, object)
+    _layoutIssuesReady = Signal(int, object)
+    _layoutCheckProgress = Signal(int, str)
     _embedded: bool = False
 
     # Project-document compatibility facade. The existing frontend and tests
@@ -902,6 +913,25 @@ class SubtitleRenderWindow(QWidget):
         self._margin_check_timer.setSingleShot(True)
         self._margin_check_timer.setInterval(400)
         self._margin_check_timer.timeout.connect(self._check_layout_margins)
+        # 余白检查的整轨排版同样重（真实工程上百毫秒到几百毫秒），挪后台线程；
+        # 代号守卫 + 忙时补跑与轨道窗口重算同一套模式。进度提示用 StateToolTip
+        # 懒显示：检查 600ms 内完成就不弹，避免连续调参时提示闪烁。
+        self._margin_check_generation = 0
+        self._margin_check_busy = False
+        self._margin_check_rerun_pending = False
+        self._layout_check_tooltip: Optional[StateToolTip] = None
+        self._layout_check_tooltip_timer = QTimer(self)
+        self._layout_check_tooltip_timer.setSingleShot(True)
+        self._layout_check_tooltip_timer.setInterval(600)
+        self._layout_check_tooltip_timer.timeout.connect(
+            self._show_layout_check_tooltip
+        )
+        self._layoutIssuesReady.connect(
+            self._on_layout_issues_ready, Qt.ConnectionType.QueuedConnection
+        )
+        self._layoutCheckProgress.connect(
+            self._on_layout_check_progress, Qt.ConnectionType.QueuedConnection
+        )
         # 预览 / 歌词面板的重刷防抖（纯尾沿）：连打期间（滚轮、逐键、拖色、
         # 字体下拉连选）完全不渲，停手 ``_PREVIEW_STYLE_REFRESH_MS`` 后渲最后
         # 一版——每次都整帧重渲会卡住界面线程。离散动作（撤销/重做/加载）不走
@@ -4703,15 +4733,17 @@ class SubtitleRenderWindow(QWidget):
         def compute() -> None:
             try:
                 with layout_pass():
-                    windows = [
-                        display_windows_for_style(
-                            track,
-                            style,
-                            logical_w=logical_w,
-                            logical_h=logical_h,
+                    windows = []
+                    for track in tracks:
+                        yield_to_gui()
+                        windows.append(
+                            display_windows_for_style(
+                                track,
+                                style,
+                                logical_w=logical_w,
+                                logical_h=logical_h,
+                            )
                         )
-                        for track in tracks
-                    ]
             except Exception:
                 # 后台重算失败不该拖垮窗口：把手保持上一版数据即可。
                 logging.getLogger(__name__).exception(
@@ -5784,17 +5816,32 @@ class SubtitleRenderWindow(QWidget):
         self._margin_check_timer.start()
         self._mark_project_dirty()
 
-    def _collect_layout_issues(self) -> list[_LayoutIssue | _TimingIssue]:
-        """Collect margin, timing and page-placement diagnostics."""
-        tracks = self._all_tracks()
+    def _collect_layout_issues(
+        self,
+        *,
+        tracks: list | None = None,
+        style: object | None = None,
+        logical_w: int | None = None,
+        logical_h: int | None = None,
+    ) -> list[_LayoutIssue | _TimingIssue]:
+        """Collect margin, timing and page-placement diagnostics.
+
+        参数可显式传入供后台线程使用（线程里不能读实时 self 状态，快照在
+        调度时捕获）；缺省按 GUI 线程当前状态取（诊断对话框路径）。
+        """
+        if tracks is None:
+            tracks = self._all_tracks()
+        if style is None:
+            style = self._style
+        if logical_w is None:
+            logical_w = self._screen_settings.width
+        if logical_h is None:
+            logical_h = self._screen_settings.height
         source_names = ["主字幕", *(source.name for source in self._extra_sources)]
         issues: list[_LayoutIssue | _TimingIssue] = []
         for track_index, track in enumerate(tracks):
-            warnings = check_layout_margins(
-                track,
-                self._style,
-                self._screen_settings.width,
-            )
+            yield_to_gui()
+            warnings = check_layout_margins(track, style, logical_w)
             source_name = (
                 source_names[track_index]
                 if track_index < len(source_names)
@@ -5810,10 +5857,10 @@ class SubtitleRenderWindow(QWidget):
                 if 0 <= warning.line_index < len(track.lines)
             )
             diagnostics = layout_timing_diagnostics_for_style(
-                self._screen_settings.width,
-                self._screen_settings.height,
+                logical_w,
+                logical_h,
                 track,
-                self._style,
+                style,
             )
             issues.extend(
                 _TimingIssue(
@@ -5893,16 +5940,65 @@ class SubtitleRenderWindow(QWidget):
         self._show_preview_window()
 
     def _check_layout_margins(self) -> None:
-        """N3 式左右余白检查（全部字幕源）：溢出画面 → Warning；侵入余白 → Information。"""
+        """N3 式左右余白检查（全部字幕源）：溢出画面 → Warning；侵入余白 → Information。
+
+        整轨排版重（真实工程上百毫秒到几百毫秒），放在 GUI 线程上会让每次
+        调字号/描边宽都僵一次。挪后台线程计算，结果经队列信号回来；连续
+        调参时只有最后一次算得的结果作数，跑的过程中又来新请求就补跑一次。
+        """
         if not self._all_tracks():
             self._set_layout_issues([])
             self._last_margin_warning_key = ""
             return
-        try:
-            # 余白检查同样要整轨排版，且在 GUI 线程上；共用整轨缓存。
-            with layout_pass():
-                issues = self._collect_layout_issues()
-        except Exception:  # noqa: BLE001 — 检查失败不影响正常编辑
+        if self._margin_check_busy:
+            self._margin_check_rerun_pending = True
+            return
+        self._margin_check_generation += 1
+        generation = self._margin_check_generation
+        tracks = list(self._all_tracks())
+        style = self._style
+        logical_w = self._screen_settings.width
+        logical_h = self._screen_settings.height
+
+        def compute() -> None:
+            try:
+                with layout_pass(), render_progress_scope(
+                    _render_progress_reporter(
+                        _RENDER_STAGE_SPANS_PAINTER,
+                        self._layoutCheckProgress.emit,
+                    )
+                ):
+                    issues = self._collect_layout_issues(
+                        tracks=tracks,
+                        style=style,
+                        logical_w=logical_w,
+                        logical_h=logical_h,
+                    )
+            except Exception:  # noqa: BLE001 — 检查失败不影响正常编辑
+                logging.getLogger(__name__).exception("字幕余白检查后台计算失败")
+                issues = None
+            try:
+                self._layoutIssuesReady.emit(generation, issues)
+            except RuntimeError:
+                # 窗口已销毁（测试清理 / 退出），后台结果无处可送。
+                pass
+
+        self._margin_check_busy = True
+        self._layout_check_tooltip_timer.start()
+        threading.Thread(
+            target=compute, name="layout-margin-check", daemon=True
+        ).start()
+
+    def _on_layout_issues_ready(
+        self, generation: int, issues: object
+    ) -> None:
+        self._margin_check_busy = False
+        self._dismiss_layout_check_tooltip()
+        if self._margin_check_rerun_pending:
+            self._margin_check_rerun_pending = False
+            self._check_layout_margins()
+            return
+        if generation != self._margin_check_generation or issues is None:
             return
         self._set_layout_issues(issues)
         overflow = [
@@ -5947,6 +6043,30 @@ class SubtitleRenderWindow(QWidget):
                 position=InfoBarPosition.BOTTOM_RIGHT,
                 duration=4000,
             )
+
+    def _show_layout_check_tooltip(self) -> None:
+        """检查仍在跑才弹进度提示；短检查（<600ms）不打扰用户。"""
+        if not self._margin_check_busy or self._layout_check_tooltip is not None:
+            return
+        tooltip = StateToolTip("正在检查字幕布局", "准备中…", self)
+        tooltip.move(tooltip.getSuitablePos())
+        tooltip.show()
+        self._layout_check_tooltip = tooltip
+
+    def _on_layout_check_progress(self, percent: int, stage: str) -> None:
+        if self._layout_check_tooltip is not None:
+            self._layout_check_tooltip.setContent(
+                f"{_RENDER_STAGE_LABELS.get(stage, stage)} {percent}%"
+            )
+
+    def _dismiss_layout_check_tooltip(self) -> None:
+        self._layout_check_tooltip_timer.stop()
+        tooltip = self._layout_check_tooltip
+        self._layout_check_tooltip = None
+        if tooltip is not None:
+            tooltip.setState(True)
+            tooltip.hide()
+            tooltip.deleteLater()
 
     def _apply_style_presets(self, presets: dict) -> None:
         self._style_presets = _style_presets_from_dict(presets)
@@ -6058,17 +6178,13 @@ class SubtitleRenderWindow(QWidget):
     def _flush_export_spin_edits(self) -> None:
         """提交宽/高输入框里尚未失焦的键盘编辑（导出 / 保存前兜底）。
 
-        宽/高已关闭键盘跟踪，键入中的文本要等回车或失焦才生效；窗口级
-        快捷键（如 Ctrl+S）不会移走焦点，这里手动收敛一次。只提交完整
-        可解析的文本，半成品（清空、暂时越界）保持原样，留给用户继续
-        输入或失焦时由 Qt 按常规规则处理——与属性面板数值字段的既定
-        语义一致。
+        宽/高是纯输入框（ExportSizeEdit），键入中的文本要等回车或失焦
+        才生效；窗口级快捷键（如 Ctrl+S）不会移走焦点，这里手动收敛一次。
+        只提交完整且在范围内的文本，半成品（清空、暂时越界）保持原样，
+        留给用户继续输入或失焦时回退——与属性面板数值字段的既定语义一致。
         """
-        for spin in (self._export_width_spin, self._export_height_spin):
-            editor = spin.lineEdit()
-            state, _fixed, _pos = spin.validate(editor.text(), editor.cursorPosition())
-            if state == QValidator.State.Acceptable:
-                spin.interpretText()
+        self._export_width_spin.flush_editing()
+        self._export_height_spin.flush_editing()
 
     def _export_fps_value(self) -> int:
         data = self._export_fps_combo.currentData()

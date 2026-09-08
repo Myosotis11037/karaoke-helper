@@ -74,6 +74,10 @@ class LayoutPropertyPageBuilder:
         compact_property_control(host._viewport_align_combo)
         for label, value in VIEWPORT_ALIGNMENT_OPTIONS:
             host._viewport_align_combo.addItem(label, value)
+        host._viewport_align_combo.setToolTip(
+            "整幅字幕层在画面中的锚点位置；「位置 X/Y」「缩放」「旋转」"
+            "都相对这个锚点生效。"
+        )
         host._viewport_align_combo.currentIndexChanged.connect(
             lambda _index: host._update_style(
                 viewport_align=host._viewport_align_combo.currentData()
@@ -82,10 +86,10 @@ class LayoutPropertyPageBuilder:
 
         grid = ResponsiveFieldGrid(section, min_column_width=110, max_columns=5)
         grid.add_field("对齐", host._viewport_align_combo)
-        self._add_spin(grid, "_viewport_x_spin", "位置 X", -4000, 4000, "viewport_offset_x")
-        self._add_spin(grid, "_viewport_y_spin", "位置 Y", -4000, 4000, "viewport_offset_y")
-        self._add_spin(grid, "_viewport_scale_spin", "缩放", 10, 400, "viewport_scale_pct", suffix=" %")
-        self._add_spin(grid, "_viewport_rotation_spin", "旋转", -180, 180, "viewport_rotation_deg", suffix=" °")
+        self._add_spin(grid, "_viewport_x_spin", "位置 X", -4000, 4000, "viewport_offset_x", suffix=" px", tooltip="字幕层相对锚点的水平偏移，正值为向右。")
+        self._add_spin(grid, "_viewport_y_spin", "位置 Y", -4000, 4000, "viewport_offset_y", suffix=" px", tooltip="字幕层相对锚点的垂直偏移，正值为向下。")
+        self._add_spin(grid, "_viewport_scale_spin", "缩放", 10, 400, "viewport_scale_pct", suffix=" %", tooltip="整幅字幕层的等比缩放，100 % 为原始大小。")
+        self._add_spin(grid, "_viewport_rotation_spin", "旋转", -180, 180, "viewport_rotation_deg", suffix=" °", tooltip="整幅字幕层绕锚点的旋转角度。")
         layout.addWidget(grid)
         return section
 
@@ -117,6 +121,9 @@ class LayoutPropertyPageBuilder:
         compact_layout.addWidget(property_field("行间距", host._line_gap_spin), 0)
 
         host._vertical_check = CheckBox("竖排", compact_row)
+        host._vertical_check.setToolTip(
+            "文字改为纵向排列（日文歌词用）；行方向与对齐语义随之切换到竖排口径。"
+        )
         host._vertical_check.toggled.connect(
             lambda checked: host._update_style(vertical=checked)
         )
@@ -126,6 +133,9 @@ class LayoutPropertyPageBuilder:
             Qt.AlignmentFlag.AlignBottom,
         )
         host._rtl_check = CheckBox("从右到左", compact_row)
+        host._rtl_check.setToolTip(
+            "整行文字从右向左书写；与「竖排」叠加时为日式竖排（列从右向左推进）。"
+        )
         host._rtl_check.toggled.connect(
             lambda checked: host._update_style(right_to_left=checked)
         )
@@ -189,6 +199,9 @@ class LayoutPropertyPageBuilder:
             -LAYOUT_SIZE_MAX_PX,
             LAYOUT_SIZE_MAX_PX,
             suffix=" px",
+        )
+        host._ruby_gap_spin.setToolTip(
+            "注音行与对应正文之间的垂直距离（N3 ルビ余白），可为负让注音压进正文。"
         )
         host._ruby_gap_spin.valueChanged.connect(
             lambda value: host._update_layout_field(ruby_gap_px=value)
@@ -255,6 +268,10 @@ class LayoutPropertyPageBuilder:
         )
         host._line_position_seg.setValue("bottom")
         host._line_position_seg.valueChanged.connect(host._on_line_position_changed)
+        host._line_position_seg.setToolTip(
+            "字幕行整体锚定在画面的顶部 / 居中 / 底部；决定「上/下余白」相对哪条边"
+            "测量（N3 行位置）。"
+        )
         host._line_position_field = property_field(
             "上下配置",
             host._line_position_seg,
@@ -391,10 +408,13 @@ class LayoutPropertyPageBuilder:
         model_field: str,
         *,
         suffix: str = "",
+        tooltip: str = "",
     ) -> None:
         host = self._host
         spin = self._spin_factory(minimum, maximum, suffix=suffix)
         setattr(host, attribute, spin)
+        if tooltip:
+            spin.setToolTip(tooltip)
         spin.valueChanged.connect(
             lambda value, field=model_field: host._update_style(**{field: value})
         )

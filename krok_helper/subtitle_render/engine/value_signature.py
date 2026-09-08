@@ -6,6 +6,7 @@ from dataclasses import fields as dataclass_fields, is_dataclass
 from typing import Hashable
 
 from krok_helper.subtitle_render.domain.timing import GuideSymbol
+from krok_helper.subtitle_render.engine.render_progress import yield_to_gui
 
 
 _SIG_FIELD_NAMES_BY_TYPE: dict[type, tuple[str, ...]] = {}
@@ -61,6 +62,9 @@ _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS = frozenset({
 def value_signature(value) -> Hashable:
     """Recursively describe the current value without using object identity."""
 
+    # 整轨签名是热路径（布局计划缓存每次查找都要重算），长曲目的递归
+    # 遍历不释放 GIL 会饿到 GUI 线程；节流后的让出近乎零开销。
+    yield_to_gui()
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     # GuideSymbol is the only frozen model carrying a potentially very large
