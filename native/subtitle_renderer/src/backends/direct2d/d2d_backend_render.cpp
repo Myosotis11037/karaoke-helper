@@ -2098,11 +2098,25 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                     // A finished character rests inside the timing gap while
                     // the line is still clipped. Resting the front at that
                     // character's own endpoint (ink + primary edge / 2) cuts
-                    // its outer stroke2 ring. The per-character phase path
-                    // deputes the edge to the following character's start
-                    // front instead, which clears the decoration — do the
-                    // same here so the legacy stack matches.
-                    wipeEdge = wipeCoordinateAt(ch);
+                    // its outer stroke2 ring, but resting it on the following
+                    // character's start front is too far: the legacy after
+                    // stack draws EVERY character through one clip rect, and
+                    // the next character's stroke2 ring reaches s2/2 past its
+                    // wipe-left, so its left sliver would paint in after
+                    // colours. Rest between the two painted extents instead:
+                    // pull back by the decoration overhang, and never cover
+                    // less than the pre-fix resting edge.
+                    const TextStyle &charStyle = ch.styleIndex >= 0
+                        && ch.styleIndex < static_cast<int>(scene.charStyles.size())
+                        ? scene.charStyles[static_cast<std::size_t>(ch.styleIndex)]
+                        : style;
+                    const float decor = std::max(charStyle.stroke2Width, 0.0f) * 0.5f
+                        + 0.5f;
+                    const float resting = wipeCoordinateAt(ch)
+                        + ((style.vertical ? reverseVertical : rtl) ? decor : -decor);
+                    wipeEdge = (style.vertical ? !reverseVertical : !rtl)
+                        ? std::max(wipeEdge, resting)
+                        : std::min(wipeEdge, resting);
                 }
                 break;
             }
@@ -4205,104 +4219,16 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         }
         context->SetTransform(withViewport(D2D1::Matrix3x2F::Translation(dx, dy)));
 
-        const bool hasVisualOverlap = !style.vertical && !rtl && std::adjacent_find(
-            line->chars.begin(), line->chars.end(),
-            [&](const Impl::CachedChar &current,
-                const Impl::CachedChar &following) {
-                return current.right >= following.left;
-            }
-        ) != line->chars.end();
-        // A character whose wipe runs past the next character's start means two
-        // wipe fronts are alive at once (SUG writes this where a lead phrase's
-        // release timestamp crosses into the following harmony phrase).  The
-        // legacy stack collapses the line into one clip rect and can only show
-        // the first front; the per-character N3 path already clips each glyph
-        // with its own edge, which is what Painter draws.
-        const bool hasConcurrentWipe = std::adjacent_find(
-            line->chars.begin(), line->chars.end(),
-            [&](const Impl::CachedChar &current,
-                const Impl::CachedChar &following) {
-                return wipeEndMs(current) > wipeStartMs(following);
-            }
-        ) != line->chars.end();
-        const bool useN3PhaseOrdering = hasVisualOverlap || hasConcurrentWipe
-            || line->hasInlineStyles || hasCharacterTransition;
-        if (!useN3PhaseOrdering) {
-            const auto drawLegacyStack = [&](bool after, ID2D1Brush *fill,
-                                             ID2D1Brush *stroke,
-                                             ID2D1Brush *stroke2) {
-                const bool realizationEligible =
-                    std::max(style.strokeWidth, 0.0f)
-                    >= Impl::realizationStrokeThreshold;
-                if (style.stroke2Width > 0.0f) {
-                    for (const Impl::CachedChar &ch : line->chars) {
-                        if (!ch.geometry) {
-                            continue;
-                        }
-                        strokeWithRealization(
-                            ch.stroke2Realization.Get(), ch.geometry.Get(), stroke2,
-                            std::max(0.0f, style.strokeWidth)
-                                + style.stroke2Width,
-                            true,
-                            ch.stroke2RealizationTransform,
-                            realizationEligible
-                        );
-                    }
-                }
-                if (style.strokeWidth > 0.0f) {
-                    const bool protect = paintNeedsBodyProtection(
-                        after ? style.afterFillPaint : style.beforeFillPaint
-                    );
-                    for (const Impl::CachedChar &ch : line->chars) {
-                        if (!ch.geometry) {
-                            continue;
-                        }
-                        if (protect && ch.protectedStrokeGeometry) {
-                            fillStrokeWithRealization(
-                                ch.protectedStrokeRealization.Get(),
-                                ch.protectedStrokeGeometry.Get(), stroke, false,
-                                ch.protectedStrokeRealizationTransform,
-                                realizationEligible
-                            );
-                        } else {
-                            strokeWithRealization(
-                                ch.strokeRealization.Get(), ch.geometry.Get(), stroke,
-                                style.strokeWidth, false,
-                                ch.strokeRealizationTransform, realizationEligible
-                            );
-                        }
-                    }
-                }
-                for (const Impl::CachedChar &ch : line->chars) {
-                    if (ch.geometry) {
-                        fillWithRealization(
-                            ch.fillRealization.Get(), ch.geometry.Get(), fill,
-                            ch.fillRealizationTransform,
-                            realizationEligible
-                        );
-                    }
-                }
-                for (std::size_t index = 0; index < line->chars.size(); ++index) {
-                    drawBitmapGuidePart(index, after);
-                }
-            };
-            drawLegacyStack(
-                false, beforeFill.Get(), beforeStroke.Get(), beforeStroke2.Get()
-            );
-            if (hasAfterWipe) {
-                if (!mainWipeComplete) {
-                    pushAxisAlignedClip(
-                        afterClip, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
-                    );
-                }
-                drawLegacyStack(
-                    true, afterFill.Get(), afterStroke.Get(), afterStroke2.Get()
-                );
-                if (!mainWipeComplete) {
-                    context->PopAxisAlignedClip();
-                }
-            }
-        } else {
+        // Route every line through the per-character N3 phase ordering. The
+        // retired line-box "legacy stack" drew both colour states of the
+        // whole line through one clip rect; its resting front could never
+        // simultaneously clear the finished character's stroke2 ring and
+        // spare the next character's own ring (the two painted extents can
+        // touch or overlap), so each decoration needed another special case.
+        // The phase path never paints a not-yet-started character's after
+        // side at all, which removes the invariant conflict and matches the
+        // Painter's per-glyph clip bands.
+        {
         // All three N3 layers share this character classification and clip.
         const auto pushMainWipeClip = [&](std::size_t charIndex, bool after) {
             const Impl::CachedChar &ch = line->chars[charIndex];
