@@ -245,6 +245,40 @@ def test_export_workspace_actions_reach_window_coordinator(qapp, monkeypatch):
         qapp.processEvents()
 
 
+def test_export_workspace_preset_combo_syncs_with_size_fields(qapp):
+    view = ExportWorkspaceView(
+        fps_options=(60, 120),
+        render_worker_options=(0, 4, 8, 12, 16),
+        gpu_preview_checked=True,
+        gpu_controls_visible=True,
+    )
+    try:
+        controls = view.controls
+        combo = controls.size_preset_combo
+
+        # 与「CPU preset」下拉是两个控件：后者在硬编时被禁用，前者不受影响。
+        assert combo.isEnabled()
+        assert "常用画布格式" in combo.toolTip()
+        assert "CPU preset" not in combo.toolTip()
+        assert combo.currentData() == "1080p"
+        combo.setCurrentIndex(combo.findData("8k"))
+        assert (controls.width_spin.value(), controls.height_spin.value()) == (
+            7680,
+            4320,
+        )
+
+        controls.width_spin.setValue(2000)
+        assert combo.currentData() == "custom"
+
+        controls.width_spin.setValue(3840)
+        controls.height_spin.setValue(2160)
+        assert combo.currentData() == "4k"
+    finally:
+        view.close()
+        view.deleteLater()
+        qapp.processEvents()
+
+
 def test_export_page_omits_title_block_and_initial_status(qapp):
     window = SubtitleRenderWindow(embedded=True, settings_provider=_SettingsProvider())
     try:

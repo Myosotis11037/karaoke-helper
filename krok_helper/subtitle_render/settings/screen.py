@@ -48,6 +48,34 @@ SCREEN_PRESETS: tuple[ScreenPreset, ...] = (
     ScreenPreset("hdtv_1080_vertical", "HDTV 1080 竖屏", 1080, 1920),
 )
 
+CANVAS_SIZE_PRESETS: tuple[tuple[str, str, int, int], ...] = (
+    ("8k", "8K", 7680, 4320),
+    ("4k", "4K", 3840, 2160),
+    ("2k", "2K", 2560, 1440),
+    ("1080p", "1080p", 1920, 1080),
+    ("720p", "720p", 1280, 720),
+    ("360p", "360p", 640, 360),
+)
+"""面向用户的常用画布格式下拉（key, 显示名, 宽, 高），与既有 Sayatoo preset 表无关。"""
+
+CANVAS_SIZE_CUSTOM_KEY = "custom"
+
+_CANVAS_SIZE_BY_KEY = {key: (width, height) for key, _label, width, height in CANVAS_SIZE_PRESETS}
+
+
+def canvas_size_for_key(key: str) -> tuple[int, int] | None:
+    """Return the (width, height) of a canvas size choice; None for custom/unknown."""
+    return _CANVAS_SIZE_BY_KEY.get(key)
+
+
+def match_canvas_size_key(width: int, height: int) -> str:
+    """Return the choice key matching the given size, or the custom key."""
+    for key, _label, preset_width, preset_height in CANVAS_SIZE_PRESETS:
+        if preset_width == width and preset_height == height:
+            return key
+    return CANVAS_SIZE_CUSTOM_KEY
+
+
 PAR_OPTIONS: tuple[tuple[str, str], ...] = (
     ("方形像素", "1:1"),
     ("HDV 1080 / DVCPROHD 720（4:3）", "4:3"),

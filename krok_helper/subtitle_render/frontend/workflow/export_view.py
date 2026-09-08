@@ -63,6 +63,9 @@ from krok_helper.subtitle_render.frontend.widgets.theme import (
     themed,
 )
 from krok_helper.subtitle_render.frontend.preview.player_window import AspectRatioBox
+from krok_helper.subtitle_render.frontend.widgets.canvas_preset import (
+    CanvasSizePresetController,
+)
 
 EXPORT_DIR_SOURCE_VIDEO = "source_video"
 EXPORT_DIR_CUSTOM = "custom"
@@ -508,6 +511,8 @@ class ExportWorkspaceControls:
     name_edit: FluentLineEdit
     format_combo: FluentComboBox
     name_suffix_label: QLabel
+    size_preset_combo: FluentComboBox
+    size_preset_controller: CanvasSizePresetController
     width_spin: ExportSizeEdit
     height_spin: ExportSizeEdit
     fps_combo: FluentComboBox
@@ -715,21 +720,30 @@ class ExportWorkspaceView(QWidget):
 
         params_row = QHBoxLayout()
         params_row.setContentsMargins(0, 0, 0, 0)
-        params_row.setSpacing(10)
+        params_row.setSpacing(8)
         width_spin = ExportSizeEdit(160, 7680, 1920)
         height_spin = ExportSizeEdit(90, 4320, 1080)
+        size_preset_combo = FluentComboBox()
+        size_preset_combo.setMinimumHeight(32)
+        size_preset_controller = CanvasSizePresetController(
+            size_preset_combo, width_spin, height_spin
+        )
         fps_combo = FluentComboBox()
         fps_combo.setMinimumHeight(32)
         for fps in fps_options:
             fps_combo.addItem(f"{fps} fps", userData=fps)
+        # 常用格式与宽高同行；输入框保持窄宽度，由下拉项短文案控制整体宽度。
         params_row.addWidget(
-            make_labeled_export_control("宽度", width_spin, theme_labels)
+            make_labeled_export_control("常用格式", size_preset_combo, theme_labels)
         )
         params_row.addWidget(
-            make_labeled_export_control("高度", height_spin, theme_labels)
+            make_labeled_export_control("宽度", width_spin, theme_labels), 1
         )
         params_row.addWidget(
-            make_labeled_export_control("帧率", fps_combo, theme_labels)
+            make_labeled_export_control("高度", height_spin, theme_labels), 1
+        )
+        params_row.addWidget(
+            make_labeled_export_control("帧率", fps_combo, theme_labels), 1
         )
         params_layout.addLayout(params_row)
 
@@ -908,6 +922,8 @@ class ExportWorkspaceView(QWidget):
             name_edit=name_edit,
             format_combo=format_combo,
             name_suffix_label=name_suffix,
+            size_preset_combo=size_preset_combo,
+            size_preset_controller=size_preset_controller,
             width_spin=width_spin,
             height_spin=height_spin,
             fps_combo=fps_combo,

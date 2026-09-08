@@ -83,6 +83,37 @@ def test_background_screen_size_builder_routes_each_change_to_host(qapp) -> None
     assert host.screen_changes == 3
 
 
+def test_background_screen_size_preset_combo_fills_values(qapp) -> None:
+    host = _Host()
+    BackgroundPropertyPageBuilder(host).make_screen_size_section()
+    combo = host._screen_size_preset_combo
+
+    assert combo.currentData() == "1080p"
+    combo.setCurrentIndex(combo.findData("4k"))
+
+    assert host._screen_size_width_spin.value() == 3840
+    assert host._screen_size_height_spin.value() == 2160
+    assert combo.currentData() == "4k"
+    assert host.screen_changes == 2
+
+
+def test_background_screen_size_preset_combo_jumps_to_custom_on_edit(qapp) -> None:
+    host = _Host()
+    BackgroundPropertyPageBuilder(host).make_screen_size_section()
+    combo = host._screen_size_preset_combo
+
+    host._screen_size_width_spin.setValue(1234)
+
+    assert combo.currentData() == "custom"
+    # 选回「自定义」不应改动宽高。
+    host._screen_size_height_spin.setValue(567)
+    combo.setCurrentIndex(combo.findData("custom"))
+    assert (host._screen_size_width_spin.value(), host._screen_size_height_spin.value()) == (
+        1234,
+        567,
+    )
+
+
 def test_background_source_builder_preserves_material_and_audio_contracts(qapp) -> None:
     host = _SourceHost()
     builder = BackgroundPropertyPageBuilder(

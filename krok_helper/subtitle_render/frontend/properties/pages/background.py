@@ -24,6 +24,9 @@ from krok_helper.subtitle_render.frontend.properties.controls.layout import (
     property_section,
 )
 from krok_helper.subtitle_render.frontend.widgets.theme import palette, themed
+from krok_helper.subtitle_render.frontend.widgets.canvas_preset import (
+    CanvasSizePresetController,
+)
 from krok_helper.subtitle_render.frontend.properties.controls.widgets import PillSelector
 from krok_helper.subtitle_render.settings.screen import SCREEN_FPS_OPTIONS
 
@@ -46,6 +49,7 @@ class BackgroundPropertyPageBuilder:
         fps_options: Iterable[int] = SCREEN_FPS_OPTIONS,
         size_spin_factory: Callable[..., Any] = NoWheelSpinBox,
         fps_combo_factory: Callable[..., Any] = FluentComboBox,
+        preset_controller_factory: Callable[..., Any] | None = None,
         color_button_factory: Callable[..., Any] | None = None,
         kind_pages: Iterable[tuple[str, str, str]] = BACKGROUND_KIND_PAGES,
     ) -> None:
@@ -53,6 +57,7 @@ class BackgroundPropertyPageBuilder:
         self._fps_options = tuple(int(fps) for fps in fps_options)
         self._size_spin_factory = size_spin_factory
         self._fps_combo_factory = fps_combo_factory
+        self._preset_controller_factory = preset_controller_factory
         self._color_button_factory = color_button_factory
         self._kind_pages = tuple(kind_pages)
 
@@ -255,11 +260,20 @@ class BackgroundPropertyPageBuilder:
         for fps in self._fps_options:
             host._screen_size_fps_combo.addItem(f"{fps} fps", userData=fps)
 
+        host._screen_size_preset_combo = self._fps_combo_factory(section)
+        preset_controller = (self._preset_controller_factory or CanvasSizePresetController)(
+            host._screen_size_preset_combo,
+            host._screen_size_width_spin,
+            host._screen_size_height_spin,
+        )
+        host._screen_size_preset_controller = preset_controller
+
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(8)
-        grid.addWidget(property_field("宽度", host._screen_size_width_spin), 0, 0)
-        grid.addWidget(property_field("高度", host._screen_size_height_spin), 0, 1)
+        grid.addWidget(property_field("常用格式", host._screen_size_preset_combo), 0, 0)
+        grid.addWidget(property_field("宽度", host._screen_size_width_spin), 0, 1)
+        grid.addWidget(property_field("高度", host._screen_size_height_spin), 0, 2)
         grid.addWidget(property_field("帧率", host._screen_size_fps_combo), 1, 0)
         layout.addLayout(grid)
 
