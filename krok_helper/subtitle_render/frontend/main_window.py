@@ -3128,6 +3128,14 @@ class SubtitleRenderWindow(QWidget):
         # 主字幕换了内容来源：旧的 .sug 轴身份与基线作废（SUG 路径随后会重新
         # 写入各自的值）。
         self._project_document.subtitle_axis_singer_ids = None
+        # 旧主轴的分组副轴随主轴绑定，一并移除（.sug 分轴路径随后会按新分组
+        # 计划重建）；普通（整份）副源是用户独立添加的，保留。
+        if any(source.sug_axis_singer_ids is not None for source in self._extra_sources):
+            self._extra_sources = [
+                source
+                for source in self._extra_sources
+                if source.sug_axis_singer_ids is None
+            ]
         self._primary_source_baseline = deepcopy(track)
         self._timing_track = track
         self._subtitle_path = source_path
@@ -4542,15 +4550,17 @@ class SubtitleRenderWindow(QWidget):
         ):
             active_index = start + self._active_title_index
         replaceable_indices = {0}
+        removable_indices: set[int] = set()
         for index, source in enumerate(self._extra_sources, start=1):
-            # 分组副轴绑定在主字幕的 .sug 分组计划上，不能单独换文件
+            # 分组副轴绑定在主字幕的 .sug 分组计划上：不能单独换文件，也
+            # 不单独移除（随主轴替换或 .sug 分组变化整体增删）。
             if source.sug_axis_singer_ids is None:
                 replaceable_indices.add(index)
+                removable_indices.add(index)
         self._lyrics_panel.set_sources(
             names,
             active_index,
-            removable_indices=set(range(1, len(self._extra_sources) + 1)),
-            # 标题条目没有歌词文件，不能换文件；分组副轴随主轴，也不能单独换。
+            removable_indices=removable_indices,
             replaceable_indices=replaceable_indices,
         )
 
@@ -5495,6 +5505,15 @@ class SubtitleRenderWindow(QWidget):
         if not 0 <= extra_index < len(self._extra_sources):
             return
         source = self._extra_sources[extra_index]
+        if source.sug_axis_singer_ids is not None:
+            # 分组副轴随主轴绑定，不单独移除（拖入/其他入口统一拦截）。
+            fluent_info(
+                self,
+                "分组副轴不能单独移除",
+                "该副字幕源来自主字幕 .sug 的分组拆分，随主轴绑定。"
+                "请在打轴侧调整分组，或替换主字幕的歌词文件。",
+            )
+            return
         confirmed = fluent_question(
             self,
             "移除副字幕源",

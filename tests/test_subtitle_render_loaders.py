@@ -682,6 +682,82 @@ def test_hot_reload_group_membership_change_syncs_persisted_filters(
     assert win._extra_sources[0].sug_axis_singer_ids == frozenset({"c"})
 
 
+def test_axis_extra_source_cannot_be_removed(qapp, monkeypatch, tmp_path):
+    """分组副轴绑定主轴：移除按钮禁用、移除入口被拦截；普通副源不受影响。"""
+    from krok_helper.subtitle_render.project.session import ExtraSubtitleSource
+
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    whole = win._subtitle_source_loader.load_sug(sug, software_compensation_ms=0)
+    win._extra_sources.append(
+        ExtraSubtitleSource(name="整份", path=sug, track=whole)
+    )
+    # 普通副源的移除确认直接放行（offscreen 下真实对话框会挂起）
+    monkeypatch.setattr(mw, "fluent_question", lambda *args, **kwargs: True)
+    win._refresh_source_ui()
+    removable = win._lyrics_panel._removable_source_indices
+    assert 1 not in removable, "分组副轴不能单独移除"
+    assert 2 in removable, "普通副源仍可移除"
+
+    infos: list[str] = []
+    monkeypatch.setattr(mw, "fluent_info", lambda *a, **k: infos.append(k.get("content")))
+    win._on_source_remove_requested(1)
+    assert len(win._extra_sources) == 2, "分组副轴移除应被拦截"
+    assert infos
+
+    win._on_source_remove_requested(2)
+    assert [source.name for source in win._extra_sources] == ["副轴"]
+
+
+def test_replacing_primary_removes_bound_axis_extras(qapp, monkeypatch, tmp_path):
+    """主轴被替换：旧主轴的分组副轴一并移除，普通副源保留。"""
+    from krok_helper.subtitle_render.project.session import ExtraSubtitleSource
+
+    sug = tmp_path / "grouped.sug"
+    _save_grouped_sug(
+        sug,
+        [("a", "君", 1000, 1400), ("b", "酱", 2000, 2400)],
+        [("主轴", ["a"], True), ("副轴", ["b"], False)],
+    )
+    lrc = tmp_path / "new.lrc"
+    lrc.write_text("[00:01:00]a[00:01:50]b[00:02:00]\n", encoding="utf-8-sig")
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    whole = win._subtitle_source_loader.load_sug(sug, software_compensation_ms=0)
+    win._extra_sources.append(
+        ExtraSubtitleSource(name="整份", path=sug, track=whole)
+    )
+    monkeypatch.setattr(mw.InfoBar, "success", lambda **kwargs: None)
+
+    # 换成 LRC：分组副轴随主轴移除，整份副源保留
+    assert win.load_from_lrc(lrc) is not None
+    assert [source.name for source in win._extra_sources] == ["整份"]
+    assert win._extra_sources[0].sug_axis_singer_ids is None
+    assert win._project_document.subtitle_axis_singer_ids is None
+
+    # 换成另一个带分组的 SUG：旧分组副轴已清，只留新文件的分组副轴；
+    # 用户独立添加的整份副源仍保留。
+    other = tmp_path / "other.sug"
+    _save_grouped_sug(
+        other,
+        [("a", "词", 500, 900), ("b", "曲", 1000, 1400)],
+        [("新主轴", ["a"], True), ("新副轴", ["b"], False)],
+    )
+    assert win.load_from_sug(other) is not None
+    axis_sources = [
+        source for source in win._extra_sources if source.sug_axis_singer_ids is not None
+    ]
+    assert [source.name for source in axis_sources] == ["新副轴"]
+    assert axis_sources[0].sug_axis_singer_ids == frozenset({"b"})
+    assert win._project_document.subtitle_axis_singer_ids == frozenset({"a"})
+
+
 def test_project_reopen_restores_axis_filters_from_snapshot(qapp, monkeypatch, tmp_path):
     """.yurika 快照里的主/副轴过滤在工程打开时按各自口径重建。"""
     sug = tmp_path / "grouped.sug"
