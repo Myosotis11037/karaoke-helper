@@ -572,8 +572,10 @@ def test_hot_reload_updates_plain_extra_on_grouped_sug(qapp, monkeypatch, tmp_pa
     assert win._extra_sources[0].track.lines[0].chars[0].start_ms == 2300
 
 
-def test_replace_source_file_clears_stale_axis_identity(qapp, monkeypatch, tmp_path):
-    """轴副源换文件后旧的分组歌手集合失效：清为整份语义，不再按旧轴过滤。"""
+def test_axis_extra_source_cannot_replace_file(qapp, monkeypatch, tmp_path):
+    """分组副轴绑定主字幕的 .sug：不能单独换文件；普通副源仍可换。"""
+    from krok_helper.subtitle_render.project.session import ExtraSubtitleSource
+
     sug = tmp_path / "grouped.sug"
     _save_grouped_sug(
         sug,
@@ -584,15 +586,100 @@ def test_replace_source_file_clears_stale_axis_identity(qapp, monkeypatch, tmp_p
     _save_timing_sug(plain, [("词", 500, 900)])
     win = _make_window(qapp, monkeypatch)
     assert win.load_or_reload_sug(sug) is not None
+    infos: list[str] = []
+    monkeypatch.setattr(mw, "fluent_info", lambda *a, **k: infos.append(k.get("content")))
 
     win._replace_source_file(1, plain)
 
     source = win._extra_sources[0]
-    assert source.path == plain
-    assert source.sug_axis_singer_ids is None
-    assert [
-        "".join(ch.text for ch in line.chars) for line in source.track.lines
-    ] == ["词"]
+    assert source.path == sug
+    assert source.sug_axis_singer_ids == frozenset({"b"})
+    assert ["".join(ch.text for ch in line.chars) for line in source.track.lines] == ["酱"]
+    assert infos, "分组副轴换文件应被拦截并提示"
+    # 替换按钮对分组副轴禁用（下拉里第 1 项）
+    win._refresh_source_ui()
+    assert 1 not in win._lyrics_panel._replaceable_source_indices
+    assert 0 in win._lyrics_panel._replaceable_source_indices
+
+    # 普通（整份）副源不受限制，仍可换文件
+    whole = win._subtitle_source_loader.load_sug(sug, software_compensation_ms=0)
+    win._extra_sources.append(
+        ExtraSubtitleSource(name="整份", path=sug, track=whole)
+    )
+    win._replace_source_file(2, plain)
+    assert win._extra_sources[1].path == plain
+    assert win._extra_sources[1].sug_axis_singer_ids is None
+
+
+def _save_three_singer_sug(path: Path, groups: list[tuple[str, list[str], bool]]) -> None:
+    """三歌手 SUG：a/b 各一行 + c 一行，分组计划由调用方指定。"""
+    from strange_uta_game.backend.domain import AxisGroup
+
+    singers = [
+        Singer(id="a", name="主唱", color="#ff0000", is_default=True),
+        Singer(id="b", name="和声", color="#00ff00"),
+        Singer(id="c", name="助唱", color="#0000ff"),
+    ]
+    sentences = [
+        Sentence(
+            singer_id=singer_id,
+            characters=[
+                Character(
+                    char=text,
+                    check_count=1,
+                    timestamps=[start_ms],
+                    sentence_end_ts=end_ms,
+                    is_sentence_end=True,
+                    is_line_end=True,
+                    singer_id=singer_id,
+                )
+            ],
+        )
+        for singer_id, text, start_ms, end_ms in [
+            ("a", "君", 1000, 1400),
+            ("b", "酱", 2000, 2400),
+            ("c", "助", 3000, 3400),
+        ]
+    ]
+    project = Project(singers=singers, sentences=sentences)
+    project.set_axis_groups(
+        [AxisGroup(name=name, singer_ids=ids, is_primary=primary) for name, ids, primary in groups]
+    )
+    SugProjectParser.save(project, str(path))
+
+
+def test_hot_reload_group_membership_change_syncs_persisted_filters(
+    qapp, monkeypatch, tmp_path
+):
+    """用户在 .sug 里调整分组后热重载：以文件的最新分组为准并同步持久化过滤。"""
+    sug = tmp_path / "regrouped.sug"
+    _save_three_singer_sug(sug, [("主轴", ["a"], True), ("副轴", ["b"], False)])
+    win = _make_window(qapp, monkeypatch)
+    assert win.load_or_reload_sug(sug) is not None
+    # 分组吸纳新行属于结构变化，可能弹「无法迁移」确认：一律接受
+    monkeypatch.setattr(mw, "fluent_question", lambda *args, **kwargs: True)
+    monkeypatch.setattr(mw.InfoBar, "success", lambda **kwargs: None)
+
+    # 副轴吸纳歌手 c、主分组保持不变
+    _save_three_singer_sug(sug, [("主轴", ["a"], True), ("副轴", ["b", "c"], False)])
+    win._reload_external_subtitle_source(win._subtitle_source_key(sug))
+
+    extra = win._extra_sources[0]
+    texts = ["".join(ch.text for ch in line.chars) for line in extra.track.lines]
+    assert texts == ["酱", "助"]
+    assert extra.sug_axis_singer_ids == frozenset({"b", "c"})
+    assert win._project_document.subtitle_axis_singer_ids == frozenset({"a"})
+
+    # 主分组换人：主轴过滤同步为最新集合，主轨道内容跟随
+    _save_three_singer_sug(sug, [("主轴", ["a", "b"], True), ("副轴", ["c"], False)])
+    win._reload_external_subtitle_source(win._subtitle_source_key(sug))
+    main_texts = [
+        "".join(ch.text for ch in line.chars) for line in win._timing_track.lines
+    ]
+    assert main_texts == ["君", "酱"]
+    assert win._project_document.subtitle_axis_singer_ids == frozenset({"a", "b"})
+    assert ["".join(ch.text for ch in line.chars) for line in win._extra_sources[0].track.lines] == ["助"]
+    assert win._extra_sources[0].sug_axis_singer_ids == frozenset({"c"})
 
 
 def test_project_reopen_restores_axis_filters_from_snapshot(qapp, monkeypatch, tmp_path):

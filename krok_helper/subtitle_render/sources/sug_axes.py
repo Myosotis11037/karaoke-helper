@@ -60,6 +60,12 @@ class AxisExtraUpdate:
     candidate: TimingTrack
     """本次接受的源解析（无本地编辑）；应用后成为该源的新基线。"""
 
+    singer_ids: frozenset[str] | None = None
+    """匹配到的分组在新文件里的歌手集合；应用时同步为该源的持久化过滤。
+
+    ``None`` = 整份（普通）副源的单轴更新，分组身份不适用。
+    """
+
 
 @dataclass(frozen=True)
 class AxisReloadPlan:
@@ -163,6 +169,7 @@ def plan_split_axis_reload(
                     index=extra_index,
                     merge=merge,
                     candidate=candidates[position].track,
+                    singer_ids=candidates[position].singer_ids,
                 )
             )
 

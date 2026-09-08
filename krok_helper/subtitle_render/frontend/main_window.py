@@ -3624,9 +3624,16 @@ class SubtitleRenderWindow(QWidget):
         # 必须在移除失效副源之前做，删除会移动列表下标。
         if primary_slot is not None:
             self._primary_source_baseline = deepcopy(axes[0].track)
+        # 用户在 .sug 里调整过分组（主分组换人、副组成员变化）时，持久化
+        # 的轴过滤同步成文件里的最新分组，工程保存/重开不会退回旧分组。
+        # （未分轴时保持 None 语义，不能用空集合污染快照。）
+        if primary_owned and file_split:
+            self._project_document.subtitle_axis_singer_ids = axes[0].singer_ids
         for update in plan.extra_updates:
             source = self._extra_sources[update.index]
             source.source_baseline = deepcopy(update.candidate)
+            if update.singer_ids is not None:
+                source.sug_axis_singer_ids = update.singer_ids
         for index in sorted(plan.removed_extra_indices, reverse=True):
             del self._extra_sources[index]
         if plan.extra_additions:
@@ -4534,12 +4541,17 @@ class SubtitleRenderWindow(QWidget):
             and 0 <= self._active_title_index < len(self._style.title_overlays)
         ):
             active_index = start + self._active_title_index
+        replaceable_indices = {0}
+        for index, source in enumerate(self._extra_sources, start=1):
+            # 分组副轴绑定在主字幕的 .sug 分组计划上，不能单独换文件
+            if source.sug_axis_singer_ids is None:
+                replaceable_indices.add(index)
         self._lyrics_panel.set_sources(
             names,
             active_index,
             removable_indices=set(range(1, len(self._extra_sources) + 1)),
-            # 标题条目没有歌词文件，不能换文件；其余每个源都能。
-            replaceable_indices=set(range(len(self._extra_sources) + 1)),
+            # 标题条目没有歌词文件，不能换文件；分组副轴随主轴，也不能单独换。
+            replaceable_indices=replaceable_indices,
         )
 
     def _push_timing_context(self) -> None:
@@ -5528,6 +5540,16 @@ class SubtitleRenderWindow(QWidget):
         extra_index = track_index - 1
         if not 0 <= extra_index < len(self._extra_sources):
             return
+        if self._extra_sources[extra_index].sug_axis_singer_ids is not None:
+            # 分组副轴与主字幕共用同一个 .sug 的分组计划，单独换文件会脱离
+            # 主轴绑定（拖入也走这里，统一拦截）。
+            fluent_info(
+                self,
+                "分组副轴不能单独换文件",
+                "该副字幕源来自主字幕 .sug 的分组拆分，随主轴绑定。"
+                "如需更换，请替换主字幕的歌词文件或先移除该副轴。",
+            )
+            return
         try:
             track = self._load_timing_track_file(
                 path,
@@ -5555,10 +5577,6 @@ class SubtitleRenderWindow(QWidget):
         renamed = source.name == source.path.stem
         source.path = path
         source.track = track
-        # 换文件后旧轴身份失效：新文件按「整份副源」语义装载（与添加副字幕
-        # 源同口径），不再保留旧 .sug 分组的歌手集合过滤。
-        source.sug_axis_singer_ids = None
-        source.source_baseline = deepcopy(track)
         # 名字是用户可见标识：只在它还是旧文件名（没被改过）时跟着新文件走。
         if renamed:
             source.name = path.stem
