@@ -739,6 +739,17 @@ def baked_stack_key(
 
 
 def vertical_after_clip_pad(style: Style, *, ports: VerticalLayerPorts) -> int:
+    """已唱层单矩形裁剪边要预留的装饰余量。
+
+    已知取舍（2026-09 记录，暂不处理）：竖排 CPU 走「整列一套 after 栈 +
+    单矩形裁剪」，间隔期锋面 resting 在最后唱完一格的 ``cell_bottom``，本
+    余量把裁剪边向移动侧多放，保证完成字的描边/发光不被切——代价是矩形
+    伸进下一格，未唱字顶部（逆序行在底部）会漏出最多本值像素的已唱色。
+    这是单矩形方案「缺角/漏色不可兼得」的固有取舍；GPU（D2D）已把所有行
+    切到逐字 phase 裁剪（未开始的字不画已唱侧），两后端在竖排静止锋面
+    语义上因此不一致。对齐方向：竖排同样逐格裁剪、未开始的格不进入已唱
+    绘制（与横排 CPU 的 ``fill_clip_band_for_glyphs`` 同构）。
+    """
     stroke2_width = ports.main_stroke2_width(style)
     stroke_extent = ports.raster.visual_stroke_extent(
         style.stroke_width_px,
