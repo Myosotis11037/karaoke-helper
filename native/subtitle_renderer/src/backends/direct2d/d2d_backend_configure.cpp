@@ -37,11 +37,122 @@ using direct2d::steadyNowMs;
 using direct2d::validGlyphIndices;
 using direct2d::vectorGlyphGeometry;
 using direct2d::widenedStrokeGeometry;
+
+namespace {
+
+void eraseRgb(RgbaColor &color) {
+    color.red = 0;
+    color.green = 0;
+    color.blue = 0;
+}
+
+void erasePaintRgb(PaintStyle &paint) {
+    eraseRgb(paint.color);
+    for (PaintStop &stop : paint.stops) {
+        eraseRgb(stop.color);
+    }
+}
+
+TextStyle geometryStyle(TextStyle style) {
+    RgbaColor *colors[] = {
+        &style.beforeFill, &style.afterFill,
+        &style.beforeStroke, &style.afterStroke,
+        &style.beforeStroke2, &style.afterStroke2,
+        &style.beforeDecor, &style.afterDecor,
+        &style.rubyBeforeFill, &style.rubyAfterFill,
+        &style.rubyBeforeStroke, &style.rubyAfterStroke,
+        &style.rubyBeforeStroke2, &style.rubyAfterStroke2,
+        &style.rubyBeforeDecor, &style.rubyAfterDecor,
+        &style.litFill, &style.litStroke,
+        &style.volumeFill, &style.volumeStroke,
+        &style.volumeOverlayFill, &style.volumeOverlayStroke,
+    };
+    for (RgbaColor *color : colors) {
+        eraseRgb(*color);
+    }
+    PaintStyle *paints[] = {
+        &style.beforeFillPaint, &style.afterFillPaint,
+        &style.beforeStrokePaint, &style.afterStrokePaint,
+        &style.beforeStroke2Paint, &style.afterStroke2Paint,
+        &style.beforeDecorPaint, &style.afterDecorPaint,
+        &style.rubyBeforeFillPaint, &style.rubyAfterFillPaint,
+        &style.rubyBeforeStrokePaint, &style.rubyAfterStrokePaint,
+        &style.rubyBeforeStroke2Paint, &style.rubyAfterStroke2Paint,
+        &style.rubyBeforeDecorPaint, &style.rubyAfterDecorPaint,
+    };
+    for (PaintStyle *paint : paints) {
+        erasePaintRgb(*paint);
+    }
+    return style;
+}
+
+bool geometryStylesEqual(const std::vector<TextStyle> &left,
+                         const std::vector<TextStyle> &right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (geometryStyle(left[index]) != geometryStyle(right[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool sceneDiffersOnlyInRgb(const RenderScene &left, const RenderScene &right) {
+    return left.width == right.width
+        && left.height == right.height
+        && left.layoutReferenceScale == right.layoutReferenceScale
+        && left.exportCropTop == right.exportCropTop
+        && left.exportCropHeight == right.exportCropHeight
+        && left.exportBands == right.exportBands
+        && left.prewarmTimeMs == right.prewarmTimeMs
+        && left.realizationEnabled == right.realizationEnabled
+        && left.deferRealizationPrewarmUntilFirstFrame
+            == right.deferRealizationPrewarmUntilFirstFrame
+        && left.realizationCapacity == right.realizationCapacity
+        && left.viewportScale == right.viewportScale
+        && left.viewportRotation == right.viewportRotation
+        && left.viewportOffsetX == right.viewportOffsetX
+        && left.viewportOffsetY == right.viewportOffsetY
+        && left.viewportAlign == right.viewportAlign
+        && geometryStyle(left.style) == geometryStyle(right.style)
+        && geometryStylesEqual(left.lineStyles, right.lineStyles)
+        && geometryStylesEqual(left.charStyles, right.charStyles)
+        && left.lines == right.lines;
+}
+
+}  // namespace
+
 void Direct2DGpuBackend::configure(const RenderScene &scene) {
     if (scene.width <= 0 || scene.height <= 0 || scene.width > 8192 || scene.height > 8192) {
         throw BackendError("GPU scene dimensions must be within 1..8192");
     }
     if (impl_->configured && impl_->scene == scene) {
+        ++impl_->diagnostics.cacheHits;
+        return;
+    }
+    if (impl_->configured && sceneDiffersOnlyInRgb(impl_->scene, scene)) {
+        // Chroma-only edits do not alter glyph outlines, protection topology,
+        // layout, or realization meshes.  Swap the paints in place and keep
+        // every positioned geometry/realization alive; alpha/mode/image/stop
+        // topology remains part of the comparison and falls back to rebuild.
+        impl_->scene = scene;
+        for (std::size_t index = 0; index < impl_->lines.size(); ++index) {
+            impl_->lines[index].style = index < scene.lineStyles.size()
+                ? scene.lineStyles[index]
+                : scene.style;
+        }
+        if (!impl_->brushes.empty()) {
+            impl_->brushes.clear();
+            impl_->brushUseSerial = 0;
+            if (impl_->countersEnabled) {
+                ++impl_->diagnostics.brushCacheInvalidations;
+            }
+        }
+        impl_->diagnostics.realizationPrewarmTasks = 0;
+        impl_->diagnostics.realizationPrewarmSkipped = 0;
+        impl_->diagnostics.realizationPrewarmMs = 0.0;
         ++impl_->diagnostics.cacheHits;
         return;
     }
@@ -2384,6 +2495,26 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
         std::vector<Impl::RealizationTask> tasks;
         tasks.reserve(std::min(candidates.size(), realizationCapacity));
         std::uint64_t capacitySkipped = 0;
+        const auto realizationKey = [] (
+            ID2D1Geometry *keyGeometry,
+            bool stroked,
+            float strokeWidth,
+            bool sharedResource,
+            const D2D1_MATRIX_3X2_F &transform
+        ) {
+            return Impl::RealizationCacheKey{
+                reinterpret_cast<std::uintptr_t>(keyGeometry),
+                stroked,
+                std::bit_cast<std::uint32_t>(stroked ? strokeWidth : 0.0f),
+                sharedResource,
+                std::bit_cast<std::uint32_t>(transform._11),
+                std::bit_cast<std::uint32_t>(transform._12),
+                std::bit_cast<std::uint32_t>(transform._21),
+                std::bit_cast<std::uint32_t>(transform._22),
+                std::bit_cast<std::uint32_t>(transform._31),
+                std::bit_cast<std::uint32_t>(transform._32),
+            };
+        };
         if (candidates.size() <= realizationCapacity) {
             // The original positioned realization is faster at draw time: no
             // per-instance world transform is needed. Keep that path whenever
@@ -2392,6 +2523,11 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 Impl::RealizationTask task;
                 task.targets.push_back(candidate.target);
                 task.geometry = candidate.positionedGeometry;
+                task.keyGeometry = candidate.sharedGeometry;
+                task.cacheKey = realizationKey(
+                    candidate.sharedGeometry.Get(), candidate.stroked,
+                    candidate.strokeWidth, false, candidate.instanceTransform
+                );
                 task.strokeWidth = candidate.strokeWidth;
                 tasks.push_back(std::move(task));
             }
@@ -2426,25 +2562,112 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 Impl::RealizationTask task;
                 task.targets.push_back(target);
                 task.geometry = candidate.sharedGeometry;
+                task.keyGeometry = candidate.sharedGeometry;
+                task.cacheKey = realizationKey(
+                    candidate.sharedGeometry.Get(), candidate.stroked,
+                    candidate.strokeWidth, true,
+                    D2D1::Matrix3x2F::Identity()
+                );
                 task.strokeWidth = candidate.strokeWidth;
                 tasks.push_back(std::move(task));
                 taskByResource.emplace(key, tasks.size() - 1);
             }
         }
+        const auto assignRealization = [this] (
+            const Impl::RealizationTask &task,
+            ID2D1GeometryRealization *realization
+        ) {
+            bool published = false;
+            for (const Impl::RealizationTarget &target : task.targets) {
+                if (target.lineIndex >= impl_->lines.size()) {
+                    continue;
+                }
+                Impl::CachedLine &line = impl_->lines[target.lineIndex];
+                Impl::CachedChar *targetChar = nullptr;
+                if (target.rubyIndex < 0) {
+                    if (target.charIndex < line.chars.size()) {
+                        targetChar = &line.chars[target.charIndex];
+                    }
+                } else if (static_cast<std::size_t>(target.rubyIndex)
+                           < line.rubies.size()) {
+                    Impl::CachedRuby &ruby = line.rubies[
+                        static_cast<std::size_t>(target.rubyIndex)
+                    ];
+                    if (target.charIndex < ruby.chars.size()) {
+                        targetChar = &ruby.chars[target.charIndex];
+                    }
+                }
+                if (targetChar == nullptr) {
+                    continue;
+                }
+                switch (target.kind) {
+                case Impl::RealizationKind::Fill:
+                    targetChar->fillRealization = realization;
+                    targetChar->fillRealizationTransform = target.transform;
+                    break;
+                case Impl::RealizationKind::ProtectedStroke:
+                    targetChar->protectedStrokeRealization = realization;
+                    targetChar->protectedStrokeRealizationTransform = target.transform;
+                    break;
+                case Impl::RealizationKind::Stroke:
+                    targetChar->strokeRealization = realization;
+                    targetChar->strokeRealizationTransform = target.transform;
+                    break;
+                case Impl::RealizationKind::Stroke2:
+                    targetChar->stroke2Realization = realization;
+                    targetChar->stroke2RealizationTransform = target.transform;
+                    break;
+                }
+                published = true;
+            }
+            return published;
+        };
+        std::vector<Impl::RealizationTask> pendingTasks;
+        pendingTasks.reserve(tasks.size());
+        std::set<Impl::RealizationCacheKey> reusedResources;
+        if (impl_->resourceCacheEnabled) {
+            std::lock_guard<std::mutex> lock(impl_->realizationMutex);
+            for (Impl::RealizationTask &task : tasks) {
+                const auto found = impl_->realizationResources.find(task.cacheKey);
+                if (found == impl_->realizationResources.end()) {
+                    pendingTasks.push_back(std::move(task));
+                    continue;
+                }
+                found->second.lastUse = ++impl_->realizationResourceUseSerial;
+                if (assignRealization(task, found->second.realization.Get())) {
+                    reusedResources.insert(task.cacheKey);
+                }
+            }
+            impl_->realizationCount = reusedResources.size();
+        } else {
+            pendingTasks = std::move(tasks);
+        }
+        tasks = std::move(pendingTasks);
         impl_->diagnostics.realizationPrewarmSkipped = capacitySkipped;
         impl_->diagnostics.realizationPrewarmTasks = tasks.size();
-        auto control = std::make_shared<Impl::RealizationControl>();
-        control->generation = impl_->realizationGeneration;
-        impl_->realizationControl = control;
-        impl_->realizationPrewarmComplete.store(false, std::memory_order_release);
-        const bool deferUntilFirstFrame =
-            impl_->scene.deferRealizationPrewarmUntilFirstFrame;
-        impl_->realizationThread = std::thread([
+        if (tasks.empty()) {
+            // Every geometry resource survived from the previous generation.
+            // The current CachedChar slots are already rebound above.
+            impl_->realizationPrewarmComplete.store(
+                true, std::memory_order_release
+            );
+        } else {
+            auto control = std::make_shared<Impl::RealizationControl>();
+            control->generation = impl_->realizationGeneration;
+            impl_->realizationControl = control;
+            impl_->realizationPrewarmComplete.store(
+                false, std::memory_order_release
+            );
+            const bool deferUntilFirstFrame =
+                impl_->scene.deferRealizationPrewarmUntilFirstFrame;
+            impl_->realizationThread = std::thread([
             this,
             control,
             deferUntilFirstFrame,
+            realizationCapacity,
+            assignRealization,
             tasks = std::move(tasks)
-        ]() mutable {
+            ]() mutable {
             // Keep individual background realization chunks short enough for
             // seek/style churn while staying inside the wide-stroke A/B gate.
             // Match N3's export precision. Export uses these cached realizations
@@ -2493,6 +2716,23 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                             percentile(0.95);
                         impl_->diagnostics.realizationPrewarmCreateMaxMs =
                             createDurations.back();
+                    }
+                    if (impl_->resourceCacheEnabled) {
+                        while (impl_->realizationResources.size()
+                               > realizationCapacity) {
+                            const auto victim = std::min_element(
+                                impl_->realizationResources.begin(),
+                                impl_->realizationResources.end(),
+                                [](const auto &left, const auto &right) {
+                                    return left.second.lastUse
+                                        < right.second.lastUse;
+                                }
+                            );
+                            if (victim == impl_->realizationResources.end()) {
+                                break;
+                            }
+                            impl_->realizationResources.erase(victim);
+                        }
                     }
                     impl_->realizationPrewarmComplete.store(
                         true, std::memory_order_release
@@ -2556,50 +2796,14 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 if (shouldStop() || !isCurrent()) {
                     return false;
                 }
-                bool published = false;
-                for (const Impl::RealizationTarget &target : task.targets) {
-                    if (target.lineIndex >= impl_->lines.size()) {
-                        continue;
-                    }
-                    Impl::CachedLine &line = impl_->lines[target.lineIndex];
-                    Impl::CachedChar *targetChar = nullptr;
-                    if (target.rubyIndex < 0) {
-                        if (target.charIndex < line.chars.size()) {
-                            targetChar = &line.chars[target.charIndex];
-                        }
-                    } else if (static_cast<std::size_t>(target.rubyIndex)
-                               < line.rubies.size()) {
-                        Impl::CachedRuby &ruby = line.rubies[
-                            static_cast<std::size_t>(target.rubyIndex)
-                        ];
-                        if (target.charIndex < ruby.chars.size()) {
-                            targetChar = &ruby.chars[target.charIndex];
-                        }
-                    }
-                    if (targetChar == nullptr) {
-                        continue;
-                    }
-                    switch (target.kind) {
-                    case Impl::RealizationKind::Fill:
-                        targetChar->fillRealization = created;
-                        targetChar->fillRealizationTransform = target.transform;
-                        break;
-                    case Impl::RealizationKind::ProtectedStroke:
-                        targetChar->protectedStrokeRealization = created;
-                        targetChar->protectedStrokeRealizationTransform =
-                            target.transform;
-                        break;
-                    case Impl::RealizationKind::Stroke:
-                        targetChar->strokeRealization = created;
-                        targetChar->strokeRealizationTransform = target.transform;
-                        break;
-                    case Impl::RealizationKind::Stroke2:
-                        targetChar->stroke2Realization = created;
-                        targetChar->stroke2RealizationTransform = target.transform;
-                        break;
-                    }
-                    published = true;
+                if (impl_->resourceCacheEnabled) {
+                    impl_->realizationResources[task.cacheKey] = {
+                        task.keyGeometry,
+                        created,
+                        ++impl_->realizationResourceUseSerial,
+                    };
                 }
+                const bool published = assignRealization(task, created.Get());
                 if (published) {
                     ++impl_->realizationCount;
                 }
@@ -2655,7 +2859,8 @@ void Direct2DGpuBackend::configure(const RenderScene &scene) {
                 yieldSlice();
             }
             finish();
-        });
+            });
+        }
     }
     if (impl_->resourceCacheEnabled) {
         while (textGlyphRealizations.size() > impl_->glyphGeometryCapacity) {

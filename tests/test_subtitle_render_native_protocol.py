@@ -2448,6 +2448,49 @@ def test_build_render_ir_titles_scope_reuses_layout_plans(monkeypatch):
     clear_track_layout_plan_cache()
 
 
+def test_build_render_ir_paint_scope_reuses_layout_plans(monkeypatch):
+    """纯上色复用布局计划，但 IR 必须携带更新后的完整颜色。"""
+    from krok_helper.subtitle_render.engine.layout.plan.cache import (
+        clear_track_layout_plan_cache,
+    )
+
+    rebuilds = _count_plan_rebuilds(monkeypatch)
+    clear_track_layout_plan_cache()
+    track = _scoped_ir_track()
+    style = Style(
+        fill_color="#112233",
+        custom_style_schemes={
+            "role": SubtitleStyleScheme(fill_color="#334455"),
+        },
+    )
+    build_render_ir(track, style, width=640, height=360, fps=60)
+    assert rebuilds == [id(track)]
+
+    changed = replace(
+        style,
+        fill_color="#AABBCC",
+        custom_style_schemes={
+            "role": replace(
+                style.custom_style_schemes["role"],
+                fill_color="#CCDDEE",
+            ),
+        },
+    )
+    ir = build_render_ir(
+        track, changed, width=640, height=360, fps=60, relayout_scope="paint"
+    )
+    assert rebuilds == [id(track)]
+    assert ir["style"]["fill_color"] == "#AABBCC"
+
+    # scope 不是豁免：真正影响布局的字段变化仍由签名闸门触发重建。
+    resized = replace(changed, font_size_px=changed.font_size_px + 1)
+    build_render_ir(
+        track, resized, width=640, height=360, fps=60, relayout_scope="paint"
+    )
+    assert rebuilds == [id(track), id(track)]
+    clear_track_layout_plan_cache()
+
+
 def test_build_render_ir_titles_scope_rebuilds_only_changed_source(monkeypatch):
     """分轴：副轴轨道变化时，主轴计划按签名复用，只重建副轴。"""
     from krok_helper.subtitle_render.engine.layout.plan.cache import (

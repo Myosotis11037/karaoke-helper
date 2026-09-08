@@ -682,8 +682,8 @@ class GpuAsyncSubtitleRenderer(QObject):
             self._style = style
             self._extra_tracks = list(extra_tracks or ())
             self._duration_ms = max(int(duration_ms or 0), 0)
-            # relayout_scope：None = 全量重排（默认）；"titles" = 仅标题
-            # 变化，configure 时歌词布局计划按签名复用（build_render_ir）。
+            # relayout_scope：None = 全量重排（默认）；"titles" / "paint"
+            # 分别表示仅标题或仅上色变化，configure 时歌词布局计划按签名复用。
             self._relayout_scope = relayout_scope if relayout_scope else None
             with self._stats_lock:
                 self._stats["warp_selected"] = int(self._force_warp)

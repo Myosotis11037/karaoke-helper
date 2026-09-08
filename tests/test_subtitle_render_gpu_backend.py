@@ -2460,10 +2460,11 @@ def test_gpu_configure_reuses_text_geometry_across_scene_changes(
             karaoke_colors=KaraokeColors(before=state, after=state),
         )
 
+    initial_style = style("#80FFFFFF")
     with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
         first = renderer.configure_gpu(
             track,
-            style("#80FFFFFF"),
+            initial_style,
             width=640,
             height=360,
             fps=60,
@@ -2473,7 +2474,7 @@ def test_gpu_configure_reuses_text_geometry_across_scene_changes(
         first_frame = renderer.render_gpu_frame(750, force_warp=True)
         second = renderer.configure_gpu(
             track,
-            style("#80FFFFFE"),
+            replace(initial_style, viewport_offset_x=1),
             width=640,
             height=360,
             fps=60,
@@ -3204,6 +3205,123 @@ def test_gpu_brush_cache_invalidates_paint_and_role_resources(
     )
     assert second_frame["brush_created"] > 0
     assert second_frame["checksum"] != first_frame["checksum"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_rgb_only_change_preserves_realizations(monkeypatch) -> None:
+    """纯 RGB 换色只刷新画刷，不丢失已完成的 GPU realization。"""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = _g1_track()
+    first = _g1_style(
+        stroke_width_px=12,
+        latin_stroke_width_px=12,
+        fill_color="#FF0000",
+    )
+    second = replace(first, fill_color="#00FF00")
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        renderer.configure_gpu(
+            track, first, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+        baseline_diagnostics = _wait_for_realization_prewarm(renderer)
+        first_frame = renderer.render_gpu_frame(750, force_warp=False)
+        changed = renderer.configure_gpu(
+            track, second, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+        changed_diagnostics = renderer.gpu_diagnostics(force_warp=False)
+        second_frame = renderer.render_gpu_frame(
+            750, force_warp=False, frame_index=1
+        )
+
+    assert baseline_diagnostics["realization_count"] > 0
+    assert changed_diagnostics["realization_count"] == baseline_diagnostics[
+        "realization_count"
+    ]
+    assert changed["realization_prewarm_tasks"] == 0
+    assert second_frame["realization_miss"] == 0
+    assert second_frame["checksum"] != first_frame["checksum"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_alpha_change_rebuilds_protected_geometry(monkeypatch) -> None:
+    """透明度会改变正文保护描边拓扑，不能误走纯 RGB 快路径。"""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = _g1_track()
+    first = _g1_style(stroke_width_px=12, fill_color="#FFFF0000")
+    second = replace(first, fill_color="#80FF0000")
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        renderer.configure_gpu(
+            track, first, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+        before = renderer.gpu_diagnostics(force_warp=False)
+        changed = renderer.configure_gpu(
+            track, second, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+
+    assert changed["cache_misses"] == before["cache_misses"] + 1
+    assert changed["realization_count"] == 0
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_role_size_change_reuses_unaffected_realizations(monkeypatch) -> None:
+    """改一个角色字号时，其他角色相同位置的 realization 跨代复用。"""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    track = TimingTrack(
+        lines=[
+            TimingLine(
+                chars=[
+                    TimingChar("甲", 0, role_label="A"),
+                    TimingChar("乙", 600, role_label="A"),
+                ],
+                end_ms=1_200,
+            ),
+            TimingLine(
+                chars=[
+                    TimingChar("丙", 1_300, role_label="B"),
+                    TimingChar("丁", 1_900, role_label="B"),
+                ],
+                end_ms=2_500,
+            ),
+        ]
+    )
+    role = SubtitleStyleScheme(
+        font_family="Microsoft YaHei",
+        font_size_px=80,
+        stroke_width_px=12,
+        stroke2_enabled=False,
+        decoration_kind="none",
+    )
+    first = _g1_style(
+        stroke_width_px=12,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        custom_style_schemes={"A": role, "B": role},
+    )
+    schemes = dict(first.custom_style_schemes)
+    schemes["A"] = replace(role, font_size_px=88)
+    second = replace(first, custom_style_schemes=schemes)
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        baseline = renderer.configure_gpu(
+            track, first, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+        baseline_diagnostics = _wait_for_realization_prewarm(renderer)
+        changed = renderer.configure_gpu(
+            track, second, width=640, height=360, fps=60,
+            force_warp=False,
+        )
+        changed_diagnostics = renderer.gpu_diagnostics(force_warp=False)
+
+    assert baseline["realization_prewarm_tasks"] > 0
+    assert baseline_diagnostics["realization_count"] > 0
+    assert changed_diagnostics["realization_count"] > 0
+    assert 0 < changed["realization_prewarm_tasks"] < baseline["realization_prewarm_tasks"]
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")

@@ -443,8 +443,9 @@ class PreviewGraphicsView(QGraphicsView):
     def set_style(self, style: Style, *, relayout_scope: str | None = None) -> None:
         """样式变化后重渲当前帧。
 
-        ``relayout_scope``：None = 全量重排（默认）；``"titles"`` = 仅标题
-        属性变化，worker configure 时歌词布局计划按签名复用（分轴局部重排）。
+        ``relayout_scope``：None = 全量重排（默认）；``"titles"`` / ``"paint"``
+        分别表示仅标题或仅上色变化，worker configure 时歌词布局计划按签名
+        复用（分轴局部重排）。
         """
         self._subtitle_item.set_style(style)
         self._subtitle_item.clear_async_image()

@@ -4107,6 +4107,11 @@ class SubtitleRenderWindow(QWidget):
                     affected_pages += affected
                     added_pages += added
         self._property_panel.set_style(style)
+        if paint_only:
+            # 颜色/填充不参与歌词排版；让后台按完整布局签名复用整轨计划。
+            # 签名仍是正确性闸门，连续调节中若夹入字体/布局变化，面板会把
+            # scope 复位为 None，自动回落全量重排。
+            self._property_panel.mark_style_relayout_scope("paint")
         self._remember_style_preferences(previous, style)
         self._refresh_preview_style_soon()
         # 角色在属性面板中新建 / 重命名 / 删除时，同步逐字符编辑器的可选项。
@@ -5620,7 +5625,9 @@ class SubtitleRenderWindow(QWidget):
         if rescaled is self._style:
             return
         self._style = rescaled
-        self._property_panel.set_style(self._style)
+        # 高度缩放只改变字体视觉尺寸和布局像素字段；避免把时间、动画、
+        # 灯号等数百个无关控件全量重灌。_apply_style 的等值回流随后走快路径。
+        self._property_panel.set_rescaled_style(self._style)
         self._apply_style(self._style)
 
     def _on_layout_change_requested(self, rows: list, layout_index: int) -> None:

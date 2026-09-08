@@ -7242,6 +7242,28 @@ def test_main_window_style_panel_updates_preview(qapp, monkeypatch):
     assert win._preview_panel.canvas._style.custom_style_schemes["A"].fill_color == "#FFCC00"
 
 
+def test_main_window_marks_pure_color_preview_as_paint_scope(qapp, monkeypatch):
+    monkeypatch.setattr(mw, "fluent_error", lambda *a, **k: None)
+    monkeypatch.setattr(mw, "fluent_warning", lambda *a, **k: None)
+    win = mw.SubtitleRenderWindow(embedded=False)
+    seen: list[str | None] = []
+    original = win._preview_panel.set_style
+
+    def record(style, *, relayout_scope=None):
+        seen.append(relayout_scope)
+        return original(style, relayout_scope=relayout_scope)
+
+    monkeypatch.setattr(win._preview_panel, "set_style", record)
+    win._apply_style(replace(win._style, fill_color="#123456"))
+    win._apply_preview_style_now()
+    assert seen[-1] == "paint"
+
+    win._apply_style(replace(win._style, font_size_px=win._style.font_size_px + 1))
+    win._apply_preview_style_now()
+    assert seen[-1] is None
+    win.close()
+
+
 def test_live_color_updates_merge_into_one_style_undo_step(qapp, monkeypatch):
     monkeypatch.setattr(mw, "fluent_error", lambda *a, **k: None)
     monkeypatch.setattr(mw, "fluent_warning", lambda *a, **k: None)
@@ -8787,6 +8809,24 @@ def test_main_window_screen_size_undo_merges_rapid_edits(qapp, monkeypatch):
     assert win._screen_settings.width == 1920
 
 
+def test_screen_height_rescale_uses_targeted_property_sync(qapp, monkeypatch):
+    """输出高度变化不应调用属性面板的全量 set_style 灌控件路径。"""
+    win = _export_screen_window(monkeypatch)
+    targeted: list[Style] = []
+    original_targeted = win._property_panel.set_rescaled_style
+
+    def record_targeted(style):
+        targeted.append(style)
+        original_targeted(style)
+
+    monkeypatch.setattr(win._property_panel, "set_rescaled_style", record_targeted)
+    win._export_height_spin.setValue(720)
+
+    assert len(targeted) == 1
+    assert targeted[0].font_reference_height == 720
+    assert win._property_panel.subtitle_style.font_reference_height == 720
+
+
 def test_title_update_marks_partial_relayout_scope(qapp):
     """标题条目编辑标记 "titles" 局部重排；常规样式编辑与全量同步复位。"""
     panel = PropertyPanel()
@@ -8818,3 +8858,15 @@ def test_title_edit_then_host_reflow_keeps_scope_for_preview(qapp):
     # main_window _apply_style 的回流：等值 + emit=False → 走快路径
     panel.set_style(emitted)
     assert panel.take_style_relayout_scope() == "titles"
+
+
+def test_host_can_mark_paint_relayout_scope(qapp):
+    panel = PropertyPanel()
+    panel.set_style(Style())
+
+    panel.mark_style_relayout_scope("paint")
+    assert panel.take_style_relayout_scope() == "paint"
+    assert panel.take_style_relayout_scope() is None
+
+    panel.mark_style_relayout_scope("unknown")
+    assert panel.take_style_relayout_scope() is None

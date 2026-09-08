@@ -172,6 +172,18 @@ struct Direct2DGpuBackend::Impl {
         std::uintptr_t, int, std::uint32_t, std::vector<UINT16>
     >;
     using VectorGlyphKey = std::tuple<std::string, int, std::uint32_t>;
+    using RealizationCacheKey = std::tuple<
+        std::uintptr_t,
+        bool,
+        std::uint32_t,
+        bool,
+        std::uint32_t,
+        std::uint32_t,
+        std::uint32_t,
+        std::uint32_t,
+        std::uint32_t,
+        std::uint32_t
+    >;
 
     enum class RealizationKind {
         Fill,
@@ -191,7 +203,17 @@ struct Direct2DGpuBackend::Impl {
     struct RealizationTask {
         std::vector<RealizationTarget> targets;
         Microsoft::WRL::ComPtr<ID2D1Geometry> geometry;
+        Microsoft::WRL::ComPtr<ID2D1Geometry> keyGeometry;
+        RealizationCacheKey cacheKey{};
         float strokeWidth = 0.0f;
+    };
+
+    struct CachedRealization {
+        // Holding the key geometry prevents COM pointer reuse from aliasing a
+        // stale cache key after the outline LRU releases its own reference.
+        Microsoft::WRL::ComPtr<ID2D1Geometry> keyGeometry;
+        Microsoft::WRL::ComPtr<ID2D1GeometryRealization> realization;
+        std::uint64_t lastUse = 0;
     };
 
     struct RealizationControl {
@@ -247,6 +269,8 @@ struct Direct2DGpuBackend::Impl {
     Microsoft::WRL::ComPtr<ID2D1DeviceContext1> realizationContext;
     std::uint64_t realizationCount = 0;
     std::uint64_t realizationGeneration = 0;
+    std::map<RealizationCacheKey, CachedRealization> realizationResources;
+    std::uint64_t realizationResourceUseSerial = 0;
     static constexpr std::size_t defaultRealizationCapacity = 8192;
     static constexpr float realizationStrokeThreshold = 8.0f;
     std::shared_ptr<RealizationControl> realizationControl;

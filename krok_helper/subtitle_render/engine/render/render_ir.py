@@ -113,11 +113,13 @@ def build_render_ir(
       (轨道值签名, 歌词布局样式签名) 命中缓存复用，签名不匹配的源自动
       回退重建（分轴粒度：主轨/副轨各自校验各自命中），标题部分始终
       重新序列化。签名是正确性闸门，scope 只是性能提示。
+    - ``"paint"``：只改颜色/填充时复用同一布局计划；完整样式仍重新
+      序列化给渲染后端，布局签名不匹配时同样自动回退重建。
     其余取值一律按全量处理（防御）。
     """
 
     # 局部复用仅对已知 scope 生效；未知值按全量。
-    use_plan_cache = relayout_scope == "titles"
+    use_plan_cache = relayout_scope in {"titles", "paint"}
     with layout_pass():
         # 主轨与附加轨共用一张轮廓表：同一 SVG 导唱符全片只序列化一次。
         glyph_table = VectorGlyphTable()

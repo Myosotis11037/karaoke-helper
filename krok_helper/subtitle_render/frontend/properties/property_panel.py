@@ -1059,6 +1059,27 @@ class PropertyPanel(QWidget):
         if emit:
             self.styleChanged.emit(self._style)
 
+    def set_rescaled_style(self, style: Style) -> None:
+        """Apply an output-height rescale without rewriting unrelated controls.
+
+        N3 height scaling changes only font visual sizes and layout pixel fields.
+        Keep the model for every role, but refresh just the shared role editor,
+        layout editor, and title controls that can display those values.
+        """
+        self._title_text_change_timer.stop()
+        self._title_text_pending.clear()
+        self._pending_style_relayout_scope = None
+        self._style = replace(style)
+        self._syncing = True
+        try:
+            self._sync_layout_editor_controls()
+            self._sync_subtitle_scheme_controls()
+            self._sync_title_controls()
+        finally:
+            self._syncing = False
+        self._style_synced = True
+        self._sync_font_preview()
+
     def set_roles(self, role_names: list[str]) -> None:
         """Replace the current project's role registry and refresh navigation."""
         previous = self._role_controller.names
@@ -1851,12 +1872,18 @@ class PropertyPanel(QWidget):
     def take_style_relayout_scope(self) -> Optional[str]:
         """取走最近一次样式变更的局部重排 scope（取后复位为全量）。
 
-        返回 ``"titles"`` 表示自上次取走后只有标题条目变化；``None`` 表示
-        走全量重排。主窗口在防抖刷新预览前调用。
+        返回 ``"titles"`` 表示只有标题条目变化，``"paint"`` 表示只有
+        不影响布局的颜色变化；``None`` 表示走全量重排。主窗口在防抖
+        刷新预览前调用。
         """
         scope = self._pending_style_relayout_scope
         self._pending_style_relayout_scope = None
         return scope
+
+    def mark_style_relayout_scope(self, scope: str) -> None:
+        """Mark one host-classified safe partial relayout for the next preview."""
+        if scope in {"titles", "paint"}:
+            self._pending_style_relayout_scope = scope
 
     def _derive_title_custom_windows(
         self, title: TitleOverlay

@@ -880,8 +880,8 @@ class NativeRendererProcess:
         if duration_ms is not None:
             ir_kwargs["duration_ms"] = duration_ms
         if relayout_scope is not None:
-            # None = 全量重排（默认，行为同历史版本）；"titles" = 仅标题
-            # 变化，歌词布局计划按签名复用（见 build_render_ir）。
+            # None = 全量重排（默认，行为同历史版本）；"titles" / "paint"
+            # 分别表示仅标题或仅上色变化，歌词布局计划按签名复用。
             ir_kwargs["relayout_scope"] = relayout_scope
         ir = build_render_ir(track, style, **ir_kwargs)
         if progress is not None:
