@@ -1149,3 +1149,63 @@ def test_sug_drops_untimed_trailing_space_at_line_end() -> None:
     assert line.chars[0].source_span_count == 1
     assert line.chars[0].source_span_start_ms is None
     assert line.end_ms == 2000
+
+
+def test_sug_tail_rule_matches_nicokara_exporter() -> None:
+    # SUG 87dd5190 的尾巴口径：行末连续「无起始 ts 且无停顿释放 ts、剥变体
+    # 选择符后纯空白」的字符整体剥掉（半角/全角均适用）；只标 is_sentence_end
+    # 但没有释放 ts 的空白同样属于尾巴。
+    singer = Singer(id="main", name="主唱", color="#ff0000", is_default=True)
+    chars = [
+        Character(
+            char="あ",
+            check_count=1,
+            timestamps=[1000],
+            sentence_end_ts=2600,
+            is_sentence_end=True,
+            is_line_end=True,
+            singer_id=singer.id,
+        ),
+        Character(char=" ", check_count=0, singer_id=singer.id),
+        Character(char="\u3000", check_count=0, singer_id=singer.id),
+        Character(
+            char=" ",
+            check_count=0,
+            is_sentence_end=True,
+            singer_id=singer.id,
+        ),
+    ]
+    project = Project(
+        singers=[singer],
+        sentences=[Sentence(singer_id=singer.id, characters=chars)],
+    )
+
+    line = timing_track_from_sug_project(project).lines[0]
+
+    assert [ch.text for ch in line.chars] == ["あ"]
+    assert line.end_ms == 2600
+
+
+def test_sug_keeps_trailing_space_with_pause_release_ts_only() -> None:
+    # 只带停顿释放 ts（无起始 ts）的行末空格按导出口径保留。
+    singer = Singer(id="main", name="主唱", color="#ff0000", is_default=True)
+    chars = [
+        Character(char="あ", check_count=1, timestamps=[1000], singer_id=singer.id),
+        Character(
+            char=" ",
+            check_count=0,
+            sentence_end_ts=3000,
+            is_sentence_end=True,
+            is_line_end=True,
+            singer_id=singer.id,
+        ),
+    ]
+    project = Project(
+        singers=[singer],
+        sentences=[Sentence(singer_id=singer.id, characters=chars)],
+    )
+
+    line = timing_track_from_sug_project(project).lines[0]
+
+    assert [ch.text for ch in line.chars] == ["あ", " "]
+    assert line.end_ms == 3000

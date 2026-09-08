@@ -506,7 +506,9 @@ def _parse_body_line(
             # SUG 导出 nicokara .lrc 时会丢弃行末无时间戳的空白字符；解析侧对称
             # 过滤，避免行尾空格分走字锚点（source_span_count）并参与行宽/页布局。
             # 组内第一个字符承载本组 [ts] 锚点（含"仅一个空格"的组），保留。
-            while len(text_entries) > 1 and text_entries[-1][0].isspace():
+            while len(text_entries) > 1 and _blank_after_variation_strip(
+                text_entries[-1][0]
+            ):
                 text_entries.pop()
         visible_count = len(text_entries)
         if visible_count <= 0:
@@ -565,7 +567,7 @@ def _parse_body_line(
     # 行内有时间戳、但行首缓存字符一直没机会补回（如 ` [ts]` 仅"行首文本 + 结束 ts"）：
     # 用行末 ts 作为起点补回，仍不丢字。完全无时间戳的纯文本行保持空行语义（丢弃缓存）。
     if leading_buffer and end_ms is not None:
-        while leading_buffer and leading_buffer[-1][0].isspace():
+        while leading_buffer and _blank_after_variation_strip(leading_buffer[-1][0]):
             leading_buffer.pop()
         for ch, role in leading_buffer:
             chars.append(
@@ -727,6 +729,15 @@ def _spread_text_starts(
         if not element.isspace():
             completed += 1
     return starts
+
+
+def _blank_after_variation_strip(text: str) -> bool:
+    """先剥变体选择符再判空白（对齐 SUG nicokara 导出的行末尾巴口径）。"""
+    return not "".join(
+        ch
+        for ch in text
+        if not (0xFE00 <= ord(ch) <= 0xFE0F or 0xE0100 <= ord(ch) <= 0xE01EF)
+    ).strip()
 
 
 def _text_elements(text: str) -> list[str]:

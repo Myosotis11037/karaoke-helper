@@ -30,6 +30,7 @@ from krok_helper.subtitle_render.domain.timing import (
     normalize_reversed_wipe_lines,
 )
 from krok_helper.subtitle_render.sources.subtitles import (
+    _blank_after_variation_strip,
     _emoji_guide_symbol,
     _parse_emoji_specs,
     _shift_ruby_char_targets,
@@ -278,15 +279,17 @@ def timing_track_from_sug_project(
     sentences = list(getattr(project, "sentences", []) or [])
     for sentence_index, sentence in enumerate(sentences):
         chars = list(getattr(sentence, "characters", []) or [])
-        # SUG's nicokara exporter drops untimed whitespace at the line tail;
-        # mirror that so such spaces cannot claim wipe anchors or line width.
+        # Mirror SUG nicokara exporter's line-tail rule (87dd5190): trailing
+        # chars with no timestamps at all (start + pause release) and blank
+        # after stripping variation selectors are dropped, so they cannot
+        # claim wipe anchors or line width.  Spaces carrying their own
+        # timestamps stay, mid-line whitespace is untouched.
         while chars:
             tail = chars[-1]
             if (
                 getattr(tail, "timestamps", None)
-                or not str(getattr(tail, "char", "")).isspace()
                 or getattr(tail, "sentence_end_ts", None) is not None
-                or bool(getattr(tail, "is_sentence_end", False))
+                or not _blank_after_variation_strip(str(getattr(tail, "char", "")))
             ):
                 break
             chars.pop()
