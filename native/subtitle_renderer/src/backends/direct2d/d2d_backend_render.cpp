@@ -1483,7 +1483,12 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 : line->legacyLaneDescent;
         const float ascent = mainHeight - descent;
         const int lanes = style.dualLineLayout ? std::max(style.laneCount, 1) : 1;
-        const float rubyExtra = n3Layout || line->rubies.empty()
+        // Ruby allowance is a style-level lane quantity (mirrors Painter's
+        // ruby_vertical_extra on the style): every legacy line reserves it,
+        // ruby-bearing or not, so baselines don't jump between pages.  N3
+        // ignores ruby in the line grid; the title overlay has no ruby and
+        // keeps its glyph-derived box.
+        const float rubyExtra = n3Layout || line->staticOverlay
             ? 0.0f
             : std::max(
                 style.rubyGap + style.rubyFontSize
@@ -1500,16 +1505,18 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 + style.lineGap * static_cast<float>(lanes - 1);
             firstBaseline = (static_cast<float>(scene.height) - totalHeight) * 0.5f
                 + ascent;
-            if (lanes == 1 && !n3Layout && !line->hasInlineLaneGeometryOverride) {
-                if (line->rubies.empty()) {
-                    firstBaseline = (static_cast<float>(scene.height)
-                        - (line->bounds.bottom - line->bounds.top)) * 0.5f
-                        - line->bounds.top;
-                } else {
-                    const float blockHeight = mainHeight + rubyExtra;
-                    firstBaseline = (static_cast<float>(scene.height) - blockHeight) * 0.5f
-                        + rubyExtra + ascent;
-                }
+            // Painter's shared baseline never consults inline role/guide
+            // geometry for lyric lines, so the style-level box plus ruby
+            // reserve applies with or without inline styles.  The title keeps
+            // centering on the glyphs it actually draws.
+            if (lanes == 1 && !n3Layout && line->staticOverlay) {
+                firstBaseline = (static_cast<float>(scene.height)
+                    - (line->bounds.bottom - line->bounds.top)) * 0.5f
+                    - line->bounds.top;
+            } else if (lanes == 1 && !n3Layout) {
+                const float blockHeight = mainHeight + rubyExtra;
+                firstBaseline = (static_cast<float>(scene.height) - blockHeight) * 0.5f
+                    + rubyExtra + ascent;
             }
         }
         if (style.verticalPosition == "center") {

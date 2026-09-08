@@ -311,10 +311,14 @@ def resolve_baseline_y(
         if pos == "center":
             return (img_h - main_h) // 2 + main_ascent
         return img_h - margin - main_descent
+    # 行网格是页级量：legacy 语义下注音预留按样式恒定保留（与双行
+    # fixed_line_geometry 一致），与某一行是否实际带注音无关，否则有无
+    # 注音的行基线会差一个注音高度，翻页时上下乱跳。
+    del ruby_metrics
     pad = visual_text_padding(style)
-    ruby_extra = 0
-    if ruby_metrics is not None:
-        ruby_extra = ruby_vertical_extra(style, ruby_metrics)
+    ruby_extra = ruby_vertical_extra(
+        style, QFontMetrics(build_ruby_font(style))
+    )
     if pos == "top":
         return margin + ruby_extra + pad + metrics.ascent()
     if pos == "center":
@@ -332,13 +336,9 @@ def resolve_display_baselines(
     if not style.dual_line_layout:
         font = build_font(style)
         metrics = QFontMetrics(font)
-        line = display_lines[0].line if display_lines else None
-        ruby_metrics = (
-            QFontMetrics(build_ruby_font(style))
-            if line is not None and active_rubies_for_line(track.rubies, line)
-            else None
-        )
-        baseline = resolve_baseline_y(metrics, img_h, style, ruby_metrics)
+        # 单行 legacy 的注音预留已由 resolve_baseline_y 按样式恒定保留，
+        # 不再依赖当前行是否带注音。
+        baseline = resolve_baseline_y(metrics, img_h, style)
         if style.line_horizontal_layout == "per_row":
             baseline += style.row1_offset_y
         return {0: baseline}
@@ -987,6 +987,13 @@ def layout_role_line(
         intervals,
         style,
     )
+    if style.layout_semantics != "n3_1074":
+        # 与单行普通行一致：注音预留按样式兜底，无注音的 role 行也保留
+        # 同样的高度，避免有无注音的行基线来回跳。
+        ruby_extra = max(
+            ruby_extra,
+            ruby_vertical_extra(style, QFontMetrics(build_ruby_font(style))),
+        )
     char_gaps, ruby_left_ext, ruby_right_ext = ruby_char_gaps(
         line,
         char_widths,

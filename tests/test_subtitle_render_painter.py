@@ -3884,6 +3884,60 @@ def test_n3_top_margin_anchors_main_box_without_ruby_height(qapp):
     assert with_ruby == without_ruby
 
 
+def test_legacy_single_line_baseline_reserves_ruby_with_or_without_ruby(qapp):
+    """legacy 单行的注音预留按样式恒定保留，无注音的行基线不回落。"""
+    line = TimingLine(
+        chars=[TimingChar(text="A", start_ms=0)],
+        end_ms=1000,
+    )
+    ruby = RubyAnnotation(
+        kanji="A",
+        reading="W",
+        pos_start_ms=0,
+        pos_end_ms=1000,
+    )
+    display = DisplayLine(line, lane=0, display_start_ms=0, display_end_ms=1000)
+    style = Style(
+        layout_semantics="legacy",
+        dual_line_layout=False,
+        line_y_position="top",
+        line_y_margin_px=47,
+        font_family="Arial",
+        font_family_latin="Arial",
+        font_size_px=64,
+        stroke_width_px=6,
+        ruby_font_family="Arial",
+        ruby_font_family_latin="Arial",
+        ruby_font_size_px=42,
+        ruby_gap_px=9,
+    )
+
+    without_ruby = _resolve_display_baselines(
+        360, TimingTrack(lines=[line]), [display], style
+    )
+    with_ruby = _resolve_display_baselines(
+        360, TimingTrack(lines=[line], rubies=[ruby]), [display], style
+    )
+
+    assert with_ruby == without_ruby
+    # top 锚定下基线必须比「不留注音预留」高出一个样式级注音预留。
+    from krok_helper.subtitle_render.engine.render.effects import (
+        ruby_vertical_extra as _ruby_extra,
+    )
+    from krok_helper.subtitle_render.engine.ruby import build_ruby_font as _ruby_font
+
+    expected_extra = _ruby_extra(style, QFontMetrics(_ruby_font(style)))
+    assert expected_extra > 0
+    from krok_helper.subtitle_render.engine.render.effects import (
+        visual_text_padding as _visual_pad,
+    )
+
+    no_reserve = (
+        47 + _visual_pad(style) + QFontMetrics(_build_font(style)).ascent()
+    )
+    assert without_ruby[0] - no_reserve == expected_extra
+
+
 def test_glow_does_not_expand_dual_line_gap(qapp):
     track = _two_line_track()
     plain = Style(font_size_px=100, ruby_font_size_px=35, ruby_gap_px=24, line_gap_px=90)

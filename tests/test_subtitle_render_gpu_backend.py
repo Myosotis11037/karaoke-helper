@@ -5870,6 +5870,66 @@ def test_gpu_n3_top_margin_ignores_ruby_height_like_painter(monkeypatch) -> None
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
+def test_gpu_legacy_top_margin_reserves_ruby_for_rubyless_line_like_painter(
+    monkeypatch,
+) -> None:
+    """legacy 双行置顶：无注音行也保留样式级注音预留，GPU 与 Painter 同网格。"""
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    ruby_line = TimingLine(
+        chars=[TimingChar("A", 0)],
+        end_ms=2_000,
+        display_start_override_ms=0,
+        display_end_override_ms=2_000,
+    )
+    plain_line = TimingLine(
+        chars=[TimingChar("B", 0)],
+        end_ms=2_000,
+        display_start_override_ms=0,
+        display_end_override_ms=2_000,
+    )
+    track = TimingTrack(
+        lines=[ruby_line, plain_line],
+        rubies=[
+            RubyAnnotation(
+                kanji="A", reading="WWWW", pos_start_ms=0, pos_end_ms=2_000
+            )
+        ],
+    )
+    style = _g1_style(
+        layout_semantics="legacy",
+        font_family="Arial",
+        font_family_latin="Arial",
+        font_size_px=64,
+        ruby_font_family="Arial",
+        ruby_font_family_latin="Arial",
+        ruby_font_size_px=42,
+        ruby_gap_px=9,
+        stroke_width_px=0,
+        stroke2_enabled=False,
+        decoration_kind="none",
+        dual_line_layout=True,
+        line_y_position="top",
+        line_y_margin_px=47,
+        line_lead_in_ms=0,
+        line_tail_ms=0,
+    )
+
+    with NativeRendererProcess(_renderer_path(), response_timeout_s=15.0) as renderer:
+        # t=500：页内两行同屏（带注音的上行 + 无注音的下行）。
+        _, gpu = _render_g1_frames(
+            renderer, style, (500,), force_warp=True, track=track
+        )
+    painter = _render_painter_oracle(style, t_ms=500, track=track)
+
+    gpu_bounds = _payload_alpha_bounds(gpu[0])
+    painter_bounds = _payload_alpha_bounds(painter)
+    assert all(
+        abs(actual - expected) <= 16
+        for actual, expected in zip(gpu_bounds, painter_bounds)
+    ), (gpu_bounds, painter_bounds)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
 def test_gpu_n3_adjacent_ruby_interference_shifts_following_text(monkeypatch) -> None:
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     line = TimingLine(
@@ -10012,7 +10072,18 @@ def test_gpu_g1_alignment_uses_visible_ink_bounds(monkeypatch) -> None:
 
     left, top, right, bottom = _alpha_bounds(slot)
     assert abs((left + right) / 2.0 - slot.width / 2.0) <= 2.0
-    assert abs((top + bottom) / 2.0 - slot.height / 2.0) <= 2.0
+    # legacy 单行居中按「主行盒 + 样式级注音预留」整块居中，可见墨迹
+    # 中心因此低于画面中心半个注音预留。
+    from krok_helper.subtitle_render.engine.render.effects import (
+        ruby_vertical_extra as _ruby_extra,
+    )
+    from krok_helper.subtitle_render.engine.ruby import build_ruby_font as _ruby_font
+    from PyQt6.QtGui import QFontMetrics as _QFontMetrics
+
+    style = _g1_style(dual_line_layout=False, decoration_kind="none")
+    reserve = _ruby_extra(style, _QFontMetrics(_ruby_font(style)))
+    assert reserve > 0
+    assert abs((top + bottom) / 2.0 - slot.height / 2.0 - reserve / 2.0) <= 4.0
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Direct2D GPU backend is Windows-only")
