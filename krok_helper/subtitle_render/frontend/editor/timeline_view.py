@@ -359,6 +359,35 @@ class TrackTimelineView(QWidget):
             return
         self.update()
 
+    def select_line(self, lane_index: int, line_index: int) -> bool:
+        """宿主联动入口：选中某句并把句块带回视口（不发 ``lineSelected``）。
+
+        与歌词列表 ``select_row`` 对称的被动选中。块连同显示窗口把手已
+        完整可见时不动视口，否则把块居中；正在拖动把手 / 编辑余量时不抢
+        状态。找不到对应块（空行 / 越界轨道）返回 False。
+        """
+        if not 0 <= lane_index < len(self._lanes) or self._drag is not None:
+            return False
+        block = next(
+            (
+                block
+                for block in self._lanes[lane_index].blocks
+                if block.line_index == line_index
+            ),
+            None,
+        )
+        if block is None:
+            return False
+        self._selected = (lane_index, line_index)
+        self._hide_margin_editor()
+        show_ms, hide_ms = self._selected_window(lane_index, block)
+        start, span = self._view_start_ms, self._view_span_ms
+        if show_ms < start or hide_ms > start + span:
+            center = (block.start_ms + block.end_ms) / 2
+            self._set_view(center - span / 2, span)
+        self.update()
+        return True
+
     @property
     def view_start_ms(self) -> float:
         return self._view_start_ms

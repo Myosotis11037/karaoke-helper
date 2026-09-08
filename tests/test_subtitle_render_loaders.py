@@ -2057,6 +2057,31 @@ def test_timeline_line_selection_switches_source_and_selects_row(
     win.close()
 
 
+def test_lyrics_row_click_selects_and_reveals_timeline_block(qapp, monkeypatch):
+    """点击歌词列表某行 → 底部字幕轨道选中该句块并把视口跳过去。"""
+    win = _make_window(qapp, monkeypatch)
+    win._apply_timing_track(
+        TimingTrack(
+            lines=[
+                TimingLine(chars=[TimingChar(text="あ", start_ms=1_000)], end_ms=2_000),
+                TimingLine(chars=[TimingChar(text="遠", start_ms=40_000)], end_ms=42_000),
+            ]
+        ),
+        None,
+    )
+    assert win._tracks_view.view_start_ms == 0
+
+    win._lyrics_panel.rowClicked.emit(1)
+
+    assert win._tracks_view._selected == (0, 1)
+    start = win._tracks_view.view_start_ms
+    end = start + win._tracks_view.view_span_ms
+    assert start > 0
+    assert start <= 40_000 and 42_000 <= end  # 远块被完整带回视口
+    assert win._transport_bar.current_time_ms == 40_000
+    win.close()
+
+
 def test_playback_shortcut_is_disabled_outside_preview_tab(qapp, monkeypatch):
     win = _make_window(qapp, monkeypatch)
     toggles: list[bool] = []

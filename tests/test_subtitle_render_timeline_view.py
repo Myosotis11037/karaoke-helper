@@ -220,6 +220,55 @@ def test_click_block_emits_line_selected(qapp) -> None:
     assert received == [(1, 2)]
 
 
+def _far_track() -> TimingTrack:
+    return TimingTrack(
+        lines=[
+            TimingLine(chars=[TimingChar("あ", 1_000)], end_ms=2_000),
+            TimingLine(chars=[TimingChar("遠", 40_000)], end_ms=42_000),
+        ]
+    )
+
+
+def test_select_line_brings_far_block_centered_into_view(qapp) -> None:
+    widget = TrackTimelineView()
+    widget.resize(800, 160)
+    widget.set_tracks([("主字幕", _far_track())])
+    widget.set_duration(60_000)
+    assert widget.view_span_ms == 15_000
+    assert widget.view_start_ms == 0  # 远块（40–42s）不在初始视口内
+
+    emitted: list[tuple[int, int]] = []
+    widget.lineSelected.connect(lambda *args: emitted.append(args))
+
+    assert widget.select_line(0, 1) is True
+    assert widget._selected == (0, 1)
+    assert widget.view_start_ms == pytest.approx(41_000 - 7_500, abs=100)
+    assert emitted == []  # 宿主联动不回发 lineSelected
+    assert widget._handle_rects() is not None
+
+
+def test_select_line_keeps_viewport_when_block_visible(qapp) -> None:
+    widget = TrackTimelineView()
+    widget.resize(800, 160)
+    widget.set_tracks([("主字幕", _make_track())])
+    widget.set_duration(10_000)
+
+    assert widget.select_line(0, 0) is True
+    assert widget._selected == (0, 0)
+    assert widget.view_start_ms == 0
+
+
+def test_select_line_rejects_blank_line_and_unknown_lane(qapp) -> None:
+    widget = TrackTimelineView()
+    widget.resize(800, 160)
+    widget.set_tracks([("主字幕", _make_track())])
+    widget.set_duration(10_000)
+
+    assert widget.select_line(0, 1) is False  # 空行没有块
+    assert widget.select_line(3, 0) is False
+    assert widget._selected is None
+
+
 def test_click_empty_area_seeks_to_time(qapp) -> None:
     widget = TrackTimelineView()
     widget.resize(800, 160)

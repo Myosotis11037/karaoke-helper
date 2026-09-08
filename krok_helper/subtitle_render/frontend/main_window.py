@@ -6966,7 +6966,7 @@ class SubtitleRenderWindow(QWidget):
         return True
 
     def _on_lyrics_row_clicked(self, row: int) -> None:
-        """点击歌词列表某行 → 预览跳转到该行起始时间（当前选中源）。"""
+        """点击歌词列表某行 → 预览跳转、底部轨道选中该句块并带回视口。"""
         if self._title_source_active:
             return
         track = self._active_track()
@@ -6979,6 +6979,9 @@ class SubtitleRenderWindow(QWidget):
             return
         start_ms = timing_line_start_ms(line)
         self._transport_bar.set_time(start_ms)
+        self._tracks_view.select_line(
+            max(int(self._active_source_index), 0), row
+        )
 
     def _on_timeline_line_selected(self, track_index: int, line_index: int) -> None:
         """点击底部字幕轨道的句子块 → 歌词列表切到对应源并选中、滚动到该行。
