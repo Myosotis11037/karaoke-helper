@@ -29,6 +29,7 @@ from krok_helper.subtitle_render.domain.models import (
     SubtitleStyleScheme,
     TitleOverlay,
     effective_karaoke_animation,
+    effective_karaoke_scanline,
     title_overlay_to_dict,
 )
 from krok_helper.subtitle_render.serialization.timing import guide_symbol_to_dict
@@ -95,7 +96,7 @@ class VectorGlyphTable:
         return not self.payload
 GPU_UNSUPPORTED_FEATURE_LABELS = {
     "line_animation": "\u672a\u77e5\u6574\u884c\u52a8\u753b",
-    "karaoke_animation": "未知唱字特效",
+    "karaoke_animation": "\u672a\u77e5\u5531\u5b57\u7279\u6548",
     "line_animation_override": "\u672a\u77e5\u9010\u884c\u7279\u6548",
     "bitmap_guide_symbol": "\u56fe\u7247\u5bfc\u5531\u7b26 / N3 Emoji \u5934\u50cf",
 }
@@ -149,7 +150,11 @@ def gpu_unsupported_features(
         }
     ):
         reasons.append("line_animation")
-    karaoke_effects = {"inherit", "none", "no_wipe", "utopia"}
+    # 扫字线档位（scanline / utopia_scanline）由 GPU sidecar 原生渲染：
+    # 主文字与 ruby 的锋面高亮带在 d2d_backend_render 里与 Wipe/Utopia 同路绘制。
+    karaoke_effects = {
+        "inherit", "none", "no_wipe", "utopia", "scanline", "utopia_scanline"
+    }
     if (
         style.karaoke_anim not in karaoke_effects
         or style.reverse_karaoke_anim not in karaoke_effects
@@ -268,6 +273,7 @@ def timing_line_to_ir(
     exit_anim: str = "none",
     exit_duration_ms: int = 0,
     karaoke_anim: str = "none",
+    scanline: bool = False,
     layout_offset_x: float = 0.0,
     layout_offset_y: float = 0.0,
     layout_offset_windows: list[tuple[int, int, float, float]] | None = None,
@@ -320,6 +326,8 @@ def timing_line_to_ir(
         "exit_anim": str(exit_anim),
         "exit_duration_ms": max(int(exit_duration_ms), 0),
         "karaoke_anim": str(karaoke_anim),
+        # 扫字线叠加开关（仅显式档位为 True）；参数（粗细/颜色/发光）走 style IR。
+        "scanline": bool(scanline),
         "layout_offset_x": float(layout_offset_x),
         "layout_offset_y": float(layout_offset_y),
         "layout_offset_windows": [
@@ -506,6 +514,11 @@ def track_to_ir(
                     effective_karaoke_animation(animation_styles[index])
                     if style is not None
                     else "none"
+                ),
+                scanline=(
+                    effective_karaoke_scanline(animation_styles[index])
+                    if style is not None
+                    else False
                 ),
                 layout_offset_windows=list(page_offset_windows.get(index, ())),
                 glyph_table=glyph_table,

@@ -160,7 +160,14 @@ class TestDialog:
             dialog._karaoke_combo.itemData(i)
             for i in range(dialog._karaoke_combo.count())
         }
-        assert values == {"inherit", "none", "no_wipe", "utopia"}
+        assert values == {
+            "inherit",
+            "none",
+            "no_wipe",
+            "utopia",
+            "scanline",
+            "utopia_scanline",
+        }
 
     def test_it_round_trips_the_choice(self) -> None:
         override = LineAnimationOverride(

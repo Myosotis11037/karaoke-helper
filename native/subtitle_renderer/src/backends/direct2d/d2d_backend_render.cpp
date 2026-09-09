@@ -30,6 +30,48 @@ using direct2d::rectAreaPx;
 using direct2d::rubyPaintBounds;
 using direct2d::steadyNowMs;
 using direct2d::updatePaintBrush;
+
+namespace {
+
+RgbaColor brightenHsvValue(const RgbaColor &source, float amount) {
+    amount = std::clamp(amount, 0.0f, 1.0f);
+    const float maximum = static_cast<float>(std::max({
+        source.red, source.green, source.blue
+    }));
+    const float raised = maximum + (255.0f - maximum) * amount;
+    if (maximum <= 0.0f) {
+        const auto value = static_cast<std::uint8_t>(std::lround(raised));
+        return RgbaColor{value, value, value, source.alpha};
+    }
+    const float scale = raised / maximum;
+    const auto channel = [&](std::uint8_t value) {
+        return static_cast<std::uint8_t>(std::lround(std::min(
+            static_cast<float>(value) * scale, 255.0f
+        )));
+    };
+    return RgbaColor{
+        channel(source.red), channel(source.green), channel(source.blue), source.alpha
+    };
+}
+
+PaintStyle brightenPaintHsvValue(const PaintStyle &source, float amount) {
+    PaintStyle result = source;
+    result.color = brightenHsvValue(result.color, amount);
+    for (PaintStop &stop : result.stops) {
+        stop.color = brightenHsvValue(stop.color, amount);
+    }
+    return result;
+}
+
+PaintStyle solidPaint(const RgbaColor &color) {
+    PaintStyle result;
+    result.mode = "solid";
+    result.color = color;
+    return result;
+}
+
+}  // namespace
+
 ProbeResult Direct2DGpuBackend::renderFrame(int tMs, bool compactBands) {
     return renderFrameInternal(tMs, compactBands, true);
 }
@@ -3814,6 +3856,393 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 appendInlineGlowLayer(styleIndex, true, static_cast<int>(charIndex));
             }
         }
+
+        // Karaoke scan-line (front sweep) highlight. Legacy glow-layer plumbing
+        // remains below for structural locality, but scanlineRadius is fixed to
+        // zero: current rendering uses inner feather slices only.
+        struct ScanlineGlowLayer {
+            ID2D1Bitmap1 *source = nullptr;
+            ID2D1Effect *blur = nullptr;
+            std::vector<int> sigmas;
+            D2D1_RECT_F sourceRect{};
+            D2D1_RECT_F effectRect{};
+        };
+        const bool scanlineActive = line->scanlineEnabled
+            && !noWipe
+            && !mainWipeComplete
+            && hasAfterWipe;
+        // 底色发光保留 before/after 两侧各自的色相和饱和度，只提高 HSV
+        // 的 V；单独颜色模式仍使用用户指定的统一颜色。
+        const bool scanlineBrighten = style.scanlineMode == "brighten";
+        const float scanlineAlpha = scanlineBrighten
+            ? (style.scanlineBrightness > 0.0f ? 1.0f : 0.0f)
+            : 1.0f;
+        const RgbaColor scanlineColorValue = style.scanlineColor;
+        const float scanlineBrightness = std::clamp(
+            style.scanlineBrightness, 0.0f, 1.0f
+        );
+        const float scanlineHalfWidth = std::max(style.scanlineWidth, 1.0f) * 0.5f;
+        const auto rectsOverlap = [](const D2D1_RECT_F &a, const D2D1_RECT_F &b) {
+            return a.left < b.right && b.left < a.right
+                && a.top < b.bottom && b.top < a.bottom;
+        };
+        const auto scanlineBandRect = [&](const D2D1_RECT_F &bounds, float edge) {
+            return style.vertical
+                ? D2D1::RectF(
+                    bounds.left, edge - scanlineHalfWidth,
+                    bounds.right, edge + scanlineHalfWidth
+                )
+                : D2D1::RectF(
+                    edge - scanlineHalfWidth, fullWipeClipTop,
+                    edge + scanlineHalfWidth, fullWipeClipBottom
+                );
+        };
+        const auto scanlineFeatherSlices = [&](float edge) {
+            std::vector<std::pair<D2D1_RECT_F, float>> slices;
+            const float softness = std::min(
+                std::max(style.scanlineGlowRadius, 0.0f), scanlineHalfWidth
+            );
+            const float core = scanlineHalfWidth - softness;
+            const int count = std::clamp(
+                static_cast<int>(std::lround(scanlineHalfWidth * 2.0f)), 1, 64
+            );
+            const float step = scanlineHalfWidth * 2.0f / static_cast<float>(count);
+            slices.reserve(static_cast<std::size_t>(count));
+            for (int index = 0; index < count; ++index) {
+                const float offset = -scanlineHalfWidth
+                    + static_cast<float>(index) * step;
+                const float distance = std::abs(offset + step * 0.5f);
+                float alpha = 1.0f;
+                if (softness > 0.0f && distance > core) {
+                    const float progress = std::clamp(
+                        (scanlineHalfWidth - distance) / softness, 0.0f, 1.0f
+                    );
+                    alpha = progress * progress * (3.0f - 2.0f * progress);
+                }
+                if (alpha <= 0.0f) {
+                    continue;
+                }
+                const D2D1_RECT_F rect = style.vertical
+                    ? D2D1::RectF(
+                        line->bounds.left, edge + offset,
+                        line->bounds.right, edge + offset + step
+                    )
+                    : D2D1::RectF(
+                        edge + offset, fullWipeClipTop,
+                        edge + offset + step, fullWipeClipBottom
+                    );
+                slices.emplace_back(rect, alpha);
+            }
+            return slices;
+        };
+        // One band target per character: utopia follows the transformed wipe
+        // edge of the wiping glyph (delegation included), the plain wipe uses
+        // the shared line front.  Returns nullopt when the char carries no
+        // band this frame (bitmap guides are skipped like the body path).
+        const auto scanlineCharBand = [&](std::size_t charIndex)
+            -> std::optional<std::pair<D2D1_RECT_F, float>> {
+            const Impl::CachedChar &ch = line->chars[charIndex];
+            if (ch.bitmapGuide.has_value()) {
+                return std::nullopt;
+            }
+            if (useUtopiaTransition) {
+                if (wipePhaseAt(line->chars, charIndex) != N3WipePhase::Wiping) {
+                    return std::nullopt;
+                }
+                const auto animated = utopiaCharWipe(charIndex);
+                return std::make_pair(
+                    scanlineBandRect(animated.first, animated.second),
+                    animated.second
+                );
+            }
+            return std::make_pair(
+                scanlineBandRect(
+                    D2D1::RectF(ch.left, ch.top, ch.right, ch.bottom), wipeEdge
+                ),
+                wipeEdge
+            );
+        };
+        const auto scanlinePaintFor = [&](const PaintStyle &source) {
+            return scanlineBrighten
+                ? brightenPaintHsvValue(source, scanlineBrightness)
+                : solidPaint(scanlineColorValue);
+        };
+        const auto scanlineColorFor = [&](const RgbaColor &source) {
+            return scanlineBrighten
+                ? brightenHsvValue(source, scanlineBrightness)
+                : scanlineColorValue;
+        };
+        const auto pushScanlineStateClip = [&](float edge, bool after) {
+            pushAxisAlignedClip(
+                directionalWipeClip(line->bounds, edge, geometryPad, after),
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+            );
+        };
+        ScanlineGlowLayer scanlineMainGlow;
+        ScanlineGlowLayer scanlineRubyGlow;
+        // Scan-line softness is an opacity falloff strictly inside glyph
+        // geometry.  Do not build the ordinary outward glow source: it leaks
+        // into transparent counters and gaps between neighbouring glyphs.
+        const int scanlineRadius = 0;
+        auto prepareScanlineGlowLayer = [&](ScanlineGlowLayer &layer,
+                                            const D2D1_RECT_F &content,
+                                            float stroke, float stroke2,
+                                            auto &&drawSource) {
+            const float sourceWidth = std::max(stroke, 0.0f)
+                + std::max(stroke2, 0.0f)
+                + static_cast<float>(scanlineRadius);
+            layer.sourceRect = glowOutputRect(content, sourceWidth, scanlineRadius);
+            count(
+                frameDiagnostics.glowSourceAreaPx,
+                rectAreaPx(layer.sourceRect)
+            );
+            const D2D1_RECT_F clearRect = glowClearBounds(
+                layer.sourceRect, scanlineRadius
+            );
+            layer.source = acquireGlowScratch(
+                clearRect.right - clearRect.left,
+                clearRect.bottom - clearRect.top
+            );
+            layer.blur = acquireGlowEffect();
+            layer.effectRect = impl_->glowDirtyRectEnabled
+                ? D2D1::RectF(
+                    layer.sourceRect.left - clearRect.left,
+                    layer.sourceRect.top - clearRect.top,
+                    layer.sourceRect.right - clearRect.left,
+                    layer.sourceRect.bottom - clearRect.top
+                )
+                : D2D1::RectF(
+                    layer.sourceRect.left + dx,
+                    layer.sourceRect.top + dy,
+                    layer.sourceRect.right + dx,
+                    layer.sourceRect.bottom + dy
+                );
+            context->SetTarget(layer.source);
+            context->SetTransform(
+                impl_->glowDirtyRectEnabled
+                    ? D2D1::Matrix3x2F::Translation(
+                        -clearRect.left, -clearRect.top
+                    )
+                    : D2D1::Matrix3x2F::Translation(dx, dy)
+            );
+            context->BeginDraw();
+            context->Clear(D2D1::ColorF(0.0f, 0.0f));
+            pushAxisAlignedClip(clearRect, D2D1_ANTIALIAS_MODE_ALIASED);
+            drawSource();
+            context->PopAxisAlignedClip();
+            endDrawMeasured(
+                "ID2D1DeviceContext::EndDraw(scanline glow source)",
+                frameDiagnostics.endDrawInlineGlowSourceMs,
+                frameDiagnostics.endDrawInlineGlowSourceCount
+            );
+            layer.blur->SetInput(0, layer.source);
+            layer.sigmas.push_back(scanlineRadius);
+        };
+        auto drawScanlineGlowLayer = [&](ScanlineGlowLayer &layer) {
+            context->SetTransform(lineViewportTransform);
+            const D2D1_RECT_F imageRect = D2D1::RectF(
+                layer.sourceRect.left + dx, layer.sourceRect.top + dy,
+                layer.sourceRect.right + dx, layer.sourceRect.bottom + dy
+            );
+            for (int sigma : layer.sigmas) {
+                checkHr(
+                    layer.blur->SetValue(
+                        D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION,
+                        static_cast<float>(sigma)
+                    ),
+                    "ID2D1Effect::SetValue(scanline StandardDeviation)",
+                    device_
+                );
+                context->DrawImage(
+                    layer.blur,
+                    D2D1::Point2F(imageRect.left, imageRect.top),
+                    layer.effectRect
+                );
+            }
+        };
+        if (scanlineActive && scanlineRadius > 0 && scanlineAlpha > 0.0f) {
+            const float mainGlowStroke = std::max(style.strokeWidth, 0.0f)
+                + std::max(style.stroke2Width, 0.0f)
+                + static_cast<float>(scanlineRadius);
+            const auto charContentRect = [&](std::size_t charIndex) {
+                const Impl::CachedChar &ch = line->chars[charIndex];
+                return expandedRect(
+                    D2D1::RectF(ch.left, ch.top, ch.right, ch.bottom),
+                    mainGlowStroke
+                );
+            };
+            bool hasMainContent = false;
+            D2D1_RECT_F mainContent{};
+            for (std::size_t charIndex = 0; charIndex < line->chars.size(); ++charIndex) {
+                const auto band = scanlineCharBand(charIndex);
+                if (!band.has_value()) {
+                    continue;
+                }
+                const D2D1_RECT_F content = charContentRect(charIndex);
+                if (!rectsOverlap(band->first, content)) {
+                    continue;
+                }
+                mainContent = hasMainContent
+                    ? unionRect(mainContent, content)
+                    : content;
+                hasMainContent = true;
+            }
+            if (hasMainContent) {
+                prepareScanlineGlowLayer(
+                    scanlineMainGlow, mainContent,
+                    style.strokeWidth, style.stroke2Width,
+                    [&]() {
+                        for (std::size_t charIndex = 0;
+                             charIndex < line->chars.size(); ++charIndex) {
+                            const auto band = scanlineCharBand(charIndex);
+                            ID2D1Geometry *geometry = charGeometryAt(charIndex);
+                            if (!band.has_value() || geometry == nullptr) {
+                                continue;
+                            }
+                            const Impl::CachedChar &ch = line->chars[charIndex];
+                            const TextStyle &charStyle = ch.styleIndex >= 0
+                                && ch.styleIndex < static_cast<int>(scene.charStyles.size())
+                                ? scene.charStyles[static_cast<std::size_t>(ch.styleIndex)]
+                                : style;
+                            for (bool after : {false, true}) {
+                                const PaintStyle sourcePaint = after
+                                    ? charStyle.afterFillPaint
+                                    : charStyle.beforeFillPaint;
+                                const RgbaColor sourceColor = after
+                                    ? charStyle.afterFill
+                                    : charStyle.beforeFill;
+                                const PaintStyle paint = scanlinePaintFor(sourcePaint);
+                                const RgbaColor color = scanlineColorFor(sourceColor);
+                                Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
+                                    paint, mainPaintBounds(paint, ch.styleIndex), color
+                                );
+                                brush->SetOpacity(
+                                    globalOpacity * characterOpacityAt(charIndex)
+                                        * scanlineAlpha
+                                );
+                                pushAxisAlignedClip(
+                                    band->first, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                                );
+                                pushScanlineStateClip(band->second, after);
+                                context->DrawGeometry(
+                                    geometry, brush.Get(), mainGlowStroke
+                                );
+                                context->PopAxisAlignedClip();
+                                context->PopAxisAlignedClip();
+                            }
+                        }
+                    }
+                );
+            }
+            bool hasRubyContent = false;
+            D2D1_RECT_F rubyContent{};
+            for (std::size_t rubyIndex = 0; rubyIndex < line->rubies.size(); ++rubyIndex) {
+                const Impl::CachedRuby &ruby = line->rubies[rubyIndex];
+                if (useUtopiaTransition) {
+                    for (std::size_t unitIndex = 0;
+                         unitIndex < ruby.geometries.size(); ++unitIndex) {
+                        if (rubyUnitWipePhaseAt(ruby, unitIndex)
+                            != N3WipePhase::Wiping) {
+                            continue;
+                        }
+                        const auto animated = utopiaRubyUnitWipe(
+                            ruby, rubyIndex, unitIndex, rubyStyleFor(ruby.styleIndex)
+                        );
+                        rubyContent = hasRubyContent
+                            ? unionRect(rubyContent, animated.first)
+                            : animated.first;
+                        hasRubyContent = true;
+                    }
+                } else if (rubyWipePhaseAt(ruby) == N3WipePhase::Wiping) {
+                    rubyContent = hasRubyContent
+                        ? unionRect(rubyContent, ruby.bounds)
+                        : ruby.bounds;
+                    hasRubyContent = true;
+                }
+            }
+            if (hasRubyContent) {
+                prepareScanlineGlowLayer(
+                    scanlineRubyGlow, rubyContent,
+                    style.rubyStrokeWidth, style.rubyStroke2Width,
+                    [&]() {
+                        for (std::size_t rubyIndex = 0;
+                             rubyIndex < line->rubies.size(); ++rubyIndex) {
+                            const Impl::CachedRuby &ruby = line->rubies[rubyIndex];
+                            const TextStyle &rubyStyle = rubyStyleFor(
+                                ruby.styleIndex
+                            );
+                            const float rubyGlowStroke = std::max(
+                                rubyStyle.rubyStrokeWidth, 0.0f
+                            ) + std::max(rubyStyle.rubyStroke2Width, 0.0f)
+                                + static_cast<float>(scanlineRadius);
+                            for (std::size_t unitIndex = 0;
+                                 unitIndex < ruby.geometries.size(); ++unitIndex) {
+                                ID2D1Geometry *geometry = rubyGeometryAt(
+                                    rubyIndex, unitIndex
+                                );
+                                D2D1_RECT_F band{};
+                                if (geometry == nullptr) {
+                                    continue;
+                                }
+                                if (useUtopiaTransition) {
+                                    if (rubyUnitWipePhaseAt(ruby, unitIndex)
+                                        != N3WipePhase::Wiping) {
+                                        continue;
+                                    }
+                                    const auto animated = utopiaRubyUnitWipe(
+                                        ruby, rubyIndex, unitIndex, rubyStyle
+                                    );
+                                    band = scanlineBandRect(
+                                        animated.first, animated.second
+                                    );
+                                } else {
+                                    if (rubyWipePhaseAt(ruby)
+                                        != N3WipePhase::Wiping) {
+                                        continue;
+                                    }
+                                    band = scanlineBandRect(
+                                        ruby.bounds, rubyWipeEdgeAt(ruby)
+                                    );
+                                }
+                                const float edge = style.vertical
+                                    ? (band.top + band.bottom) * 0.5f
+                                    : (band.left + band.right) * 0.5f;
+                                for (bool after : {false, true}) {
+                                    const PaintStyle sourcePaint = after
+                                        ? rubyStyle.rubyAfterFillPaint
+                                        : rubyStyle.rubyBeforeFillPaint;
+                                    const RgbaColor sourceColor = after
+                                        ? rubyStyle.rubyAfterFill
+                                        : rubyStyle.rubyBeforeFill;
+                                    const PaintStyle paint = scanlinePaintFor(sourcePaint);
+                                    const RgbaColor color = scanlineColorFor(sourceColor);
+                                    Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
+                                        paint, rubyPaintBounds(
+                                            paint, ruby.fillBounds,
+                                            ruby.horizontalFillBounds
+                                        ), color
+                                    );
+                                    brush->SetOpacity(
+                                        globalOpacity
+                                            * rubyUnitOpacityAt(ruby, unitIndex)
+                                            * scanlineAlpha
+                                    );
+                                    pushAxisAlignedClip(
+                                        band, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                                    );
+                                    pushScanlineStateClip(edge, after);
+                                    context->DrawGeometry(
+                                        geometry, brush.Get(), rubyGlowStroke
+                                    );
+                                    context->PopAxisAlignedClip();
+                                    context->PopAxisAlignedClip();
+                                }
+                            }
+                        }
+                    }
+                );
+            }
+        }
         frameDiagnostics.glowMs += elapsedMs(glowStart);
 
         context->SetTarget(targetBitmap);
@@ -4444,6 +4873,88 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
         drawMainLayer(1);
         drawMainLayer(2);
         }
+
+        // Scan-line sweep on the main text. Feather slices are clipped to the
+        // glyph geometry, so no rectangular halo reaches transparent gaps.
+        if (scanlineActive && scanlineAlpha > 0.0f) {
+            if (scanlineMainGlow.blur != nullptr) {
+                drawScanlineGlowLayer(scanlineMainGlow);
+            }
+            context->SetTransform(realizationBaseTransform);
+            sharedInstanceTransformActive = false;
+            const float scanlineSolidPad = std::max(style.strokeWidth, 0.0f)
+                + std::max(style.stroke2Width, 0.0f) + 4.0f;
+            for (std::size_t charIndex = 0; charIndex < line->chars.size(); ++charIndex) {
+                const auto band = scanlineCharBand(charIndex);
+                ID2D1Geometry *geometry = charGeometryAt(charIndex);
+                if (!band.has_value() || geometry == nullptr) {
+                    continue;
+                }
+                const Impl::CachedChar &ch = line->chars[charIndex];
+                if (!rectsOverlap(
+                        band->first,
+                        expandedRect(
+                            D2D1::RectF(ch.left, ch.top, ch.right, ch.bottom),
+                            scanlineSolidPad
+                        )
+                    )) {
+                    continue;
+                }
+                const TextStyle &charStyle = ch.styleIndex >= 0
+                    && ch.styleIndex < static_cast<int>(scene.charStyles.size())
+                    ? scene.charStyles[static_cast<std::size_t>(ch.styleIndex)]
+                    : style;
+                const auto featherSlices = scanlineFeatherSlices(band->second);
+                for (bool after : {false, true}) {
+                    for (int layer = 0; layer < 3; ++layer) {
+                        const PaintStyle &sourcePaint = layer == 0
+                            ? (after ? charStyle.afterStroke2Paint : charStyle.beforeStroke2Paint)
+                            : (layer == 1
+                                ? (after ? charStyle.afterStrokePaint : charStyle.beforeStrokePaint)
+                                : (after ? charStyle.afterFillPaint : charStyle.beforeFillPaint));
+                        const RgbaColor &sourceColor = layer == 0
+                            ? (after ? charStyle.afterStroke2 : charStyle.beforeStroke2)
+                            : (layer == 1
+                                ? (after ? charStyle.afterStroke : charStyle.beforeStroke)
+                                : (after ? charStyle.afterFill : charStyle.beforeFill));
+                        if ((layer == 0 && charStyle.stroke2Width <= 0.0f)
+                            || (layer == 1 && charStyle.strokeWidth <= 0.0f)) {
+                            continue;
+                        }
+                        const PaintStyle paint = scanlinePaintFor(sourcePaint);
+                        const RgbaColor color = scanlineColorFor(sourceColor);
+                        Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
+                            paint, mainPaintBounds(paint, ch.styleIndex), color
+                        );
+                        for (const auto &[sliceRect, sliceAlpha] : featherSlices) {
+                            brush->SetOpacity(
+                                globalOpacity * characterOpacityAt(charIndex)
+                                    * scanlineAlpha * sliceAlpha
+                            );
+                            pushAxisAlignedClip(
+                                sliceRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                            );
+                            pushScanlineStateClip(band->second, after);
+                            if (layer == 0) {
+                                context->DrawGeometry(
+                                    geometry, brush.Get(),
+                                    std::max(charStyle.strokeWidth, 0.0f)
+                                        + charStyle.stroke2Width
+                                );
+                            } else if (layer == 1) {
+                                context->DrawGeometry(
+                                    geometry, brush.Get(), charStyle.strokeWidth
+                                );
+                            } else {
+                                context->FillGeometry(geometry, brush.Get());
+                            }
+                            context->PopAxisAlignedClip();
+                            context->PopAxisAlignedClip();
+                        }
+                    }
+                }
+            }
+        }
         auto drawRubyStack = [&](std::size_t rubyIndex, const Impl::CachedRuby &ruby, bool after) {
             const TextStyle &rubyStyle = rubyStyleFor(ruby.styleIndex);
             Microsoft::WRL::ComPtr<ID2D1Brush> fill = paintBrush(
@@ -4673,6 +5184,112 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 drawRubyStack(rubyIndex, ruby, true);
                 if (!useUtopiaTransition && !rubyComplete) {
                     context->PopAxisAlignedClip();
+                }
+            }
+        }
+
+        // Ruby uses the same inner-only feathering as the main text.
+        if (scanlineActive && scanlineAlpha > 0.0f) {
+            if (scanlineRubyGlow.blur != nullptr) {
+                drawScanlineGlowLayer(scanlineRubyGlow);
+            }
+            context->SetTransform(realizationBaseTransform);
+            sharedInstanceTransformActive = false;
+            for (std::size_t rubyIndex = 0; rubyIndex < line->rubies.size(); ++rubyIndex) {
+                const Impl::CachedRuby &ruby = line->rubies[rubyIndex];
+                const TextStyle &rubyStyle = rubyStyleFor(ruby.styleIndex);
+                const float rubySolidPad = std::max(
+                    rubyStyle.rubyStrokeWidth + rubyStyle.rubyStroke2Width, 2.0f
+                ) + 4.0f;
+                for (std::size_t unitIndex = 0;
+                     unitIndex < ruby.geometries.size(); ++unitIndex) {
+                    ID2D1Geometry *geometry = rubyGeometryAt(rubyIndex, unitIndex);
+                    if (geometry == nullptr) {
+                        continue;
+                    }
+                    D2D1_RECT_F band{};
+                    if (useUtopiaTransition) {
+                        if (rubyUnitWipePhaseAt(ruby, unitIndex)
+                            != N3WipePhase::Wiping) {
+                            continue;
+                        }
+                        const auto animated = utopiaRubyUnitWipe(
+                            ruby, rubyIndex, unitIndex, rubyStyle
+                        );
+                        band = scanlineBandRect(animated.first, animated.second);
+                    } else {
+                        if (rubyWipePhaseAt(ruby) != N3WipePhase::Wiping) {
+                            continue;
+                        }
+                        band = scanlineBandRect(ruby.bounds, rubyWipeEdgeAt(ruby));
+                    }
+                    if (!rectsOverlap(
+                            band,
+                            expandedRect(ruby.bounds, rubySolidPad)
+                        )) {
+                        continue;
+                    }
+                    const float edge = style.vertical
+                        ? (band.top + band.bottom) * 0.5f
+                        : (band.left + band.right) * 0.5f;
+                    const auto featherSlices = scanlineFeatherSlices(edge);
+                    for (bool after : {false, true}) {
+                        for (int layer = 0; layer < 3; ++layer) {
+                            const PaintStyle &sourcePaint = layer == 0
+                                ? (after ? rubyStyle.rubyAfterStroke2Paint
+                                         : rubyStyle.rubyBeforeStroke2Paint)
+                                : (layer == 1
+                                    ? (after ? rubyStyle.rubyAfterStrokePaint
+                                             : rubyStyle.rubyBeforeStrokePaint)
+                                    : (after ? rubyStyle.rubyAfterFillPaint
+                                             : rubyStyle.rubyBeforeFillPaint));
+                            const RgbaColor &sourceColor = layer == 0
+                                ? (after ? rubyStyle.rubyAfterStroke2
+                                         : rubyStyle.rubyBeforeStroke2)
+                                : (layer == 1
+                                    ? (after ? rubyStyle.rubyAfterStroke
+                                             : rubyStyle.rubyBeforeStroke)
+                                    : (after ? rubyStyle.rubyAfterFill
+                                             : rubyStyle.rubyBeforeFill));
+                            if ((layer == 0 && rubyStyle.rubyStroke2Width <= 0.0f)
+                                || (layer == 1 && rubyStyle.rubyStrokeWidth <= 0.0f)) {
+                                continue;
+                            }
+                            const PaintStyle paint = scanlinePaintFor(sourcePaint);
+                            const RgbaColor color = scanlineColorFor(sourceColor);
+                            Microsoft::WRL::ComPtr<ID2D1Brush> brush = paintBrush(
+                                paint, rubyPaintBounds(
+                                    paint, ruby.fillBounds,
+                                    ruby.horizontalFillBounds
+                                ), color
+                            );
+                            for (const auto &[sliceRect, sliceAlpha] : featherSlices) {
+                                brush->SetOpacity(
+                                    globalOpacity * rubyUnitOpacityAt(ruby, unitIndex)
+                                        * scanlineAlpha * sliceAlpha
+                                );
+                                pushAxisAlignedClip(
+                                    sliceRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                                );
+                                pushScanlineStateClip(edge, after);
+                                if (layer == 0) {
+                                    context->DrawGeometry(
+                                        geometry, brush.Get(),
+                                        std::max(rubyStyle.rubyStrokeWidth, 0.0f)
+                                            + rubyStyle.rubyStroke2Width
+                                    );
+                                } else if (layer == 1) {
+                                    context->DrawGeometry(
+                                        geometry, brush.Get(), rubyStyle.rubyStrokeWidth
+                                    );
+                                } else {
+                                    context->FillGeometry(geometry, brush.Get());
+                                }
+                                context->PopAxisAlignedClip();
+                                context->PopAxisAlignedClip();
+                            }
+                        }
+                    }
                 }
             }
         }

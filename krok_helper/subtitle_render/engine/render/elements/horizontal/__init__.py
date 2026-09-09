@@ -119,6 +119,15 @@ from krok_helper.subtitle_render.engine.render.elements.horizontal.wipe import (
     segment_wipe_edges,
     segment_wipe_times,
 )
+from krok_helper.subtitle_render.engine.render.elements.horizontal.scanline import (
+    ScanlineParams,
+    band_touches_rect,
+    main_scanline_front,
+    map_front_through_transform,
+    paint_scanline_strip,
+    scanline_band_rect,
+    scanline_params_for_style,
+)
 from krok_helper.subtitle_render.engine.render.elements.horizontal.ruby import (
     HORIZONTAL_RUBY_GLOW_CACHE,
     HORIZONTAL_RUBY_LAYER_PORTS,
@@ -337,6 +346,13 @@ __all__ = [
     "ruby_wipe_geometry",
     "ruby_wipe_state",
     "ruby_layer_stack",
+    "ScanlineParams",
+    "band_touches_rect",
+    "main_scanline_front",
+    "map_front_through_transform",
+    "paint_scanline_strip",
+    "scanline_band_rect",
+    "scanline_params_for_style",
     "text_glyph_runs",
     "transition_char_state",
     "utopia_following_done_time",

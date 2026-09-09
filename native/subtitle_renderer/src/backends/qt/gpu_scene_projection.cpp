@@ -150,6 +150,20 @@ void applyGpuResolvedStyle(
     target.glowConcentrationLevel = source.glowConcentrationLevel;
     target.shadowOffsetX = static_cast<float>(source.shadowOffsetX * scale);
     target.shadowOffsetY = static_cast<float>(source.shadowOffsetY * scale);
+    // 扫字线参数：随布局缩放；颜色走纯色画刷（gpuColor 的 paint/fallback 同源）。
+    target.scanlineWidth = static_cast<float>(
+        std::max(source.scanlineWidthPx, 1) * scale
+    );
+    target.scanlineMode = source.scanlineMode == QStringLiteral("brighten")
+        ? "brighten"
+        : "color";
+    target.scanlineColor = gpuColor(source.scanlineColor, source.scanlineColor);
+    target.scanlineBrightness = std::clamp(
+        static_cast<float>(source.scanlineBrightnessPct) / 100.0f, 0.0f, 1.0f
+    );
+    target.scanlineGlowRadius = static_cast<float>(
+        std::max(source.scanlineGlowPx, 0) * scale
+    );
 
     const bool rubyUsesMainFont = source.rubyFontFollowMain
         && source.rubyFontFamily.isEmpty()
@@ -517,6 +531,9 @@ krok::subtitle::native::RenderScene gpuSceneFromConfig(const RenderConfig &confi
             && sourceLine.karaokeAnimation != QStringLiteral("no_wipe")
             ? "none"
             : sourceLine.karaokeAnimation.toStdString();
+        // 扫字线目前只有横排渲染路径（与 CPU Painter 同口径）；竖排行退回
+        // 基础 Wipe 语义，不叠加高亮带。
+        line.scanlineEnabled = !config.vertical && sourceLine.scanlineEnabled;
         if (sourceLine.displayStartMs.has_value()
             && sourceLine.displayEndMs.has_value()) {
             line.displayWindows.push_back(krok::subtitle::native::DisplayWindow{

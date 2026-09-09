@@ -63,11 +63,47 @@ def test_effects_animation_builder_preserves_options_and_layout(qapp) -> None:
     assert [
         host._karaoke_anim_combo.itemData(index)
         for index in range(host._karaoke_anim_combo.count())
-    ] == ["none", "no_wipe", "utopia"]
+    ] == ["none", "no_wipe", "utopia", "scanline", "utopia_scanline"]
     assert [
         host._reverse_karaoke_anim_combo.itemData(index)
         for index in range(host._reverse_karaoke_anim_combo.count())
-    ] == ["inherit", "none", "no_wipe", "utopia"]
+    ] == [
+        "inherit", "none", "no_wipe", "utopia", "scanline", "utopia_scanline"
+    ]
+    assert [
+        host._scanline_mode_combo.itemData(index)
+        for index in range(host._scanline_mode_combo.count())
+    ] == ["color", "brighten"]
+    # 扫字线独占一整行（与出入场动画两栏同宽）；参数永久激活，亮度默认
+    # 隐藏（默认单独颜色模式），宿主回显按模式互换颜色/亮度。
+    assert host._scanline_row is not None
+    for control in (
+        host._scanline_mode_combo,
+        host._scanline_width_spin,
+        host._scanline_color_btn,
+        host._scanline_glow_spin,
+    ):
+        assert control.isEnabled()
+    assert not host._scanline_color_btn.isHidden()
+    assert host._scanline_brightness_spin.isHidden()
+    # 网格行序：唱字对（第 2 行第 1 栏）→ 段首尾区块（第 2 行第 2 栏）
+    # → 扫字线整行（第 3 行）。
+    items = host._animation_grid._items
+
+    def grid_index(widget) -> int:
+        for index, item in enumerate(items):
+            node = widget
+            while node is not None:
+                if node is item:
+                    return index
+                node = node.parent()
+        return -1
+
+    assert (
+        grid_index(host._karaoke_pair_row)
+        < grid_index(host._section_edge_row)
+        < grid_index(host._scanline_row)
+    )
 
 
 def test_effects_section_edge_builder_defaults_and_order(qapp) -> None:
@@ -134,6 +170,10 @@ def test_effects_animation_builder_routes_controls_to_style_fields(qapp) -> None
     host._exit_fade_spin.setValue(300)
     host._karaoke_anim_combo.setCurrentIndex(1)
     host._reverse_karaoke_anim_combo.setCurrentIndex(2)
+    host._scanline_mode_combo.setCurrentIndex(1)
+    host._scanline_width_spin.setValue(24)
+    host._scanline_glow_spin.setValue(9)
+    host._scanline_brightness_spin.setValue(75)
 
     assert host.updates == [
         {"entry_anim": "fade"},
@@ -142,6 +182,10 @@ def test_effects_animation_builder_routes_controls_to_style_fields(qapp) -> None
         {"exit_fade_ms": 300},
         {"karaoke_anim": "no_wipe"},
         {"reverse_karaoke_anim": "no_wipe"},
+        {"scanline_mode": "brighten"},
+        {"scanline_width_px": 24},
+        {"scanline_glow_px": 9},
+        {"scanline_brightness_pct": 75},
     ]
 
 

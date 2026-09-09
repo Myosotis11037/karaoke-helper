@@ -265,6 +265,9 @@ struct TextLine {
     std::string exitAnimation = "none";
     int exitDurationMs = 0;
     std::string karaokeAnimation = "none";
+    // 扫字线叠加开关：Python 按该行烘焙后的 karaoke_anim 显式档位打标；
+    // 缺省 false 兼容旧 IR。参数在 TextStyle（随行样式一起下发）。
+    bool scanlineEnabled = false;
     std::vector<DisplayWindow> displayWindows;
     std::vector<PlacementWindow> placementWindows;
     bool operator==(const TextLine &) const = default;
@@ -394,6 +397,17 @@ struct TextStyle {
     int volumeFlashTimes = 3;
     float volumeFlashDurationRatio = 1.0f;
     int volumeTransitionRatioPct = 67;
+    // Karaoke scan-line highlight (Sayatoo-style front sweep) parameters.
+    // Whether the overlay is active is a per-line flag (TextLine), resolved by
+    // the Python host from the line's baked karaoke_anim.
+    // ``scanlineMode``: "color" fills the band with ``scanlineColor``;
+    // "brighten" keeps each before/after colour's HSV hue and saturation,
+    // raising only its value by ``scanlineBrightness``.
+    float scanlineWidth = 16.0f;
+    std::string scanlineMode = "color";
+    RgbaColor scanlineColor{255, 255, 255, 255};
+    float scanlineBrightness = 0.6f;
+    float scanlineGlowRadius = 8.0f;
     bool operator==(const TextStyle &) const = default;
 };
 

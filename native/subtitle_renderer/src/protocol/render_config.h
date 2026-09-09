@@ -84,6 +84,9 @@ struct TimingLine {
     QString exitAnimation = QStringLiteral("none");
     int exitDurationMs = 0;
     QString karaokeAnimation = QStringLiteral("none");
+    // 扫字线叠加开关：Python 按该行烘焙后的 karaoke_anim 显式档位打标；
+    // 缺省 false 兼容旧 IR。参数在 ResolvedStyle（全局样式）。
+    bool scanlineEnabled = false;
     ResolvedLineLayout layout;
 };
 
@@ -247,6 +250,13 @@ struct ResolvedStyle {
     int volumeFlashTimes = 3;
     double volumeFlashDurationRatio = 1.0;
     int volumeTransitionRatioPct = 67;
+    // 扫字线参数（模式/粗细/颜色/发光/亮度）来自全局 Style；仅显式选择扫字线
+    // 档位的行会置位 TimingLine::scanlineEnabled。
+    int scanlineWidthPx = 16;
+    QString scanlineMode = QStringLiteral("color");
+    QString scanlineColor = QStringLiteral("#FFFFFF");
+    int scanlineBrightnessPct = 60;
+    int scanlineGlowPx = 8;
     bool hasMainKaraokeColors = false;
     bool hasRubyKaraokeColors = false;
 };

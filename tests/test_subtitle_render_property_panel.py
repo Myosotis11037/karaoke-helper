@@ -4985,11 +4985,67 @@ def test_property_panel_animation_controls_emit_style(qapp):
     assert [
         panel._karaoke_anim_combo.itemText(index)
         for index in range(panel._karaoke_anim_combo.count())
-    ] == ["无", "无 Wipe", "utopia"]
+    ] == ["无", "无 Wipe", "utopia", "扫字线", "utopia+扫字线"]
     assert [
         panel._reverse_karaoke_anim_combo.itemText(index)
         for index in range(panel._reverse_karaoke_anim_combo.count())
-    ] == ["跟随唱字特效", "Wipe", "无 Wipe", "Utopia"]
+    ] == [
+        "跟随唱字特效", "Wipe", "无 Wipe", "Utopia", "扫字线", "utopia+扫字线"
+    ]
+    # 扫字线参数永久激活；单独颜色模式显示颜色、隐藏亮度提升。
+    assert panel._scanline_mode_combo.isEnabled()
+    assert panel._scanline_width_spin.isEnabled()
+    panel._karaoke_anim_combo.setCurrentIndex(
+        panel._karaoke_anim_combo.findData("scanline")
+    )
+    assert emitted[-1].karaoke_anim == "scanline"
+    assert panel._scanline_mode_combo.isEnabled()
+    assert panel._scanline_width_spin.isEnabled()
+    assert panel._scanline_color_btn.isEnabled()
+    assert not panel._scanline_color_btn.isHidden()
+    assert panel._scanline_brightness_spin.isHidden()
+    assert panel._scanline_glow_spin.isEnabled()
+    panel._scanline_width_spin.setValue(42)
+    assert emitted[-1].scanline_width_px == 42
+    panel._scanline_glow_spin.setValue(11)
+    assert emitted[-1].scanline_glow_px == 11
+    # 底色发光模式：隐藏颜色、显示亮度提升。
+    panel._scanline_mode_combo.setCurrentIndex(
+        panel._scanline_mode_combo.findData("brighten")
+    )
+    assert emitted[-1].scanline_mode == "brighten"
+    assert panel._scanline_color_btn.isHidden()
+    assert not panel._scanline_brightness_spin.isHidden()
+    assert panel._scanline_brightness_spin.isEnabled()
+    panel._scanline_brightness_spin.setValue(80)
+    assert emitted[-1].scanline_brightness_pct == 80
+    # 选色：调色板确认后模型与按钮同步更新（不在方案/指示灯再同步集合，
+    # 需要显式回显，否则宿主回流 set_style 走等值快路径按钮一直是旧色）。
+    panel._set_color("scanline_color", "#123456")
+    assert emitted[-1].scanline_color == "#123456"
+    assert panel._scanline_color_btn.color == "#123456"
+    # 切回单独颜色：颜色回来、亮度隐藏。
+    panel._scanline_mode_combo.setCurrentIndex(
+        panel._scanline_mode_combo.findData("color")
+    )
+    assert not panel._scanline_color_btn.isHidden()
+    assert panel._scanline_brightness_spin.isHidden()
+    # 反向唱字单独选扫字线：参数保持永久激活。
+    panel._reverse_karaoke_anim_combo.setCurrentIndex(
+        panel._reverse_karaoke_anim_combo.findData("utopia_scanline")
+    )
+    assert emitted[-1].reverse_karaoke_anim == "utopia_scanline"
+    assert panel._scanline_width_spin.isEnabled()
+    # 回显：外部灌入样式后参数仍激活、值跟随、可见性按模式同步。
+    panel.set_style(Style(karaoke_anim="utopia", scanline_width_px=30))
+    assert panel._karaoke_anim_combo.currentData() == "utopia"
+    assert panel._scanline_width_spin.isEnabled()
+    assert panel._scanline_width_spin.value() == 30
+    assert not panel._scanline_color_btn.isHidden()
+    assert panel._scanline_brightness_spin.isHidden()
+    panel.set_style(Style(karaoke_anim="scanline", scanline_mode="brighten"))
+    assert panel._scanline_color_btn.isHidden()
+    assert not panel._scanline_brightness_spin.isHidden()
 
     panel._entry_anim_combo.setCurrentIndex(
         panel._entry_anim_combo.findData("char_fade")

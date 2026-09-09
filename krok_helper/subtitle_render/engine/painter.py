@@ -471,6 +471,7 @@ from krok_helper.subtitle_render.engine.render.elements.horizontal import (
     RubyTextLayer as _HorizontalRubyTextLayer,
     RubyWipeSegment as _RubyWipeSegment,
     SayatooLineLayout as _SayatooLineLayout,
+    ScanlineParams as _ScanlineParams,
     after_glow_loose_clip_rect as _after_glow_loose_clip_rect,
     after_glow_source_clip_rect as _after_glow_source_clip_rect,
     afterglow_strip_enabled as _afterglow_strip_enabled,
@@ -522,6 +523,10 @@ from krok_helper.subtitle_render.engine.render.elements.horizontal import (
     fill_extent_end as _fill_extent_end,
     fill_extent_left as _fill_extent_left,
     fill_extent_start as _fill_extent_start,
+    main_scanline_front as _main_scanline_front,
+    map_front_through_transform as _map_scanline_front,
+    paint_scanline_strip as _paint_scanline_strip,
+    scanline_params_for_style as _scanline_params_for_style,
     lane_alignment as _lane_alignment,
     karaoke_fill_segments as _build_horizontal_karaoke_fill_segments,
     layout_page_lines as _layout_page_lines,
@@ -660,6 +665,7 @@ from krok_helper.subtitle_render.domain.models import (
     Style,
     TitleOverlay,
     effective_karaoke_animation,
+    effective_karaoke_scanline,
     style_for_track,
 )
 
@@ -3150,6 +3156,49 @@ def _opacity_layer_buffer(physical_w: int, physical_h: int) -> QImage | None:
     return buffer
 
 
+def _scanline_context(
+    style: Style,
+    fill_segments: list[_FillSegment] | None,
+    t_ms: int,
+    rtl: bool,
+) -> tuple[_ScanlineParams, float] | None:
+    """解析当前帧的扫字线上下文：``None`` 表示本帧不画（未开/未在走字/已完成）。"""
+
+    if fill_segments is None or not effective_karaoke_scanline(style):
+        return None
+    front = _main_scanline_front(fill_segments, t_ms, rtl)
+    if front is None:
+        return None
+    return _scanline_params_for_style(style), front
+
+
+def _paint_main_scanline_static(
+    painter: QPainter,
+    layout: _LineLayout,
+    t_ms: int,
+    style: Style,
+) -> None:
+    """静态（非逐字过渡）路径的主文字扫字线：走字锋面处叠加高亮发光带。"""
+
+    context = _scanline_context(style, layout.fill_segments, t_ms, layout.rtl)
+    if context is None:
+        return
+    params, front = context
+    for run in _text_glyph_runs(layout.text_layout, layout.has_inline_styles):
+        path = _glyph_run_path(run, layout.baseline_y)
+        rect = _glyph_run_rect(run, layout.baseline_y)
+        _paint_scanline_strip(
+            painter,
+            path,
+            rect,
+            front=front,
+            params=params,
+            style=run[0].style,
+            rtl=layout.rtl,
+            colors=_effective_karaoke_colors(run[0].style),
+        )
+
+
 def _paint_line_static(
     painter: QPainter,
     img_w: int,
@@ -3281,6 +3330,7 @@ def _paint_line_static(
         _paint_line_layers(painter, layout, t_ms, guide_anim_anchor_ms)
     else:
         _paint_line_direct(painter, layout, t_ms, guide_anim_anchor_ms)
+    _paint_main_scanline_static(painter, layout, t_ms, style)
     paint_rubies_on_top()
 
 
@@ -3802,6 +3852,7 @@ def _paint_role_line_with_character_transition(
     glyphs_by_index = _role_glyphs_by_index(line, layout)
     count = max(len(line.chars), 1)
     ruby_groups = _resolve_char_ruby_groups(active_rubies, line, intervals)
+    scanline_context = _scanline_context(style, fill_segments, t_ms, rtl)
     for index in range(len(line.chars)):
         if index >= len(intervals) or index >= len(char_x_ranges):
             continue
@@ -3974,6 +4025,24 @@ def _paint_role_line_with_character_transition(
                     ),
                     fill_rect=fill_rect,
                 )
+                if scanline_context is not None:
+                    params, scanline_front = scanline_context
+                    front = scanline_front
+                    if transition.effect == "utopia":
+                        front = _map_scanline_front(
+                            front, float(baseline_y), group_transform
+                        )
+                    _paint_scanline_strip(
+                        painter,
+                        paint_path,
+                        paint_rect,
+                        front=front,
+                        params=params,
+                        style=role_style,
+                        rtl=rtl,
+                        colors=colors,
+                        opacity=opacity,
+                    )
             finally:
                 painter.restore()
 
@@ -4026,6 +4095,7 @@ def _paint_line_with_character_transition(
     fill_ranges = ink_x_ranges if ink_x_ranges is not None else char_x_ranges
     count = max(len(line.chars), 1)
     ruby_groups = _resolve_char_ruby_groups(active_rubies, line, intervals)
+    scanline_context = _scanline_context(style, fill_segments, t_ms, rtl)
     if glyphs_by_index is None:
         glyphs_by_index = [None for _ in line.chars]
     for index, (ch, width) in enumerate(zip(line.chars, char_widths)):
@@ -4227,6 +4297,22 @@ def _paint_line_with_character_transition(
                 geometry_transform=geometry_transform,
                 fill_rect=fill_rect,
             )
+            if scanline_context is not None:
+                params, scanline_front = scanline_context
+                front = scanline_front
+                if transition.effect == "utopia":
+                    front = _map_scanline_front(front, float(baseline_y), transform)
+                _paint_scanline_strip(
+                    painter,
+                    paint_path,
+                    paint_rect,
+                    front=front,
+                    params=params,
+                    style=style,
+                    rtl=rtl,
+                    colors=_effective_karaoke_colors(style),
+                    opacity=opacity,
+                )
         finally:
             painter.restore()
 
@@ -4546,6 +4632,9 @@ def _paint_rubies(
                 style,
                 rtl,
                 draw_glow=draw_glow,
+            )
+            _paint_ruby_scanline_static(
+                painter, layouts, ruby_font, ruby_metrics, t_ms, style, rtl
             )
             return
         for layout in layouts:
@@ -4918,6 +5007,11 @@ def _paint_ruby_text_units_with_transition(
     layout_units = _ruby_layout_units(
         units, ruby_metrics, x, target_width, style=style, base_text=ruby.kanji
     )
+    scanline_params = (
+        _scanline_params_for_style(style)
+        if effective_karaoke_scanline(style)
+        else None
+    )
     for (unit, unit_x, unit_width), (start_ms, end_ms) in zip(layout_units, intervals):
         opacity, dx, dy, rotation, scale_x, scale_y, skew_y = _transition_char_state(
             style,
@@ -4959,6 +5053,7 @@ def _paint_ruby_text_units_with_transition(
                     transform=transform,
                     gradient_rect=gradient_rect,
                     horizontal_gradient_rect=horizontal_gradient_rect,
+                    scanline_params=scanline_params,
                 )
             finally:
                 painter.restore()
@@ -5010,6 +5105,53 @@ def _paint_ruby_text(
     )
 
 
+def _paint_ruby_scanline_static(
+    painter: QPainter,
+    layouts: list[_RubyLayout],
+    ruby_font: QFont,
+    ruby_metrics: QFontMetrics,
+    t_ms: int,
+    style: Style,
+    rtl: bool,
+) -> None:
+    """静态路径的注音扫字线：各注音自己的走字锋面处叠加高亮发光带。"""
+
+    if not effective_karaoke_scanline(style):
+        return
+    params = _scanline_params_for_style(style)
+    for layout in layouts:
+        visible, complete, front = _ruby_wipe_state(layout, t_ms)
+        if not visible or complete:
+            continue
+        target_ruby_font = layout.font or ruby_font
+        target_ruby_metrics = layout.metrics or ruby_metrics
+        reading = (
+            "".join(reversed(_ruby_utopia_visual_units(layout.ruby.reading)))
+            if rtl
+            else layout.ruby.reading
+        )
+        path, rect = _ruby_text_path_and_rect(
+            reading,
+            target_ruby_font,
+            target_ruby_metrics,
+            layout.x,
+            layout.baseline_y,
+            layout.target_width,
+            style,
+            base_text=layout.ruby.kanji,
+        )
+        _paint_scanline_strip(
+            painter,
+            path,
+            rect,
+            front=front,
+            params=params,
+            style=layout.style,
+            rtl=rtl,
+            colors=_effective_ruby_karaoke_colors(layout.style),
+        )
+
+
 _RUBY_STACK_PORTS = RubyStackPorts(
     ruby_glow_layer=lambda *args, **kwargs: _RubyGlowLayer(*args, **kwargs),
     ruby_split_glow_layer=lambda *args, **kwargs: (
@@ -5032,6 +5174,7 @@ def _paint_ruby_text_fragment(
     transform: QTransform | None = None,
     gradient_rect: QRectF | None = None,
     horizontal_gradient_rect: QRectF | None = None,
+    scanline_params: _ScanlineParams | None = None,
 ) -> None:
     path = QPainterPath()
     path.addText(float(x), float(baseline_y), ruby_font, text)
@@ -5041,7 +5184,8 @@ def _paint_ruby_text_fragment(
         float(ruby_metrics.horizontalAdvance(text)),
         float(ruby_metrics.height()),
     )
-    if transform is not None and not transform.isIdentity():
+    transformed = transform is not None and not transform.isIdentity()
+    if transformed:
         path = transform.map(path)
         rect = path.boundingRect()
     _paint_ruby_karaoke_fragment(
@@ -5054,6 +5198,22 @@ def _paint_ruby_text_fragment(
         fill_rect=gradient_rect,
         horizontal_fill_rect=horizontal_gradient_rect,
     )
+    if scanline_params is not None and 0.0 < ratio < 1.0:
+        front = float(x) + float(
+            ruby_metrics.horizontalAdvance(text)
+        ) * ((1.0 - ratio) if rtl else ratio)
+        if transformed:
+            front = _map_scanline_front(front, float(baseline_y), transform)
+        _paint_scanline_strip(
+            painter,
+            path,
+            rect,
+            front=front,
+            params=scanline_params,
+            style=style,
+            rtl=rtl,
+            colors=_effective_ruby_karaoke_colors(style),
+        )
 
 
 def _paint_ruby_karaoke_path(

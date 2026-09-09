@@ -38,6 +38,19 @@ _LYRIC_LAYOUT_EXCLUDED_STYLE_FIELDS = _LYRIC_LAYOUT_TITLE_ONLY_EXCLUDED_STYLE_FI
     "volume_stroke_color",
     "volume_overlay_fill_color",
     "volume_overlay_stroke_color",
+    # 渲染专属唱字/扫字线字段：不进入显示窗口、分页、排版任何输入
+    # （调度只读出入场动画与时长/保护时间，见 display/schedule.py 与
+    # layout/line/style.py）。布局计划缓存命中后由 _rebind_plan_line_styles
+    # 逐行重解析动画样式，IR 仍拿到最新 karaoke_anim / 扫字线开关。
+    # 注意：include_paint_fields=True 的调用方（CPU 行布局缓存）不用这份
+    # 剔除表——fill_segments 内嵌 karaoke_effect，唱字档位变更必须作废。
+    "karaoke_anim",
+    "reverse_karaoke_anim",
+    "scanline_width_px",
+    "scanline_mode",
+    "scanline_color",
+    "scanline_brightness_pct",
+    "scanline_glow_px",
 })
 _LYRIC_LAYOUT_EXCLUDED_SCHEME_FIELDS = frozenset({
     "base_color",

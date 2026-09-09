@@ -112,6 +112,8 @@ struct Direct2DGpuBackend::Impl {
         std::string exitAnimation = "none";
         int exitDurationMs = 0;
         std::string karaokeAnimation = "none";
+        // 扫字线叠加开关（来自 TextLine.scanlineEnabled，随行缓存）。
+        bool scanlineEnabled = false;
         std::vector<DisplayWindow> displayWindows;
         std::vector<PlacementWindow> placementWindows;
         TextStyle style;

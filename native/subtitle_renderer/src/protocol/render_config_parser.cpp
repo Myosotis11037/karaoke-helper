@@ -1046,6 +1046,35 @@ std::optional<RenderConfig> parseRenderConfig(const QJsonObject &ir, QString *er
     cfg.karaokeAnim = stringValue(
         style, QStringLiteral("karaoke_anim"), cfg.karaokeAnim
     );
+    // 扫字线参数是全局绘制字段（不进角色方案），直接落到 base style 上，
+    // styleWithOverrides 复制 base 后只覆盖方案键，全局值对角色行同样生效。
+    base.scanlineWidthPx = std::max(
+        1,
+        intValue(style, QStringLiteral("scanline_width_px"), base.scanlineWidthPx)
+    );
+    base.scanlineMode = stringValue(
+        style, QStringLiteral("scanline_mode"), base.scanlineMode
+    );
+    if (base.scanlineMode != QStringLiteral("brighten")
+        && base.scanlineMode != QStringLiteral("color")) {
+        base.scanlineMode = QStringLiteral("color");
+    }
+    base.scanlineColor = stringValue(
+        style, QStringLiteral("scanline_color"), base.scanlineColor
+    );
+    base.scanlineBrightnessPct = std::clamp(
+        intValue(
+            style,
+            QStringLiteral("scanline_brightness_pct"),
+            base.scanlineBrightnessPct
+        ),
+        0,
+        100
+    );
+    base.scanlineGlowPx = std::max(
+        0,
+        intValue(style, QStringLiteral("scanline_glow_px"), base.scanlineGlowPx)
+    );
     cfg.timingOffsetMs = intValue(style, QStringLiteral("timing_offset_ms"), cfg.timingOffsetMs);
     const bool hasMainKaraokeColors = style.value(QStringLiteral("karaoke_colors")).isObject();
     const bool hasRubyKaraokeColors = style.value(QStringLiteral("ruby_karaoke_colors")).isObject();
@@ -1185,6 +1214,9 @@ std::optional<RenderConfig> parseRenderConfig(const QJsonObject &ir, QString *er
             line.karaokeAnimation = stringValue(
                 lineObject, QStringLiteral("karaoke_anim"), karaokeFallback
             );
+            line.scanlineEnabled = lineObject.value(
+                QStringLiteral("scanline")
+            ).toBool(false);
             const QJsonObject layoutObject = lineObject.value(
                 QStringLiteral("layout")
             ).toObject();

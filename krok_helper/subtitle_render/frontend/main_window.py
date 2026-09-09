@@ -24,7 +24,7 @@ UI 顶层结构（工作区导航居中放在项目命令栏）：
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import fields as dataclass_fields, replace
 import logging
 import os
 from pathlib import Path
@@ -503,6 +503,90 @@ def _paint_only_style_delta(previous: Style, current: Style) -> bool:
         )
 
     return _strip(current) == _strip(previous)
+
+
+# 渲染专属动画字段：不进入显示窗口 / 分页 / 排版的任何输入（调度只读出入场
+# 动画与时长/保护时间，见 display/schedule.py 与 layout/line/style.py）。
+# 改这些字段时余白检查、轨道窗口重算与布局计划重建都可以跳过。
+_RENDER_ONLY_ANIM_STYLE_FIELDS: frozenset[str] = frozenset({
+    "karaoke_anim",
+    "reverse_karaoke_anim",
+    "scanline_width_px",
+    "scanline_mode",
+    "scanline_color",
+    "scanline_brightness_pct",
+    "scanline_glow_px",
+})
+# 出入场动画「类型」字段：类型本身只在跨 ``none`` 边界时改变显示窗口（动画
+# 时间守卫按类型 != none 扩窗），其余组合（fade→slide 等）窗口不动——用逐行
+# 有效时长精确判定，而不是一刀切重算。时长字段刻意不在其中：改时长通常真的
+# 会移动显示窗口。
+_ANIM_TYPE_STYLE_FIELDS: frozenset[str] = frozenset({
+    "entry_anim",
+    "exit_anim",
+    "section_head_anim",
+    "section_tail_anim",
+    "section_edge_anim_enabled",
+    "section_edge_both_animations",
+})
+
+
+def _style_delta_only_in(
+    previous: Style,
+    current: Style,
+    fields: frozenset[str],
+) -> bool:
+    """``current`` 与 ``previous`` 的差异是否完全落在给定字段集合内。
+
+    集合之外的所有 Style 字段（含标题 / 布局 / 方案表等嵌套结构）必须逐一
+    相等；漏列字段只会让判定更保守。
+    """
+
+    if previous.custom_style_schemes != current.custom_style_schemes:
+        return False
+    for item in dataclass_fields(Style):
+        if item.name in fields:
+            continue
+        if getattr(previous, item.name) != getattr(current, item.name):
+            return False
+    return True
+
+
+def _animation_windows_unchanged(
+    previous: Style,
+    current: Style,
+    tracks: tuple[TimingTrack, ...],
+) -> bool:
+    """逐行比较出入场动画的有效时长，判定显示窗口是否可能移动。
+
+    显示窗口只依赖 :func:`entry_animation_ms` / :func:`exit_animation_ms`
+    （逐行解析覆盖 / 段边缘替换 / 类型 != none），两者全等时调度求解器的
+    输入完全一致，窗口、分页与余白结论都不会变。
+    """
+
+    from krok_helper.subtitle_render.engine.layout.display.section_edges import (
+        section_edge_context,
+    )
+    from krok_helper.subtitle_render.engine.layout.layout_context import layout_pass
+    from krok_helper.subtitle_render.engine.layout.line.style import (
+        entry_animation_ms,
+        exit_animation_ms,
+    )
+
+    with layout_pass():
+        for track in tracks:
+            section_edge_context(track, previous)
+            section_edge_context(track, current)
+            for line in track.lines:
+                if entry_animation_ms(previous, line) != entry_animation_ms(
+                    current, line
+                ):
+                    return False
+                if exit_animation_ms(previous, line) != exit_animation_ms(
+                    current, line
+                ):
+                    return False
+    return True
 
 
 
@@ -4072,6 +4156,20 @@ class SubtitleRenderWindow(QWidget):
         previous = self._style
         style = ensure_page_layout_defaults(style)
         paint_only = previous is not style and _paint_only_style_delta(previous, style)
+        # 渲染专属动画（唱字档位 / 扫字线参数）与「窗口不动」的出入场类型切换：
+        # 不进余白检查、不重算轨道把手，布局计划按签名复用（唱字/扫字线字段
+        # 已从歌词布局签名剔除，逐行动画样式由 rebind 刷新进 IR）。
+        anim_lightweight = previous is not style and (
+            _style_delta_only_in(
+                previous, style, _RENDER_ONLY_ANIM_STYLE_FIELDS
+            )
+            or (
+                _style_delta_only_in(previous, style, _ANIM_TYPE_STYLE_FIELDS)
+                and _animation_windows_unchanged(
+                    previous, style, tuple(self._all_tracks())
+                )
+            )
+        )
         old_capacities = {
             "default": max(len(previous.line_alignments), 1),
             **{
@@ -4147,10 +4245,10 @@ class SubtitleRenderWindow(QWidget):
                     affected_pages += affected
                     added_pages += added
         self._property_panel.set_style(style)
-        if paint_only:
-            # 颜色/填充不参与歌词排版；让后台按完整布局签名复用整轨计划。
-            # 签名仍是正确性闸门，连续调节中若夹入字体/布局变化，面板会把
-            # scope 复位为 None，自动回落全量重排。
+        if paint_only or anim_lightweight:
+            # 颜色/填充与渲染专属动画不参与歌词排版；让后台按完整布局签名
+            # 复用整轨计划。签名仍是正确性闸门，连续调节中若夹入字体/布局
+            # 变化，面板会把 scope 复位为 None，自动回落全量重排。
             self._property_panel.mark_style_relayout_scope("paint")
         self._remember_style_preferences(previous, style)
         self._refresh_preview_style_soon()
@@ -4168,7 +4266,8 @@ class SubtitleRenderWindow(QWidget):
         # 布局和字体）。这两项在真实工程上要各花几百毫秒的界面线程时间——实测
         # 一条 41 行 + 一条 15 行、共 172 条注音的曲目，轨道窗口重算 599ms、
         # 余白检查 118ms——是改色时窗口卡住的主因，纯上色时直接跳过。
-        if not paint_only:
+        # 渲染专属动画（唱字档位 / 扫字线参数 / 窗口不动的出入场类型切换）同理。
+        if not (paint_only or anim_lightweight):
             self._schedule_tracks_view_window_refresh()
             self._margin_check_timer.start()
         self._schedule_persisted_state_save()

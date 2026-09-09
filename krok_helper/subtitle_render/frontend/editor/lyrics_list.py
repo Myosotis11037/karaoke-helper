@@ -167,6 +167,8 @@ _KARAOKE_EFFECTS = (
     ("none", "无"),
     ("no_wipe", "无 Wipe"),
     ("utopia", "Utopia"),
+    ("scanline", "扫字线"),
+    ("utopia_scanline", "Utopia+扫字线"),
 )
 _ENTRY_LABELS = dict(_ENTRY_EFFECTS)
 _EXIT_LABELS = dict(_EXIT_EFFECTS)

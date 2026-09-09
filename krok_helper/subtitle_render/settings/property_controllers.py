@@ -333,6 +333,10 @@ def normalize_style_changes(changes: dict[str, object]) -> dict[str, object]:
         normalized["reverse_karaoke_anim"] = normalize_karaoke_animation(
             normalized["reverse_karaoke_anim"]
         )
+    if "scanline_mode" in normalized:
+        normalized["scanline_mode"] = normalize_scanline_mode(
+            normalized["scanline_mode"]
+        )
     if "section_edge_anim_enabled" in normalized:
         normalized["section_edge_anim_enabled"] = bool(
             normalized["section_edge_anim_enabled"]
@@ -448,9 +452,15 @@ def normalize_exit_animation(value: object) -> ExitAnimation:
 
 
 def normalize_karaoke_animation(value: object) -> KaraokeAnimation:
-    if value in {"inherit", "none", "no_wipe", "utopia"}:
+    if value in {"inherit", "none", "no_wipe", "utopia", "scanline", "utopia_scanline"}:
         return value  # type: ignore[return-value]
     return "inherit"
+
+
+def normalize_scanline_mode(value: object) -> str:
+    if value in {"color", "brighten"}:
+        return str(value)
+    return "color"
 
 
 def normalize_lit_style(value: object):

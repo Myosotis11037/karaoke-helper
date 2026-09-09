@@ -237,17 +237,19 @@ class EffectsPropertyPageBuilder:
             ("无", "none"),
             ("无 Wipe", "no_wipe"),
             ("utopia", "utopia"),
+            ("扫字线", "scanline"),
+            ("utopia+扫字线", "utopia_scanline"),
         ):
             host._karaoke_anim_combo.addItem(label, value)
         host._karaoke_anim_combo.setToolTip(
-            "控制歌词正在着色时的逐字动画；旧项目的 Utopia 入退场会自动兼容"
+            "控制歌词正在着色时的逐字动画；旧项目的 Utopia 入退场会自动兼容。"
+            "扫字线在走字锋面处按设定粗细高亮发光（主文字与注音同效）"
         )
         host._karaoke_anim_combo.currentIndexChanged.connect(
             lambda _index: host._update_style(
                 karaoke_anim=host._karaoke_anim_combo.currentData()
             )
         )
-        host._animation_grid.add_field("唱字特效", host._karaoke_anim_combo)
 
         host._reverse_karaoke_anim_combo = WheelFocusedComboBox(section)
         compact_property_control(host._reverse_karaoke_anim_combo)
@@ -256,19 +258,74 @@ class EffectsPropertyPageBuilder:
             ("Wipe", "none"),
             ("无 Wipe", "no_wipe"),
             ("Utopia", "utopia"),
+            ("扫字线", "scanline"),
+            ("utopia+扫字线", "utopia_scanline"),
         ):
             host._reverse_karaoke_anim_combo.addItem(label, value)
         host._reverse_karaoke_anim_combo.setToolTip(
-            "仅对标记为反向唱字的歌词行生效；无 Wipe 会在区间结束时整字瞬切"
+            "仅对标记为反向唱字的歌词行生效；无 Wipe 会在区间结束时整字瞬切，"
+            "扫字线档位同样叠加锋面高亮"
         )
         host._reverse_karaoke_anim_combo.currentIndexChanged.connect(
             lambda _index: host._update_style(
                 reverse_karaoke_anim=host._reverse_karaoke_anim_combo.currentData()
             )
         )
-        host._animation_grid.add_field(
-            "反向唱字特效", host._reverse_karaoke_anim_combo
+        host._karaoke_pair_row = self._karaoke_pair_row(
+            section,
+            host._karaoke_anim_combo,
+            host._reverse_karaoke_anim_combo,
         )
+        host._animation_grid.add_field("唱字 / 反向唱字特效", host._karaoke_pair_row)
+
+        host._scanline_mode_combo = WheelFocusedComboBox(section)
+        compact_property_control(host._scanline_mode_combo)
+        for label, value in (
+            ("单独颜色", "color"),
+            ("底色发光", "brighten"),
+        ):
+            host._scanline_mode_combo.addItem(label, value)
+        host._scanline_mode_combo.setToolTip(
+            "单独颜色：高亮带用设定颜色填充；"
+            "底色发光：保留锋面两侧原有前后色的色相和饱和度，只提高 HSV 明度"
+        )
+        host._scanline_mode_combo.currentIndexChanged.connect(
+            lambda _index: host._update_style(
+                scanline_mode=host._scanline_mode_combo.currentData()
+            )
+        )
+        host._scanline_width_spin = self._spin_factory(1, 400, suffix=" px")
+        host._scanline_width_spin.setToolTip("扫字线高亮带宽度（以走字锋面为中心）")
+        host._scanline_width_spin.valueChanged.connect(
+            lambda value: host._update_style(scanline_width_px=value)
+        )
+        host._scanline_glow_spin = self._spin_factory(0, 200, suffix=" px")
+        host._scanline_glow_spin.setToolTip(
+            "扫字线字形内柔化范围；半径越大边缘越柔和，不会向字形外扩散"
+        )
+        host._scanline_glow_spin.valueChanged.connect(
+            lambda value: host._update_style(scanline_glow_px=value)
+        )
+        host._scanline_brightness_spin = self._spin_factory(0, 100, suffix=" %")
+        host._scanline_brightness_spin.setToolTip(
+            "底色发光的亮度提升程度；0 = 不提亮，100 = 提到纯白"
+        )
+        host._scanline_brightness_spin.valueChanged.connect(
+            lambda value: host._update_style(scanline_brightness_pct=value)
+        )
+        host._scanline_color_btn = host._color_button(
+            "scanline_color", getattr(host._style, "scanline_color", "#FFFFFF")
+        )
+        host._scanline_row = self._scanline_param_row(
+            section,
+            host._scanline_mode_combo,
+            host._scanline_width_spin,
+            host._scanline_color_btn,
+            host._scanline_brightness_spin,
+            host._scanline_glow_spin,
+        )
+        # 网格行序：第 1 行 = 入场/退场，第 2 行 = 唱字对 + 段首尾区块，
+        # 第 3 行 = 扫字线整行（参数永久可编辑，颜色/亮度按模式互换启用态）。
 
         host._section_edge_check = CheckBox("段首尾独立动画", section)
         host._section_edge_check.toggled.connect(host._on_section_edge_toggled)
@@ -303,6 +360,10 @@ class EffectsPropertyPageBuilder:
             host._section_edge_both_check,
         )
         host._animation_grid.add_widget(host._section_edge_row)
+        host._animation_grid.add_field(
+            "扫字线 / 模式 · 粗细 · 颜色/亮度 · 柔化半径",
+            host._scanline_row,
+        )
         layout.addWidget(host._animation_grid)
         return section
 
@@ -404,6 +465,49 @@ class EffectsPropertyPageBuilder:
         tail_combo.setEnabled(False)
         both_check.setEnabled(False)
         return block
+
+    @staticmethod
+    def _karaoke_pair_row(
+        parent: QWidget,
+        karaoke_combo: Any,
+        reverse_combo: Any,
+    ) -> QWidget:
+        row = QWidget(parent)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(karaoke_combo, 1)
+        row_layout.addWidget(reverse_combo, 1)
+        return row
+
+    @staticmethod
+    def _scanline_param_row(
+        parent: QWidget,
+        mode_combo: Any,
+        width_spin: Any,
+        color_button: QWidget,
+        brightness_spin: Any,
+        glow_spin: Any,
+    ) -> QWidget:
+        """扫字线参数单行：模式 · 粗细 · 颜色/亮度提升 · 柔化半径。
+
+        控件全部常驻；模式切换只换启用态（颜色 ↔ 亮度提升），不隐藏、
+        不移位。
+        """
+
+        row = QWidget(parent)
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(6)
+        row_layout.addWidget(mode_combo, 3)
+        row_layout.addWidget(width_spin, 2)
+        row_layout.addWidget(color_button, 2)
+        row_layout.addWidget(brightness_spin, 2)
+        row_layout.addWidget(glow_spin, 2)
+        # 参数永久可编辑；宿主按模式回显：单独颜色显示颜色/隐藏亮度，
+        # 底色发光隐藏颜色/显示亮度（同一列位互换，行宽不变）。
+        brightness_spin.hide()
+        return row
 
     @staticmethod
     def _animation_row(

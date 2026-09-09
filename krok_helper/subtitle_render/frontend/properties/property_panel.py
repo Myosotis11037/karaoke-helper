@@ -1022,10 +1022,34 @@ class PropertyPanel(QWidget):
                 max(
                     0,
                     self._karaoke_anim_combo.findData(
-                        effective_karaoke_animation(self._style)
+                        timing.karaoke_anim
+                        if timing.karaoke_anim
+                        in {"none", "no_wipe", "utopia", "scanline", "utopia_scanline"}
+                        else effective_karaoke_animation(self._style)
                     ),
                 )
             )
+            self._scanline_mode_combo.setCurrentIndex(
+                max(
+                    0,
+                    self._scanline_mode_combo.findData(
+                        self._style.scanline_mode
+                        if self._style.scanline_mode in {"color", "brighten"}
+                        else "color"
+                    ),
+                )
+            )
+            self._scanline_width_spin.setValue(
+                max(int(self._style.scanline_width_px), 1)
+            )
+            self._scanline_glow_spin.setValue(
+                max(int(self._style.scanline_glow_px), 0)
+            )
+            self._scanline_brightness_spin.setValue(
+                min(max(int(self._style.scanline_brightness_pct), 0), 100)
+            )
+            self._scanline_color_btn.set_color(self._style.scanline_color)
+            self._sync_scanline_controls()
             self._reverse_karaoke_anim_combo.setCurrentIndex(
                 max(
                     0,
@@ -1264,6 +1288,23 @@ class PropertyPanel(QWidget):
         self._section_head_anim_combo.setEnabled(enabled)
         self._section_tail_anim_combo.setEnabled(enabled)
         self._section_edge_both_check.setEnabled(enabled)
+
+    def _sync_scanline_controls(self) -> None:
+        """扫字线参数永久可编辑；模式决定颜色/亮度提升的显示切换。
+
+        单独颜色：显示颜色、隐藏亮度提升；底色发光：隐藏颜色、显示亮度提升。
+        """
+        brighten = self._style.scanline_mode == "brighten"
+        for control in (
+            self._scanline_mode_combo,
+            self._scanline_width_spin,
+            self._scanline_color_btn,
+            self._scanline_brightness_spin,
+            self._scanline_glow_spin,
+        ):
+            control.setEnabled(True)
+        self._scanline_color_btn.setVisible(not brighten)
+        self._scanline_brightness_spin.setVisible(brighten)
 
     def _update_ruby_font_override(self, **changes) -> None:
         changes["ruby_font_follow_main"] = False
@@ -4000,6 +4041,14 @@ class PropertyPanel(QWidget):
                         ),
                     )
                 )
+            if {"karaoke_anim", "reverse_karaoke_anim", "scanline_mode"}.intersection(
+                changes
+            ):
+                self._sync_scanline_controls()
+            if "scanline_color" in changes:
+                # 扫字线颜色不在方案/指示灯的再同步集合里：选色后按钮必须
+                # 立即回显新值（宿主回流 set_style 会走等值快路径跳过）。
+                self._scanline_color_btn.set_color(self._style.scanline_color)
             if set(changes).intersection(
                 _SCHEME_FIELDS | {"singer_style_overrides", "custom_style_schemes"}
             ):

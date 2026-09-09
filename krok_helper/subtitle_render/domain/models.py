@@ -1033,10 +1033,32 @@ class Style:
     """退场动画时长；在显示窗口结束前开始。"""
 
     karaoke_anim: KaraokeAnimation = "utopia"
-    """唱字动画：inherit（兼容旧 Utopia）/ none / utopia。"""
+    """唱字动画：inherit（兼容旧 Utopia）/ none / utopia / scanline / utopia_scanline。
+
+    ``scanline`` 与 ``utopia_scanline`` 分别在基础 Wipe / Utopia 动画之上叠加
+    「扫字线」锋面高亮，参数见 :attr:`scanline_width_px` 等字段。"""
 
     reverse_karaoke_anim: KaraokeAnimation = "inherit"
-    """反向走字行的唱字动画；inherit 表示沿用普通唱字特效。"""
+    """反向走字行的唱字动画；inherit 表示沿用普通唱字特效（也可选扫字线档位）。"""
+
+    # 扫字线（Sayatoo 式走字锋面高亮）：仅在 karaoke_anim / reverse_karaoke_anim
+    # 为 scanline / utopia_scanline 档位时生效；纯绘制参数，不参与布局推导。
+    scanline_width_px: int = 16
+    """扫字线粗细（像素）：以走字锋面为中心的高亮带宽度。"""
+
+    scanline_mode: str = "color"
+    """扫字线模式：``color`` 单独颜色（``scanline_color`` 填充）；
+    ``brighten`` 底色发光——分别保留锋面两侧原有前后色的 HSV 色相与饱和度，
+    只提高明度；提升幅度由 ``scanline_brightness_pct`` 控制。"""
+
+    scanline_color: str = "#FFFFFF"
+    """扫字线高亮颜色（#RRGGBB）；仅 ``scanline_mode == "color"`` 时生效。"""
+
+    scanline_brightness_pct: int = 60
+    """底色发光的亮度提升（百分比）；仅 ``scanline_mode == "brighten"`` 时生效。"""
+
+    scanline_glow_px: int = 8
+    """扫字线字形内柔化范围；只改变带内透明度，不向字形外扩散。"""
 
     section_edge_anim_enabled: bool = False
     """段首尾独立动画：开启后段首页/段尾页各行按下面两个动画替换入退场。"""
@@ -1214,19 +1236,35 @@ def style_with_line_animation(style: Style, line: TimingLine) -> Style:
 
 
 def effective_karaoke_animation(style: Style) -> Literal["none", "no_wipe", "utopia"]:
-    """Resolve the singing animation while preserving legacy Utopia projects."""
+    """Resolve the singing animation while preserving legacy Utopia projects.
+
+    扫字线是叠加特效，不改变基础动画：``scanline`` 按 ``none``（纯 Wipe）、
+    ``utopia_scanline`` 按 ``utopia`` 渲染本体，高亮层另见
+    :func:`effective_karaoke_scanline`。
+    """
     timing = style.timing
-    if timing.karaoke_anim == "utopia":
+    if timing.karaoke_anim == "utopia" or timing.karaoke_anim == "utopia_scanline":
         return "utopia"
     if timing.karaoke_anim == "none":
         return "none"
     if timing.karaoke_anim == "no_wipe":
         return "no_wipe"
+    if timing.karaoke_anim == "scanline":
+        return "none"
     return (
         "utopia"
         if "utopia" in {timing.entry_anim, timing.exit_anim}
         else "none"
     )
+
+
+def effective_karaoke_scanline(style: Style) -> bool:
+    """Return whether the karaoke scan-line highlight overlay is active.
+
+    只认显式选择的扫字线档位；``inherit`` 的旧项目推导（入退场含 Utopia）不可能
+    产生扫字线，保持 False。
+    """
+    return style.timing.karaoke_anim in {"scanline", "utopia_scanline"}
 
 
 @dataclass
@@ -1574,6 +1612,9 @@ def style_from_dict(payload: object) -> Style:
             "section_gap_ms",
             "entry_lead_ms",
             "exit_fade_ms",
+            "scanline_width_px",
+            "scanline_glow_px",
+            "scanline_brightness_pct",
             "lit_number",
             "lit_size",
             "lit_offset_x",
@@ -1681,8 +1722,14 @@ def style_from_dict(payload: object) -> Style:
         elif key in {"karaoke_anim", "reverse_karaoke_anim"}:
             changes[key] = (
                 value
-                if value in {"inherit", "none", "no_wipe", "utopia"}
+                if value in {
+                    "inherit", "none", "no_wipe", "utopia", "scanline", "utopia_scanline"
+                }
                 else getattr(defaults, key)
+            )
+        elif key == "scanline_mode":
+            changes[key] = (
+                value if value in {"color", "brighten"} else defaults.scanline_mode
             )
         elif key == "section_head_anim":
             changes[key] = (
