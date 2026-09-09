@@ -4169,33 +4169,41 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                         )
                     ));
                     bool pushedUtopiaClip = false;
-                    const bool unitComplete = useUtopiaTransition
-                        ? rubyUnitWipeComplete(ruby, geometryIndex)
-                        : complete;
-                    if (after && useUtopiaTransition && !unitComplete) {
-                        const auto [animatedBounds, animatedEdge] =
-                            utopiaRubyUnitWipe(
-                                ruby, rubyIndex, geometryIndex, rubyStyle
-                            );
-                        const float pad = std::max(
-                            rubyStyle.rubyStrokeWidth
-                                + rubyStyle.rubyStroke2Width,
-                            2.0f
-                        ) + 4.0f;
-                        D2D1_RECT_F shiftedBounds = animatedBounds;
-                        shiftedBounds.left -= shadowX;
-                        shiftedBounds.right -= shadowX;
-                        shiftedBounds.top -= shadowY;
-                        shiftedBounds.bottom -= shadowY;
-                        const float shiftedEdge = animatedEdge
-                            - (style.vertical ? shadowY : shadowX);
-                        pushAxisAlignedClip(
-                            directionalWipeClip(
-                                shiftedBounds, shiftedEdge, pad, true
-                            ),
-                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                    if (after && useUtopiaTransition) {
+                        // Same unit-phase gate as the ruby body: a
+                        // not-yet-started unit skips its after shadow, a
+                        // wiping unit clips at the shifted front.
+                        const N3WipePhase phase = rubyUnitWipePhaseAt(
+                            ruby, geometryIndex
                         );
-                        pushedUtopiaClip = true;
+                        if (phase == N3WipePhase::Before) {
+                            continue;
+                        }
+                        if (phase == N3WipePhase::Wiping) {
+                            const auto [animatedBounds, animatedEdge] =
+                                utopiaRubyUnitWipe(
+                                    ruby, rubyIndex, geometryIndex, rubyStyle
+                                );
+                            const float pad = std::max(
+                                rubyStyle.rubyStrokeWidth
+                                    + rubyStyle.rubyStroke2Width,
+                                2.0f
+                            ) + 4.0f;
+                            D2D1_RECT_F shiftedBounds = animatedBounds;
+                            shiftedBounds.left -= shadowX;
+                            shiftedBounds.right -= shadowX;
+                            shiftedBounds.top -= shadowY;
+                            shiftedBounds.bottom -= shadowY;
+                            const float shiftedEdge = animatedEdge
+                                - (style.vertical ? shadowY : shadowX);
+                            pushAxisAlignedClip(
+                                directionalWipeClip(
+                                    shiftedBounds, shiftedEdge, pad, true
+                                ),
+                                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                            );
+                            pushedUtopiaClip = true;
+                        }
                     }
                     ID2D1Geometry *animatedOuter = rubyStyle.rubyStroke2Width > 0.0f
                         ? rubyStroke2GeometryAt(rubyIndex, geometryIndex)
@@ -4480,23 +4488,38 @@ ProbeResult Direct2DGpuBackend::renderFrameInternal(
                 stroke->SetOpacity(rubyOpacity);
                 stroke2->SetOpacity(rubyOpacity);
                 bool pushedUtopiaClip = false;
-                if (after
-                    && useUtopiaTransition
-                    && !rubyUnitWipeComplete(ruby, index)) {
-                    const auto [animatedBounds, animatedEdge] = utopiaRubyUnitWipe(
-                        ruby, rubyIndex, index, rubyStyle
+                if (after && useUtopiaTransition) {
+                    // Gate by unit wipe phase like the glow worker and the
+                    // main-text body path. A not-yet-started unit must not
+                    // paint its after side at all: its ratio-0 edge rests at
+                    // the wipe-left (ink minus ruby primary edge / 2), which
+                    // sits inside the unit's own stroke2 ring, so clipping
+                    // there leaks a sliver of after colour on large stroked
+                    // ruby the moment an earlier unit starts wiping.
+                    const N3WipePhase phase = rubyUnitWipePhaseAt(
+                        ruby, index
                     );
-                    const float pad = std::max(
-                        rubyStyle.rubyStrokeWidth + rubyStyle.rubyStroke2Width,
-                        2.0f
-                    ) + 4.0f;
-                    pushAxisAlignedClip(
-                        directionalWipeClip(
-                            animatedBounds, animatedEdge, pad, true
-                        ),
-                        D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
-                    );
-                    pushedUtopiaClip = true;
+                    if (phase == N3WipePhase::Before) {
+                        continue;
+                    }
+                    if (phase == N3WipePhase::Wiping) {
+                        const auto [animatedBounds, animatedEdge] =
+                            utopiaRubyUnitWipe(
+                                ruby, rubyIndex, index, rubyStyle
+                            );
+                        const float pad = std::max(
+                            rubyStyle.rubyStrokeWidth
+                                + rubyStyle.rubyStroke2Width,
+                            2.0f
+                        ) + 4.0f;
+                        pushAxisAlignedClip(
+                            directionalWipeClip(
+                                animatedBounds, animatedEdge, pad, true
+                            ),
+                            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE
+                        );
+                        pushedUtopiaClip = true;
+                    }
                 }
                 ID2D1Geometry *animatedStroke2 = rubyStroke2GeometryAt(
                     rubyIndex, index
